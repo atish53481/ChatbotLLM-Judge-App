@@ -8,7 +8,7 @@ const SUGGESTIONS = [
   "Can I return a hoodie after 35 days?",
 ];
 
-const API_BASE = ""; // proxied by Vite to :8201
+const API_BASE = ""; // proxied by Vite to :8202
 
 export default function App() {
   const [messages, setMessages] = useState([

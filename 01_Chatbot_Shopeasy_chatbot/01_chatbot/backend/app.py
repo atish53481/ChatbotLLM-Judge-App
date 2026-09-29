@@ -12,6 +12,16 @@ try:
 except ImportError:
     Groq = None
 
+# Read the keys from 01_chatbot/.env here, so start.bat never has to put them on
+# a command line (where any process list shows them). Variables already set in
+# the environment win.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env"), override=False)
+except ImportError:
+    pass
+
 GROQ_MODEL = os.getenv("CHATBOT_MODEL", "llama-3.3-70b-versatile")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 

@@ -5,6 +5,7 @@ __pycache__/
 *.db
 .env
 node_modules/
+.vite/
 .superpowers/
 .commandcode/
 *.tmp
