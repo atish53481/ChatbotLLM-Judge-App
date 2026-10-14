@@ -21,7 +21,7 @@ backend/datasets/security_probes.json
 
 # Runtime uploads (reference documents for golden generation) and local screenshots
 backend/datasets/documents/
-Images/
+/Images/
 
 # Log of every golden-set write (what changed, which action), for tracing lost rows.
 backend/datasets/goldens_changes.log
