@@ -13,6 +13,8 @@ from typing import Literal
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from backend import storage, usage
@@ -46,6 +48,9 @@ DB_PATH = os.getenv("JUDGE_DB_PATH", "judge.db")
 TARGET_TYPES = ("http",)
 SUPPORTED_DOCUMENT_EXTENSIONS = {".pdf", ".txt", ".docx", ".md", ".markdown", ".mdx"}
 DOCUMENTS_DIR = Path(__file__).resolve().parent.parent / "datasets" / "documents"
+# The extension's pages, also served as the web app at /app/ (same origin as the
+# API, so the browser needs no CORS for it).
+WEB_APP_DIR = Path(__file__).resolve().parent.parent.parent / "ChatbotExtension"
 
 
 def extension_origin_regex(extension_id: str | None) -> str:
@@ -76,6 +81,13 @@ app.add_middleware(
 )
 # Blocks DNS-rebinding pages that reach 127.0.0.1 under their own host name.
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
+app.mount("/app", StaticFiles(directory=WEB_APP_DIR, html=True), name="web-app")
+
+
+@app.get("/", include_in_schema=False)
+def web_app_home() -> RedirectResponse:
+    """Opening the backend's address in a browser opens the web app."""
+    return RedirectResponse("/app/")
 
 _conn = storage.init_db(DB_PATH)
 # Progress of runs in flight, keyed by the caller's run_id (see /api/run/progress),

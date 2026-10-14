@@ -963,7 +963,7 @@ $("report-button").addEventListener("click", () => {
     setStatus("Pick a chatbot first.", true);
     return;
   }
-  window.open(chrome.runtime.getURL(`report/report.html?target=${target.id}`), "_blank");
+  window.open(pageUrl(`report/report.html?target=${target.id}`), "_blank");
 });
 
 $("run-all-button").addEventListener("click", () => {

@@ -218,22 +218,108 @@ function thresholdFor(metric, thresholds) {
   return typeof value === "number" ? value : metric.threshold;
 }
 
+// The pages run either as the Chrome extension or as a web app served by the
+// backend (http://127.0.0.1:8765/). Outside the extension, chrome.storage,
+// the service worker and the toolbar badge are replaced by localStorage,
+// in-page notifications and the tab title.
+const IN_EXTENSION = Boolean(globalThis.chrome && chrome.storage && chrome.storage.local);
+const STORAGE_PREFIX = "llmJudge:";
+const webListeners = [];
+
+function webRead(key) {
+  try {
+    const raw = localStorage.getItem(STORAGE_PREFIX + key);
+    return raw === null ? undefined : JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+}
+
+// Like chrome.storage.onChanged: every listener hears every change, the
+// writing page's own included; other tabs and frames hear it via "storage".
+function webWrite(key, value) {
+  const oldValue = webRead(key);
+  localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(value));
+  const changes = { [key]: { oldValue, newValue: value } };
+  setTimeout(() => webListeners.forEach((callback) => callback(changes)), 0);
+}
+
+if (!IN_EXTENSION && typeof window !== "undefined" && window.addEventListener) {
+  window.addEventListener("storage", (event) => {
+    if (!event.key || !event.key.startsWith(STORAGE_PREFIX)) return;
+    const parse = (raw) => { try { return raw === null ? undefined : JSON.parse(raw); } catch { return undefined; } };
+    const changes = { [event.key.slice(STORAGE_PREFIX.length)]: { oldValue: parse(event.oldValue), newValue: parse(event.newValue) } };
+    webListeners.forEach((callback) => callback(changes));
+  });
+}
+
 // The selected chatbot, the selected metric and the latest run are shared by
 // the side panel and the dashboard.
 const settings = {
   async get(key, fallback) {
+    if (!IN_EXTENSION) return webRead(key) ?? fallback;
     const data = await chrome.storage.local.get(key);
     return data[key] ?? fallback;
   },
-  set(key, value) {
+  async set(key, value) {
+    if (!IN_EXTENSION) return webWrite(key, value);
     return chrome.storage.local.set({ [key]: value });
   },
   onChange(callback) {
+    if (!IN_EXTENSION) {
+      webListeners.push(callback);
+      return;
+    }
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area === "local") callback(changes);
     });
   },
 };
+
+// A page of this app (path relative to the app root, e.g. "report/report.html").
+function pageUrl(path) {
+  if (IN_EXTENSION && chrome.runtime && chrome.runtime.getURL) return chrome.runtime.getURL(path);
+  return new URL(`../${path}`, location.href).href;
+}
+
+function openDashboard() {
+  if (IN_EXTENSION) {
+    chrome.runtime.sendMessage({ type: "OPEN_DASHBOARD" });
+  } else {
+    window.open(pageUrl("dashboard/dashboard.html"), "llm-judge-dashboard");
+  }
+}
+
+// The web app's stand-in for the toolbar badge: a mark in the tab title.
+const BASE_TITLE = typeof document !== "undefined" ? document.title : "";
+function clearBadge() {
+  if (IN_EXTENSION) {
+    chrome.runtime.sendMessage({ type: "CLEAR_BADGE" }).catch(() => {});
+  } else if (typeof document !== "undefined") {
+    document.title = BASE_TITLE;
+  }
+}
+
+// Web app only: announces a finished job this browser started, once, even
+// with the side panel and the dashboard both following it.
+async function announceWebJob(job) {
+  const watchedJobs = webRead("watchedJobs") || {};
+  const info = watchedJobs[job.id];
+  if (!info) return;
+  delete watchedJobs[job.id];
+  webWrite("watchedJobs", watchedJobs);
+  const summary = jobAnnouncement(job, info.target, info.metrics);
+  if (!summary) return;
+  if (document.hidden) document.title = `(${summary.badge}) ${BASE_TITLE}`;
+  if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+    const note = new Notification(summary.title, { body: summary.message, icon: pageUrl("icons/icon-128.png") });
+    note.onclick = () => { window.focus(); note.close(); };
+  }
+}
+
+if (!IN_EXTENSION && typeof document !== "undefined" && document.addEventListener) {
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) clearBadge(); });
+}
 
 async function fetchTargets() {
   return api("/api/targets");
@@ -311,10 +397,15 @@ async function runMetrics(target, metricKeys, onProgress, control = {}) {
 }
 
 function watchJob(target, jobId, metrics) {
-  chrome.runtime.sendMessage({
-    type: "WATCH_JOB", jobId, target: { id: target.id, name: target.name },
-    metrics: metrics.map((m) => ({ key: m.key, title: m.title })),
-  }).catch(() => {});
+  const info = { target: { id: target.id, name: target.name }, metrics: metrics.map((m) => ({ key: m.key, title: m.title })) };
+  if (!IN_EXTENSION) {
+    webWrite("watchedJobs", { ...(webRead("watchedJobs") || {}), [jobId]: info });
+    if (typeof Notification !== "undefined" && Notification.permission === "default") {
+      Notification.requestPermission().catch(() => {});
+    }
+    return;
+  }
+  chrome.runtime.sendMessage({ type: "WATCH_JOB", jobId, ...info }).catch(() => {});
 }
 
 // Polls a job until it ends, reporting each metric once: onProgress(key, null,
@@ -355,7 +446,8 @@ async function followJob(target, jobId, onProgress, control = {}) {
       });
     }
     if (job.status !== "queued" && job.status !== "running") {
-      chrome.runtime.sendMessage({ type: "JOB_ENDED", jobId }).catch(() => {});
+      if (IN_EXTENSION) chrome.runtime.sendMessage({ type: "JOB_ENDED", jobId }).catch(() => {});
+      else announceWebJob({ ...job, id: job.id ?? jobId }).catch(() => {});
       control.jobStatus = job.status;
       control.jobError = job.error || null;
       return job.results;
@@ -389,7 +481,7 @@ function caseDetailsFromRun(run) {
 
 // Opening the side panel, the dashboard or a report means the user has seen the
 // outcome: clear the toolbar badge a finished run left.
-chrome.runtime.sendMessage({ type: "CLEAR_BADGE" }).catch(() => {});
+clearBadge();
 
 // What the dashboard's Details panel and the PDF report show for one metric's
 // last run. Runs saved before these fields existed simply lack them.

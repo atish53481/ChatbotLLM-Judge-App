@@ -1,6 +1,9 @@
 // Client for the local LLM Judge backend. The address is fixed on purpose
-// (see README): the extension talks to nothing else.
-const BACKEND_URL = "http://127.0.0.1:8765";
+// (see README): the extension talks to nothing else. Served as the web app by
+// the backend itself, the pages call their own origin instead.
+const BACKEND_URL = /^https?:$/.test((typeof location !== "undefined" && location.protocol) || "")
+  ? location.origin
+  : "http://127.0.0.1:8765";
 
 async function api(path, { method = "GET", body } = {}) {
   const init = { method, headers: {} };
@@ -12,7 +15,7 @@ async function api(path, { method = "GET", body } = {}) {
   try {
     response = await fetch(`${BACKEND_URL}${path}`, init);
   } catch {
-    throw new Error("Backend not reachable at 127.0.0.1:8765. Start it with run-backend.bat.");
+    throw new Error(`Backend not reachable at ${BACKEND_URL.replace(/^https?:\/\//, "")}. Start it with run-backend.bat.`);
   }
   const text = await response.text();
   let data = null;

@@ -303,6 +303,19 @@ def test_rejects_foreign_host_header(app_module):
     assert rebinding.get("/api/status").status_code == 400
 
 
+def test_serves_web_app(client):
+    home = client.get("/", follow_redirects=False)
+    assert home.status_code == 307
+    assert home.headers["location"] == "/app/"
+
+    shell = client.get("/app/")
+    assert shell.status_code == 200
+    assert 'src="sidebar/sidebar.html"' in shell.text
+    assert 'src="dashboard/dashboard.html"' in shell.text
+    for page in ("sidebar/sidebar.html", "dashboard/dashboard.html", "report/report.html", "lib/ui.js"):
+        assert client.get(f"/app/{page}").status_code == 200, page
+
+
 def test_chat_endpoint_talks_to_target(client, app_module):
     target = _create_target(client)
     with patch.object(app_module.HttpTargetClient, "chat", return_value=_REPLY):

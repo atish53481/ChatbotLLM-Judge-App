@@ -16,6 +16,7 @@ rem An LLM Judge backend left running from an earlier start holds port 8765 and
 rem runs old code: stop it. Anything else on the port is left alone.
 powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { $p = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $_.OwningProcess); if ($p.CommandLine -like '*backend.dashboard.app*') { Write-Host 'Stopping the LLM Judge backend that was already running...'; Stop-Process -Id $p.ProcessId -Force; $parent = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $p.ParentProcessId); if ($parent.CommandLine -like '*backend.dashboard.app*') { Stop-Process -Id $parent.ProcessId -Force -ErrorAction SilentlyContinue } } }"
 echo Starting LLM Judge backend on http://127.0.0.1:8765 - please wait...
+echo Open http://127.0.0.1:8765/ in your browser to use the web app.
 ".venv\Scripts\python.exe" -m uvicorn backend.dashboard.app:app --host 127.0.0.1 --port 8765 || goto :error
 goto :eof
 

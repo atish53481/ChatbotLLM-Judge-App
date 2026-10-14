@@ -11,6 +11,21 @@ The extension talks only to the local backend at `http://127.0.0.1:8765`.
    and pick this `ChatbotExtension` folder.
 3. Click the **LLM Judge** toolbar button. The side panel opens.
 
+## Use as a web app (no extension)
+
+The backend serves these same pages, so the extension is optional:
+
+1. Start the backend: `run-backend.bat`.
+2. Open **http://127.0.0.1:8765/** in any browser. The side panel is on the left,
+   the dashboard on the right; the PDF report opens in a new tab.
+
+Everything works as in the extension. Differences: settings (selected chatbot,
+ticked metrics, thresholds) are kept in the browser's `localStorage` instead of
+the extension's storage, so they are not shared with the extension; and when a
+run ends you get a browser notification (allow it when asked) plus a mark in the
+tab title, instead of the toolbar badge. A run keeps going on the backend if you
+close the page; reopening it follows the run again.
+
 ## Use
 
 - **Chatbot**: *Add a chatbot* connects a chatbot from a real website. On the site,

@@ -1066,7 +1066,9 @@ $("threshold-env").addEventListener("change", async () => {
   await settings.set("thresholdEnv", env);
   await renderThresholds();
 });
-$("open-dashboard").addEventListener("click", () => chrome.runtime.sendMessage({ type: "OPEN_DASHBOARD" }));
+$("open-dashboard").addEventListener("click", openDashboard);
+// Inside the web app's two-pane page the dashboard is already beside the panel.
+if (!IN_EXTENSION && window.parent !== window) $("open-dashboard").hidden = true;
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => renderLatest());
 
 settings.onChange((changes) => {
