@@ -13,11 +13,18 @@ The extension talks only to the local backend at `http://127.0.0.1:8765`.
 
 ## Use as a web app (no extension)
 
-The backend serves these same pages, so the extension is optional:
+The backend serves these same pages, so the extension is optional.
 
-1. Start the backend: `run-backend.bat`.
-2. Open **http://127.0.0.1:8765/** in any browser. The side panel is on the left,
-   the dashboard on the right; the PDF report opens in a new tab.
+**One click:** double-click `start-llm-judge.bat` in the project root. It starts
+the backend when it is not running yet and opens **http://127.0.0.1:8765/** in
+your browser once it answers (close its window to stop the backend). For a
+desktop button, run once:
+`powershell -ExecutionPolicy Bypass -File .\create-desktop-shortcut.ps1`
+— it creates an **LLM Judge** shortcut that runs the same file.
+
+By hand: start the backend with `run-backend.bat`, then open
+**http://127.0.0.1:8765/**. The side panel is on the left, the dashboard on the
+right; the PDF report opens in a new tab.
 
 Everything works as in the extension. Differences: settings (selected chatbot,
 ticked metrics, thresholds) are kept in the browser's `localStorage` instead of
