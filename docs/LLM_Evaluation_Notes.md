@@ -265,6 +265,19 @@ curl 'https://<chatbot-host>/api/bots/<bot-id>/chat' \
 
 The tutorial loop: **define the criteria, choose metrics, build a dataset, run, iterate**. In development, tune prompts, models and settings against the scores. In production, monitor live traffic, A/B test models, and feed failures back into the golden dataset. The official tutorials cover a meeting-summary agent, a RAG QA system and a medical chatbot (hallucination and safety).
 
+## Running these evals with the LLM Judge app
+
+This project wraps everything above in a local app, so you can judge any chatbot without writing test code. It runs in the browser as a web app (or as a Chrome extension side panel); both use the same local backend at `http://127.0.0.1:8765`.
+
+1. **Start it**: double-click the **LLM Judge** desktop shortcut (or `start-llm-judge.bat`). It starts the backend if needed and opens the app; the side panel is on the left, the dashboard on the right. Put the judge key in `.env` first (`JUDGE_API_KEY`, Groq by default). Create the shortcut once with `powershell -ExecutionPolicy Bypass -File .\create-desktop-shortcut.ps1`.
+2. **Connect the chatbot**: on the chatbot's website, F12 → Network, send a message, right-click the chat request → Copy as cURL (bash), and paste it under *Add a chatbot*. The app finds where the question goes and where the reply comes back. For a plain LLM API, use *Or fill from an LLM API*.
+3. **Golden answers**: each chatbot uses a golden set (theme). Edit question / expected-answer pairs in the side panel, or generate them from a document or a help page.
+4. **Pick metrics and thresholds**: tick metrics by group, and choose a threshold preset (Local Development, PR / Feature Branch, Staging / QA, Production): the same values as the environment table above.
+5. **Run and read**: run one metric, a group or everything. Each card shows the run's average score against its threshold; **Details** lists every case with the question, the actual and expected answers, the judge's score and reason, and how to improve. Turn on *Check judge consistency* to score every reply twice and flag gaps above 0.15.
+6. **Report**: *Download report (PDF)* builds a printable summary of the latest runs.
+
+What the app scores: 25 metrics in six groups: answer quality, RAG retrieval, RAG G-Eval, safety (Bias, Toxicity, PII Leakage, No Prompt Leak), conversation, and **security** red-teaming probes (Prompt Injection, Jailbreak, Encoded Injection, Data Exfiltration, Social Engineering, Domain Misuse, Non-Advice, Role Violation, Harmful Content). Inverted metrics are shown as 1 minus DeepEval's score with the threshold as a maximum, as described under Thresholds.
+
 ## Integrations and tools landscape
 
 DeepEval plugs into most agent frameworks for tracing and accepts almost any model as the judge, so you rarely need to rewrite your app to test it.
