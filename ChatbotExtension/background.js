@@ -4,7 +4,7 @@
 
 importScripts("lib/announce.js");
 
-const BACKEND_URL = "http://127.0.0.1:8000";
+const BACKEND_URL = "http://127.0.0.1:8765";
 const DASHBOARD_URL = chrome.runtime.getURL("dashboard/dashboard.html");
 const BADGE_COLORS = { pass: "#0c7a0c", fail: "#c62828", error: "#b36b00" };
 

@@ -1,7 +1,7 @@
 #Requires -RunAsAdministrator
 <#
 Registers the "LLM Judge Backend" scheduled task, so the backend on
-http://127.0.0.1:8000 starts when Windows boots and keeps running while you are
+http://127.0.0.1:8765 starts when Windows boots and keeps running while you are
 logged off. run-backend-service.bat restarts it 30 seconds after any crash.
 
 Run once, in PowerShell opened with "Run as administrator", from this folder:
@@ -22,7 +22,7 @@ if (-not (Test-Path (Join-Path $root ".venv\Scripts\python.exe"))) {
 }
 
 # A backend already running from this folder (a window, or an older task) would
-# keep port 8000; stop it so the task's backend takes over.
+# keep port 8765; stop it so the task's backend takes over.
 . (Join-Path $root "backend-task-common.ps1")
 Stop-LlmJudgeBackend
 
@@ -38,7 +38,7 @@ $user = "$env:USERDOMAIN\$env:USERNAME"
 $credential = Get-Credential -UserName $user -Message "Your Windows password, so the LLM Judge backend can run while you are logged off"
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings `
     -User $credential.UserName -Password $credential.GetNetworkCredential().Password -RunLevel Limited `
-    -Description "Keeps the LLM Judge backend (http://127.0.0.1:8000) running, also while logged off. Log: $root\logs\backend.log" `
+    -Description "Keeps the LLM Judge backend (http://127.0.0.1:8765) running, also while logged off. Log: $root\logs\backend.log" `
     -Force | Out-Null
 
 Start-ScheduledTask -TaskName $TaskName
@@ -47,13 +47,13 @@ $up = $false
 foreach ($i in 1..30) {
     Start-Sleep -Seconds 2
     try {
-        Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/status" -TimeoutSec 3 | Out-Null
+        Invoke-RestMethod -Uri "http://127.0.0.1:8765/api/status" -TimeoutSec 3 | Out-Null
         $up = $true
         break
     } catch { }
 }
 if ($up) {
-    Write-Host "The backend is up on http://127.0.0.1:8000. It will start with Windows and keep running while you are logged off."
+    Write-Host "The backend is up on http://127.0.0.1:8765. It will start with Windows and keep running while you are logged off."
 } else {
     Write-Host "The task is registered but the backend did not answer within a minute. See $root\logs\backend.log."
 }

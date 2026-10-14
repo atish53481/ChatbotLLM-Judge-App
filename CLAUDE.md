@@ -9,7 +9,7 @@ Chrome side-panel extension + local FastAPI backend that scores any chatbot's an
 ## Commands (Windows, run from repo root)
 
 ```bat
-run-backend.bat                                              :: creates .venv on first run, serves http://127.0.0.1:8000
+run-backend.bat                                              :: creates .venv on first run, serves http://127.0.0.1:8765
 .venv\Scripts\python -m pytest                               :: offline suite, no judge tokens (what CI runs)
 .venv\Scripts\python -m pytest -m smoke                      :: fast wiring checks
 .venv\Scripts\python -m pytest tests/test_app.py::test_name  :: single test

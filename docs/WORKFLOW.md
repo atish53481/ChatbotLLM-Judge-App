@@ -9,7 +9,7 @@ How a judged answer travels from a click in the side panel to a score on the cha
 | Side panel | `ChatbotExtension/sidebar/` | Primary UI: manage chatbots and goldens, run a metric, see the latest scores. |
 | Dashboard tab | `ChatbotExtension/dashboard/` | Chat with the chatbot; latest / trend / case-by-case views. |
 | Service worker | `ChatbotExtension/background.js` | Opens the side panel and the dashboard tab. |
-| Backend | `backend/dashboard/app.py` | FastAPI control plane on `http://127.0.0.1:8000`. |
+| Backend | `backend/dashboard/app.py` | FastAPI control plane on `http://127.0.0.1:8765`. |
 | Judge | `backend/judges/judge.py` | The scoring model — never the chatbot under test. |
 | Metrics catalog | `backend/metrics_catalog.py` | The 25 metrics in 6 groups (incl. 9 Security red-team metrics): direction (≥ / ≤), default threshold, environment presets, what each scores on. |
 | Storage | `backend/storage.py` | SQLite (`judge.db`): targets, run history, documents, judge settings. |
@@ -17,7 +17,7 @@ How a judged answer travels from a click in the side panel to a score on the cha
 
 ```
  side panel ──┐
-              ├── fetch ──► FastAPI (127.0.0.1:8000) ──► judge model (remote API)
+              ├── fetch ──► FastAPI (127.0.0.1:8765) ──► judge model (remote API)
  dashboard ───┘                    │
                                    └──► SQLite judge.db (targets, runs)
 ```
@@ -27,14 +27,14 @@ How a judged answer travels from a click in the side panel to a score on the cha
 ### Starting the backend
 
 Both scripts start the same server (uvicorn, `backend.dashboard.app:app` on
-`127.0.0.1:8000`). They differ in who runs them and what happens when it stops.
+`127.0.0.1:8765`). They differ in who runs them and what happens when it stops.
 
 | | `run-backend.bat` (manual) | `run-backend-service.bat` (always-on) |
 |---|---|---|
 | Run by | You: double-click, or `& '.\run-backend.bat'` in PowerShell | The "LLM Judge Backend" scheduled task, at boot. Not meant to run by hand |
 | Window / output | Console window | None; `logs\backend.log` (older log kept as `backend.old.log` past ~5 MB) |
 | First run | Creates `.venv` and installs `requirements.txt` | Needs `.venv`; logs ".venv is missing" and waits |
-| Port 8000 busy | Stops an older LLM Judge backend so new code loads; other programs are left alone | Waits and checks again every 30 s |
+| Port 8765 busy | Stops an older LLM Judge backend so new code loads; other programs are left alone | Waits and checks again every 30 s |
 | Crash / stop | Prints the error and pauses | Starts it again after 30 s, forever |
 | Stop it | Ctrl+C | `uninstall-backend-task.ps1` (or Task Scheduler) |
 
@@ -68,7 +68,7 @@ powershell -ExecutionPolicy Bypass -File .\install-backend-task.ps1    # asks fo
 powershell -ExecutionPolicy Bypass -File .\uninstall-backend-task.ps1  # removes it again
 ```
 
-With the task installed, `run-backend.bat` still works: it takes over port 8000,
+With the task installed, `run-backend.bat` still works: it takes over port 8765,
 and the service loop waits until the port is free again. Nothing runs while the
 laptop sleeps or is shut down.
 

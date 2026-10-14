@@ -1,7 +1,7 @@
 # LLM Judge — Chrome extension
 
 Judge any chatbot's answers with DeepEval metrics from the Chrome side panel.
-The extension talks only to the local backend at `http://127.0.0.1:8000`.
+The extension talks only to the local backend at `http://127.0.0.1:8765`.
 
 ## Install
 

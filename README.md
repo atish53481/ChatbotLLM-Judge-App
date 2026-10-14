@@ -12,7 +12,7 @@ chat window for the chatbot being judged.
    `JUDGE_BASE_URL=https://api.commandcode.ai/provider/v1`).
 2. Double-click `run-backend.bat`. The first start creates `.venv` and installs the
    packages (a few minutes); later starts take seconds. The backend listens on
-   `http://127.0.0.1:8000`.
+   `http://127.0.0.1:8765`.
 3. Load the extension: see [ChatbotExtension/README.md](ChatbotExtension/README.md).
 
 To add a chatbot, capture one real request from its website and paste it as cURL:

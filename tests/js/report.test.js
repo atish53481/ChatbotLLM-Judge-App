@@ -159,7 +159,7 @@ async function loadReport({ saved = {}, runs = latestRuns() } = {}) {
     location: { search: "?target=1" },
     window: { print: () => printed.push(Date.now()) },
     fetch: async (url) => {
-      const key = url.replace("http://127.0.0.1:8000", "");
+      const key = url.replace("http://127.0.0.1:8765", "");
       if (!(key in responses)) return { ok: false, status: 404, statusText: "Not Found", text: async () => "" };
       return { ok: true, status: 200, text: async () => JSON.stringify(responses[key]) };
     },
