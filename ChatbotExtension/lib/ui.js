@@ -226,13 +226,16 @@ const IN_EXTENSION = Boolean(globalThis.chrome && chrome.storage && chrome.stora
 const STORAGE_PREFIX = "llmJudge:";
 const webListeners = [];
 
-function webRead(key) {
+function parseStored(raw) {
   try {
-    const raw = localStorage.getItem(STORAGE_PREFIX + key);
     return raw === null ? undefined : JSON.parse(raw);
   } catch {
     return undefined;
   }
+}
+
+function webRead(key) {
+  return parseStored(localStorage.getItem(STORAGE_PREFIX + key));
 }
 
 // Like chrome.storage.onChanged: every listener hears every change, the
@@ -242,15 +245,6 @@ function webWrite(key, value) {
   localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(value));
   const changes = { [key]: { oldValue, newValue: value } };
   setTimeout(() => webListeners.forEach((callback) => callback(changes)), 0);
-}
-
-if (!IN_EXTENSION && typeof window !== "undefined" && window.addEventListener) {
-  window.addEventListener("storage", (event) => {
-    if (!event.key || !event.key.startsWith(STORAGE_PREFIX)) return;
-    const parse = (raw) => { try { return raw === null ? undefined : JSON.parse(raw); } catch { return undefined; } };
-    const changes = { [event.key.slice(STORAGE_PREFIX.length)]: { oldValue: parse(event.oldValue), newValue: parse(event.newValue) } };
-    webListeners.forEach((callback) => callback(changes));
-  });
 }
 
 // The selected chatbot, the selected metric and the latest run are shared by
@@ -278,7 +272,7 @@ const settings = {
 
 // A page of this app (path relative to the app root, e.g. "report/report.html").
 function pageUrl(path) {
-  if (IN_EXTENSION && chrome.runtime && chrome.runtime.getURL) return chrome.runtime.getURL(path);
+  if (IN_EXTENSION) return chrome.runtime.getURL(path);
   return new URL(`../${path}`, location.href).href;
 }
 
@@ -291,13 +285,10 @@ function openDashboard() {
 }
 
 // The web app's stand-in for the toolbar badge: a mark in the tab title.
-const BASE_TITLE = typeof document !== "undefined" ? document.title : "";
+const BASE_TITLE = document.title;
 function clearBadge() {
-  if (IN_EXTENSION) {
-    chrome.runtime.sendMessage({ type: "CLEAR_BADGE" }).catch(() => {});
-  } else if (typeof document !== "undefined") {
-    document.title = BASE_TITLE;
-  }
+  if (IN_EXTENSION) chrome.runtime.sendMessage({ type: "CLEAR_BADGE" }).catch(() => {});
+  else document.title = BASE_TITLE;
 }
 
 // Web app only: announces a finished job this browser started, once, even
@@ -317,7 +308,14 @@ async function announceWebJob(job) {
   }
 }
 
-if (!IN_EXTENSION && typeof document !== "undefined" && document.addEventListener) {
+if (!IN_EXTENSION) {
+  // Changes written by the other pane or another tab.
+  window.addEventListener("storage", (event) => {
+    if (!event.key || !event.key.startsWith(STORAGE_PREFIX)) return;
+    const key = event.key.slice(STORAGE_PREFIX.length);
+    const changes = { [key]: { oldValue: parseStored(event.oldValue), newValue: parseStored(event.newValue) } };
+    webListeners.forEach((callback) => callback(changes));
+  });
   document.addEventListener("visibilitychange", () => { if (!document.hidden) clearBadge(); });
 }
 
@@ -447,7 +445,7 @@ async function followJob(target, jobId, onProgress, control = {}) {
     }
     if (job.status !== "queued" && job.status !== "running") {
       if (IN_EXTENSION) chrome.runtime.sendMessage({ type: "JOB_ENDED", jobId }).catch(() => {});
-      else announceWebJob({ ...job, id: job.id ?? jobId }).catch(() => {});
+      else announceWebJob(job).catch(() => {});
       control.jobStatus = job.status;
       control.jobError = job.error || null;
       return job.results;

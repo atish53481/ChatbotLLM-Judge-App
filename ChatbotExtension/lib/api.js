@@ -15,7 +15,7 @@ async function api(path, { method = "GET", body } = {}) {
   try {
     response = await fetch(`${BACKEND_URL}${path}`, init);
   } catch {
-    throw new Error(`Backend not reachable at ${BACKEND_URL.replace(/^https?:\/\//, "")}. Start it with run-backend.bat.`);
+    throw new Error(`Backend not reachable at ${new URL(BACKEND_URL).host}. Start it with run-backend.bat.`);
   }
   const text = await response.text();
   let data = null;
