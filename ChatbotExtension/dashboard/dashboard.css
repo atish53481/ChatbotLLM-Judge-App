@@ -115,11 +115,12 @@ body.dash {
 
 .metric-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  /* min() lets a single card shrink to a side panel narrower than 260px. */
+  grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr));
   gap: 14px;
 }
 .metric-card {
-  display: flex; flex-direction: column; gap: 6px;
+  display: flex; flex-direction: column; gap: 6px; min-width: 0;
   padding: 14px; border: 1px solid var(--border); border-radius: 6px;
   background: var(--surface-1);
 }
@@ -187,13 +188,19 @@ body.dash {
 }
 .case-fields {
   display: grid;
-  grid-template-columns: max-content 1fr;
+  /* Labels are capped so a long one ("Retrieved context (golden reference)")
+     can't push the values out of a narrow card. */
+  grid-template-columns: fit-content(40%) minmax(0, 1fr);
   gap: 4px 10px;
   margin: 4px 0 0;
   font-size: 12px;
 }
-.case-fields dt { font-weight: 600; color: var(--text-secondary); }
-.case-fields dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.case-fields dt { font-weight: 600; color: var(--text-secondary); overflow-wrap: anywhere; }
+.case-fields dd { margin: 0; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Per-case fields hold long answers: label above value, full width. */
+.case-row .case-fields { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+.case-row .case-fields dt { margin-top: 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+.case-row .case-fields dt:first-child { margin-top: 2px; }
 .case-fields ul { margin: 0; padding-left: 16px; }
 .cases-context { font-size: 11px; color: var(--text-secondary); max-width: 320px; overflow-wrap: anywhere; }
 
@@ -274,7 +281,7 @@ body.dash {
 .improve ul { margin: 0; padding-left: 18px; }
 .metric-meaning summary { cursor: pointer; font-weight: 600; }
 .case-filter { margin: 8px 0; }
-.case-row-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.case-row-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
 .case-row.case-failed { border-left: 3px solid var(--status-critical); padding-left: 8px; }
 
 .case-detail {
@@ -292,7 +299,8 @@ body.dash {
   list-style: none;
   margin: 4px 0 0;
   padding: 0;
-  max-height: 260px;
+  max-height: 480px;
+  overflow-x: hidden;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
