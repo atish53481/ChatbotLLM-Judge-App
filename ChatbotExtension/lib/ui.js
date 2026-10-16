@@ -391,6 +391,8 @@ async function runMetrics(target, metricKeys, onProgress, control = {}) {
     },
   });
   watchJob(target, job.job_id, control.metrics || []);
+  // Lets the other page (side panel or dashboard) pick up and show this run.
+  await settings.set("startedJob", { targetId: target.id, jobId: job.job_id, at: Date.now() });
   return followJob(target, job.job_id, onProgress, control);
 }
 

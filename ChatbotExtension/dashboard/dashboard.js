@@ -215,7 +215,11 @@ async function onTargetChanged() {
   renderCases(await settings.get("lastRun", null));
   await Promise.all([renderLatest(), renderTrend()]);
   if (state.view === "history") await renderHistory();
-  // A run started earlier (from here or the side panel) is still going: follow it.
+  await followActiveJob(target);
+}
+
+// A run started elsewhere (from here before a reload, or the side panel) is still going: follow it.
+async function followActiveJob(target) {
   const job = target ? await activeJob(target) : null;
   if (job && !state.running) {
     followRun(target, job.metric_keys, (onProgress, control) => followJob(target, job.id, onProgress, control));
@@ -1036,6 +1040,10 @@ settings.onChange((changes) => {
     renderLatest();
     renderTrend();
     if (state.view === "history") renderHistory();
+  }
+  const started = changes.startedJob && changes.startedJob.newValue;
+  if (started && target && started.targetId === target.id) {
+    followActiveJob(target).catch((error) => setStatus(error.message, true));
   }
   if (changes.selectedTargetId && changes.selectedTargetId.newValue !== (target ? target.id : null)) {
     loadTargets(changes.selectedTargetId.newValue).catch((error) => setStatus(error.message, true));

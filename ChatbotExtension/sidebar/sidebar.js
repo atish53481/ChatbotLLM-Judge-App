@@ -96,8 +96,12 @@ async function onTargetChanged() {
   updateRunButton();
   resetConversationForm();
   await Promise.all([loadMetrics(), loadGoldens(), loadConversations(), renderLatest(), loadDocuments()]);
-  // A run started earlier (here before the panel closed, or from the dashboard)
-  // is still going: show its progress and Stop again.
+  await followActiveJob(target);
+}
+
+// A run started elsewhere (here before the panel closed, or from the dashboard)
+// is still going: show its progress and Stop again.
+async function followActiveJob(target) {
   const job = target ? await activeJob(target) : null;
   if (job && state.runControl === null) {
     const titles = new Map(state.metrics.map((m) => [m.key, m.title]));
@@ -1075,6 +1079,8 @@ settings.onChange((changes) => {
   const target = currentTarget();
   const run = changes.lastRun && changes.lastRun.newValue;
   if (run && target && run.targetId === target.id) renderLatest();
+  const started = changes.startedJob && changes.startedJob.newValue;
+  if (started && target && started.targetId === target.id) followActiveJob(target).catch(() => {});
   if (changes.selectedTargetId && changes.selectedTargetId.newValue !== (target ? target.id : null)) {
     loadTargets(changes.selectedTargetId.newValue).catch((error) => {
       $("status").textContent = error.message;
