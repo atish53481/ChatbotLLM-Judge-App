@@ -163,7 +163,8 @@ answer** on its reply — ad-hoc scores are not saved, so they never enter the t
 
 ## Advanced tools
 
-**Advanced tools** (side panel button, dashboard header) opens a page with:
+**Advanced tools** (side panel button, dashboard header) opens a page with the items below;
+step-by-step instructions are in [docs/ADVANCED_TOOLS.md](docs/ADVANCED_TOOLS.md).
 
 - **Run options**: per-metric settings (Turn Relevancy window, Self-Check samples, attack
   turns), the chatbot's **instructions** for Prompt Alignment, red-team **attack enhancers**
@@ -181,7 +182,7 @@ answer** on its reply — ad-hoc scores are not saved, so they never enter the t
   Activities, Brand Image, Data Privacy, Unauthorized Access) and OWASP LLM Top 10 id.
 - **Simulate a user**: the judge plays a user with a goal against the real chatbot, then
   conversational metrics score it; save the conversation as a fixed scenario.
-- **Generate & review**: golden generation from a help page with DeepEval evolutions,
+- **Generate & review**: golden generation from a help page or a file with DeepEval evolutions,
   quality filtering and styling, saved as drafts that runs skip until you accept them.
 - **Calibrate the judge**: score cases yourself; see how often the judge agrees, and feed
   your scores to G-Eval metrics as examples.

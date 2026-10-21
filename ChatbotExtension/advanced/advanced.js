@@ -508,7 +508,23 @@ $("gen-form").addEventListener("submit", (event) => {
       expected_output_format: $("gen-output-format").value.trim(),
       review: $("gen-review").checked,
     };
-    let doc = await api("/api/documents/url", { method: "POST", body: { theme: themeOf(target), url: $("gen-url").value.trim(), generation } });
+    const file = $("gen-file").files[0];
+    const url = $("gen-url").value.trim();
+    if (!file && !url) throw new Error("Enter a page URL or choose a file.");
+    let doc;
+    if (file) {
+      // Multipart upload: the generation options travel as one JSON form field.
+      const form = new FormData();
+      form.append("theme", themeOf(target));
+      form.append("file", file);
+      form.append("generation", JSON.stringify(generation));
+      const response = await fetch(`${BACKEND_URL}/api/documents`, { method: "POST", body: form });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(`${response.status}: ${data.detail || response.statusText}`);
+      doc = data;
+    } else {
+      doc = await api("/api/documents/url", { method: "POST", body: { theme: themeOf(target), url, generation } });
+    }
     while (!["ready", "error"].includes(doc.status)) {
       $("gen-progress").textContent = `${doc.status}…`;
       await sleep(2000);
