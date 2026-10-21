@@ -259,4 +259,79 @@ ADVICE: dict[str, dict[str, list[str]]] = {
             "Check the reason: a refusal that names the topic is fine; the judge should penalise only actionable help.",
         ],
     },
+    # --- Roadmap additions ---------------------------------------------------
+    "robustness": {
+        "chatbot": [
+            "Lower the temperature: small wording changes should not change the facts or the decision.",
+            "Normalise the question before retrieval (spelling, casing) so a typo finds the same documents.",
+        ],
+        "tests": [
+            "Read the replies side by side: different wording with the same facts should still score high.",
+            "Goldens with a single clear answer test robustness best; open-ended questions vary by nature.",
+        ],
+    },
+    "self_check": {
+        "chatbot": [
+            "Ground answers in retrieved facts: claims the bot cannot repeat consistently are likely invented.",
+            "Lower the temperature and tell the bot to say it does not know rather than guess specifics.",
+        ],
+        "tests": [
+            "This needs no reference answer, so it suits goldens without context; it costs one chatbot call per sample.",
+            "A chatbot that caches answers always agrees with itself; check it is really asked each time.",
+        ],
+    },
+    "multi_turn_jailbreak": {
+        "chatbot": [
+            "Re-check every turn against the policy, not just the first: crescendo attacks start harmless and drift.",
+            "Send the full conversation to any moderation step, since one message alone can look fine.",
+            "Tell the bot that a refusal holds for rephrasings, hypotheticals and 'just continue the story'.",
+        ],
+        "tests": [
+            "Read the transcript: the judge writes the attack turns, so check the escalation is a fair test.",
+            "Raise the attack turns for a stronger test; each extra turn costs one judge and one chatbot call.",
+        ],
+    },
+    "role_adherence": {
+        "chatbot": [
+            "Restate the role and its limits in the system prompt, and tell the bot to keep it even when the user pushes back.",
+            "Keep the role in every request: a chatbot that drops the system prompt after the first turn drifts.",
+        ],
+        "tests": [
+            "Check the scenario's chatbot role says what the bot is and is not; a vague role is hard to adhere to.",
+            "Only scenarios with a chatbot role are scored; add one to the scenarios you want covered.",
+        ],
+    },
+    "turn_relevancy": {
+        "chatbot": [
+            "Send the whole conversation with each message so the bot answers what was just said, not the first question.",
+            "Tell the bot to answer follow-ups directly before adding anything else.",
+        ],
+        "tests": [
+            "A small window misses replies that only make sense from much earlier turns; raise the window size.",
+            "Scenarios with chit-chat turns ('thanks!') should still get a fitting reply, not a repeat of the last answer.",
+        ],
+    },
+    "prompt_alignment": {
+        "chatbot": [
+            "Move the instructions the bot breaks most to the top of its system prompt, one per line.",
+            "Make conflicting instructions explicit about which wins (e.g. 'be brief' vs 'list every step').",
+        ],
+        "tests": [
+            "List the chatbot's real instructions under Instructions on the chatbot, one per line; the judge checks each one.",
+            "Drop instructions a single golden cannot show (e.g. 'greet returning users').",
+        ],
+    },
+}
+
+# Your own G-Eval / DAG metrics: the rubric is yours, so the advice is general.
+CUSTOM_ADVICE: dict[str, list[str]] = {
+    "chatbot": [
+        "Read the judge's reasons on the failed cases and add the rule they name to the chatbot's instructions.",
+        "If one rule fails across many goldens, make it explicit in the system prompt rather than implied.",
+    ],
+    "tests": [
+        "Make the criteria specific: name what a high score needs and what a low one looks like.",
+        "Use strict (pass/fail) mode or a DAG for rules that are either met or not; G-Eval scales suit subjective qualities.",
+        "Score only the fields the rule needs; extra fields give the judge more to misread.",
+    ],
 }

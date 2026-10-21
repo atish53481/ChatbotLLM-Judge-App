@@ -13,23 +13,34 @@ from typing import Literal
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from backend import storage, usage
+from backend.dashboard import hardening
+from backend.dashboard.compare import compare_runs
 from backend.dashboard.jobs import JobFailed, JobQueue
-from backend.dashboard.runner import NEEDS_OWN_SOURCES, RunCancelled, judge_one, run_spec
+from backend.dashboard.pairwise import run_pairwise
+from backend.dashboard.runner import (
+    NEEDS_OWN_SOURCES, RunCancelled, missing_target_fields, judge_one, run_spec,
+)
+from backend.datasets import attack_enhancers
 from backend.datasets import conversations as conversations_store
+from backend.datasets import custom_metrics as custom_store
 from backend.datasets import goldens as goldens_store
+from backend.datasets import simulator
 from backend.datasets import security_probes as probes_store
 from backend.judges.judge import build_judge, judge_config
 from backend.metrics_catalog import (
-    ALL_SPECS, DEFAULT_THEME, ENVIRONMENTS, GROUPS, PROBE_DATASETS, SPECS_BY_KEY, UI_CATEGORIES,
-    UI_CATEGORY_LABELS,
+    DEFAULT_THEME, ENVIRONMENTS, GROUPS, PROBE_DATASETS, SPECS_BY_KEY, UI_CATEGORIES,
+    UI_CATEGORY_LABELS, all_specs, ask, get_spec as _catalog_spec, metric_options,
 )
 from backend.rag.enhance import enhance_document
+from backend.export_suite import build_suite, zip_suite
+from backend.redteam_coverage import coverage_report
 from backend.rag.fetch import fetch_page_text
+from backend.rag.generation_options import EVOLUTION_NAMES
 from backend.targets.base import ChatbotClient
 from backend.targets.curl import (
     MESSAGE_PLACEHOLDER,
@@ -60,6 +71,11 @@ def extension_origin_regex(extension_id: str | None) -> str:
     return r"^chrome-extension://[a-z]{32}$"
 
 
+def get_spec(key: str):
+    """A shipped metric, else one of the user's own (custom_metrics)."""
+    return SPECS_BY_KEY.get(key) or _catalog_spec(key)
+
+
 def generate_goldens_from_document(*args, **kwargs) -> int:
     # Imported on first use: sentence-transformers/transformers take ~40s to
     # import, which would otherwise stall server startup.
@@ -68,7 +84,7 @@ def generate_goldens_from_document(*args, **kwargs) -> int:
     return generate(*args, **kwargs)
 
 
-app = FastAPI(title="Chrome Sidebar LLM Judge")
+app = FastAPI(title="Chrome Sidebar LLM Judge", version=hardening.APP_VERSION)
 # Only the extension may call this API: with "*", any page the user visits
 # could read stored target API keys and spend judge credits. Request bodies
 # must be JSON (FastAPI refuses other content types), which forces a CORS
@@ -81,6 +97,9 @@ app.add_middleware(
 )
 # Blocks DNS-rebinding pages that reach 127.0.0.1 under their own host name.
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
+# Request log (paths and status only), body size limit, security headers and a
+# JSON 500 for unexpected errors (backend/dashboard/hardening.py).
+hardening.install(app)
 app.mount("/app", StaticFiles(directory=WEB_APP_DIR, html=True), name="web-app")
 
 
@@ -98,11 +117,14 @@ _progress_lock = threading.Lock()
 
 
 def _run_job_metric(job: dict, metric_key: str, on_progress) -> dict:
-    """Runs one metric of a background job, exactly as /api/run does."""
+    """Runs one metric of a background job, exactly as /api/run does. A job
+    with a "kind" option is a pairwise comparison instead (/api/pairwise)."""
+    if job["options"].get("kind") == "pairwise":
+        return _run_pairwise_job(job, on_progress)
     row = storage.get_target(_conn, job["target_id"])
     if row is None:
         raise JobFailed("chatbot deleted")
-    spec = SPECS_BY_KEY.get(metric_key)
+    spec = get_spec(metric_key)
     if spec is None:
         return {"key": metric_key, "status": "error", "error": "metric not found", "score": None, "rows": []}
     try:
@@ -120,7 +142,41 @@ def _run_job_metric(job: dict, metric_key: str, on_progress) -> dict:
         threshold=(options.get("thresholds") or {}).get(metric_key),
         on_progress=on_progress, persona=config.get("persona", ""), limit=options.get("limit"),
         probe_set=config.get("probe_set", ""), check_consistency=bool(options.get("check_consistency")),
+        metric_kwargs=metric_options(spec, (options.get("settings") or {}).get(metric_key), config),
+        enhancements=options.get("enhancements") or [], enhancement_options=options.get("enhancement_options"),
+        max_latency_s=options.get("max_latency_s"), price_per_mtok=_judge_price(),
+        calibration_examples=_calibration_examples(job["target_id"], metric_key)
+        if options.get("use_calibration") else None,
     )
+
+
+def _run_pairwise_job(job: dict, on_progress) -> dict:
+    options = job["options"]
+    row_a = storage.get_target(_conn, job["target_id"])
+    row_b = storage.get_target(_conn, options["target_b"])
+    if row_a is None or row_b is None:
+        raise JobFailed("chatbot deleted")
+    try:
+        judge = build_judge(**_judge_overrides())
+        target_a, target_b = _client_or_400(row_a), _client_or_400(row_b)
+    except RuntimeError as e:
+        raise JobFailed(str(e)) from e
+    except HTTPException as e:
+        raise JobFailed(str(e.detail)) from e
+    theme = row_a["config"].get("theme") or DEFAULT_THEME
+    items = goldens_store.load_goldens(theme=theme)
+    if options.get("limit"):
+        items = items[:options["limit"]]
+    if not items:
+        return {"key": "pairwise", "status": "error", "error": f"No goldens in theme {theme!r}.",
+                "score": None, "rows": []}
+    result = run_pairwise(judge, target_a, target_b, items, prompt=ask,
+                          criteria=options.get("criteria", ""), on_progress=on_progress,
+                          names=(row_a["name"], row_b["name"]))
+    result["theme"] = theme
+    if result["status"] == "done":
+        result["id"] = storage.add_pairwise_run(_conn, row_a["id"], row_b["id"], result)
+    return result
 
 
 # Background runs: one job at a time on a worker thread (backend/dashboard/jobs.py).
@@ -180,6 +236,15 @@ class RunRequest(BaseModel):
     limit: int | None = Field(default=None, ge=1)
     # Score every reply twice to measure how steady the judge is (~2x judge tokens).
     check_consistency: bool = False
+    # The metric's tunable settings (e.g. Turn Relevancy's window_size); see /api/metrics.
+    settings: dict = Field(default_factory=dict)
+    # Red-team probes only: enhanced variants to add (see /api/security/enhancers).
+    enhancements: list[str] = Field(default_factory=list, max_length=10)
+    enhancement_options: dict = Field(default_factory=dict)
+    # Fail the run when 95% of chatbot replies are not back within this many seconds.
+    max_latency_s: float | None = Field(default=None, gt=0, le=600)
+    # G-Eval metrics only: add this chatbot's human-scored cases as few-shot examples.
+    use_calibration: bool = False
 
 
 class RunCancel(BaseModel):
@@ -347,6 +412,17 @@ class JudgeSettings(BaseModel):
     clear_key: bool = False
 
 
+_PRICE_META = "judge_price_per_mtok"
+
+
+def _judge_price() -> float | None:
+    value = storage.get_meta(_conn, _PRICE_META)
+    try:
+        return float(value) if value else None
+    except ValueError:
+        return None
+
+
 @app.get("/api/judge/settings")
 def api_get_judge_settings():
     overrides = _judge_overrides()
@@ -359,6 +435,23 @@ def api_get_judge_settings():
         # "panel" when saved from the side panel, "env" when it comes from .env.
         "key_source": "panel" if "api_key" in overrides else ("env" if config["api_key"] else None),
     }
+
+
+class JudgePrice(BaseModel):
+    # USD per million judge tokens, for the cost shown with each run; null clears it.
+    price_per_mtok: float | None = Field(default=None, ge=0, le=1000)
+
+
+@app.get("/api/judge/price")
+def api_get_judge_price():
+    return {"price_per_mtok": _judge_price()}
+
+
+@app.put("/api/judge/price")
+def api_put_judge_price(body: JudgePrice):
+    price = body.price_per_mtok
+    storage.set_meta(_conn, _PRICE_META, f"{price:g}" if price else None)
+    return api_get_judge_price()
 
 
 @app.put("/api/judge/settings")
@@ -391,6 +484,16 @@ def api_test_judge_settings(body: JudgeSettings):
         return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:400]}"}
     text = reply[0] if isinstance(reply, tuple) else reply
     return {"ok": True, "model": judge_config(**overrides)["model"], "reply": str(text)[:200]}
+
+
+@app.get("/api/health")
+def api_health():
+    """Liveness for monitoring: 200 while the database answers, 503 if not."""
+    worker = jobs._thread
+    status, body = hardening.health(
+        _conn, judge_configured=bool(judge_config(**_judge_overrides())["api_key"]),
+        worker_alive=worker.is_alive() if worker is not None else None)
+    return JSONResponse(status_code=status, content=body)
 
 
 @app.get("/api/status")
@@ -446,12 +549,42 @@ def api_clear_target_runs(target_id: int):
     return {"target_id": target_id, "cleared": cleared}
 
 
+class GenerationOptions(BaseModel):
+    """Optional Synthesizer settings (backend/rag/generate.py); all empty keeps
+    DeepEval's defaults. review saves the goldens as drafts to accept first."""
+    evolutions: list[str] = Field(default_factory=list, max_length=7)
+    num_evolutions: int | None = Field(default=None, ge=1, le=5)
+    quality_threshold: float | None = Field(default=None, ge=0, le=1)
+    max_retries: int | None = Field(default=None, ge=0, le=10)
+    scenario: str = Field(default="", max_length=500)
+    task: str = Field(default="", max_length=500)
+    input_format: str = Field(default="", max_length=500)
+    expected_output_format: str = Field(default="", max_length=500)
+    review: bool = False
+
+
+def _generation_options(options: GenerationOptions | None) -> dict:
+    if options is None:
+        return {}
+    data = {k: v for k, v in options.model_dump().items() if v not in (None, "", [], False)}
+    unknown = [e for e in data.get("evolutions", []) if e not in EVOLUTION_NAMES]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"unknown evolution: {', '.join(unknown)}")
+    return data
+
+
 @app.post("/api/documents")
 def api_upload_document(
-    theme: str = Form(...), file: UploadFile = File(...), enhance: bool = Form(True)
+    theme: str = Form(...), file: UploadFile = File(...), enhance: bool = Form(True),
+    generation: str = Form(""),
 ):
     """Saves the upload and starts golden generation in the background: the
-    response is the document row (status "queued"); poll GET /api/documents/{id}."""
+    response is the document row (status "queued"); poll GET /api/documents/{id}.
+    generation: optional JSON of GenerationOptions."""
+    try:
+        options = _generation_options(GenerationOptions.model_validate_json(generation)) if generation else {}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"invalid generation options: {e}") from e
     try:
         judge = build_judge(**_judge_overrides())
     except RuntimeError as e:
@@ -470,7 +603,7 @@ def api_upload_document(
     dest = theme_dir / f"{document_id}_{_storable_stem(safe_filename)}{extension}"
     with dest.open("wb") as f:
         shutil.copyfileobj(file.file, f)
-    _start_job(lambda: _run_document_job(document_id, dest, theme, safe_filename, judge, enhance))
+    _start_job(lambda: _run_document_job(document_id, dest, theme, safe_filename, judge, enhance, options))
     return storage.get_document(_conn, document_id)
 
 
@@ -480,7 +613,8 @@ def _start_job(job) -> None:
     threading.Thread(target=job, daemon=True).start()
 
 
-def _run_document_job(document_id: int, dest: Path, theme: str, source: str, judge, enhance: bool) -> None:
+def _run_document_job(document_id: int, dest: Path, theme: str, source: str, judge, enhance: bool,
+                      options: dict | None = None) -> None:
     """queued -> enhancing (the judge rewrites the text as clean reference prose)
     -> generating (DeepEval's Synthesizer) -> ready | error."""
     source_path = dest
@@ -496,7 +630,7 @@ def _run_document_job(document_id: int, dest: Path, theme: str, source: str, jud
         if source_path != dest:
             storage.set_document_enhanced(_conn, document_id, str(source_path))
     storage.set_document_status(_conn, document_id, "generating")
-    _generate_for_document(document_id, source_path, theme, source, judge)
+    _generate_for_document(document_id, source_path, theme, source, judge, options)
 
 
 def _storable_stem(name: str) -> str:
@@ -507,14 +641,16 @@ def _storable_stem(name: str) -> str:
     return stem or "document"
 
 
-def _generate_for_document(document_id: int, dest: Path, theme: str, source: str, judge) -> None:
+def _generate_for_document(document_id: int, dest: Path, theme: str, source: str, judge,
+                           options: dict | None = None) -> None:
     """Runs golden generation for a saved document and records the outcome.
     The run replaces whatever this document generated before, so re-uploading
     or regenerating changes the dataset instead of stacking a second copy on
     it. A run that creates nothing is an error the user needs to see."""
     goldens_store.delete_generated_for(theme, source_document=source, source_document_id=document_id)
     try:
-        created = generate_goldens_from_document(str(dest), theme, source, judge, document_id=document_id)
+        extra = {"options": options} if options else {}
+        created = generate_goldens_from_document(str(dest), theme, source, judge, document_id=document_id, **extra)
     except Exception as e:  # noqa: BLE001 - any generation failure is reported, not a 500
         storage.set_document_status(_conn, document_id, "error", f"{type(e).__name__}: {e}", goldens_created=0)
         return
@@ -533,6 +669,7 @@ class UrlDocument(BaseModel):
     theme: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     url: str = Field(min_length=1, max_length=2000)
     enhance: bool = True
+    generation: GenerationOptions | None = None
 
 
 @app.post("/api/documents/url")
@@ -553,7 +690,8 @@ def api_document_from_url(body: UrlDocument):
     host = re.sub(r"[^A-Za-z0-9.-]", "_", urlparse(final_url).netloc) or "page"
     dest = theme_dir / f"{document_id}_{host}.txt"
     dest.write_text(text, encoding="utf-8")
-    _start_job(lambda: _run_document_job(document_id, dest, body.theme, final_url, judge, body.enhance))
+    options = _generation_options(body.generation)
+    _start_job(lambda: _run_document_job(document_id, dest, body.theme, final_url, judge, body.enhance, options))
     return storage.get_document(_conn, document_id)
 
 
@@ -585,6 +723,7 @@ class DocumentRegenerate(BaseModel):
     """Empty on purpose: a JSON body forces the CORS preflight, like every other POST."""
 
     enhance: bool = True
+    generation: GenerationOptions | None = None
 
 
 @app.post("/api/documents/{document_id}/regenerate")
@@ -604,7 +743,9 @@ def api_regenerate_document(document_id: int, body: DocumentRegenerate):
     if not dest.is_file():
         raise HTTPException(status_code=409, detail="the uploaded file is gone; upload it again")
     storage.set_document_status(_conn, document_id, "queued")
-    _start_job(lambda: _run_document_job(document_id, dest, doc["theme"], doc["filename"], judge, body.enhance))
+    options = _generation_options(body.generation)
+    _start_job(lambda: _run_document_job(document_id, dest, doc["theme"], doc["filename"], judge, body.enhance,
+                                         options))
     return storage.get_document(_conn, document_id)
 
 
@@ -619,6 +760,17 @@ def api_delete_document(document_id: int):
 @app.get("/api/goldens")
 def api_list_goldens(theme: str | None = None):
     return goldens_store.load_goldens(theme=theme)
+
+
+class GoldenReview(BaseModel):
+    golden_ids: list[str] = Field(min_length=1, max_length=500)
+    action: Literal["accept", "reject"]
+
+
+@app.post("/api/goldens/review")
+def api_review_goldens(body: GoldenReview):
+    """Accepts generated drafts (runs start sending them) or rejects them (deleted)."""
+    return {"changed": goldens_store.review_goldens(body.golden_ids, body.action)}
 
 
 @app.get("/api/goldens/health")
@@ -730,6 +882,57 @@ def api_reset_probes(_body: GoldenReset):
     return {"restored": probes_store.reset_to_defaults()}
 
 
+class CustomMetricFields(BaseModel):
+    """One of the user's own metrics (backend/datasets/custom_metrics.py)."""
+    name: str = Field(min_length=1, max_length=80)
+    kind: Literal["geval", "dag"] = "geval"
+    description: str = Field(default="", max_length=300)
+    criteria: str = Field(default="", max_length=4000)
+    evaluation_steps: list[str] = Field(default_factory=list, max_length=20)
+    params: list[str] = Field(default_factory=lambda: ["input", "actual_output"], max_length=5)
+    strict: bool = False
+    threshold: float = Field(default=0.7, ge=0, le=1)
+    dataset: str = ""
+    dag: dict | None = None
+
+
+@app.get("/api/custom-metrics")
+def api_list_custom_metrics():
+    return custom_store.load_metrics()
+
+
+@app.post("/api/custom-metrics")
+def api_add_custom_metric(body: CustomMetricFields):
+    try:
+        return custom_store.add_metric(body.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@app.put("/api/custom-metrics/{metric_id}")
+def api_update_custom_metric(metric_id: str, body: CustomMetricFields):
+    try:
+        row = custom_store.update_metric(metric_id, body.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if row is None:
+        raise HTTPException(status_code=404, detail="custom metric not found")
+    return row
+
+
+@app.delete("/api/custom-metrics/{metric_id}")
+def api_delete_custom_metric(metric_id: str):
+    if not custom_store.delete_metric(metric_id):
+        raise HTTPException(status_code=404, detail="custom metric not found")
+    return {"deleted": metric_id}
+
+
+@app.post("/api/custom-metrics/reset")
+def api_reset_custom_metrics(_body: GoldenReset):
+    """Restores the shipped examples; the user's other metrics are kept."""
+    return {"restored": custom_store.reset_to_defaults()}
+
+
 class UsageReset(BaseModel):
     """Empty on purpose: a JSON body forces the CORS preflight, like every other POST."""
 
@@ -788,7 +991,7 @@ def api_list_metrics(target_id: int | None = None):
     a threshold per environment (Local / PR / Staging / Production), the card
     copy, and how many cases each metric would run for the given target (its
     theme and persona)."""
-    theme, persona, probe_set = DEFAULT_THEME, "", ""
+    theme, persona, probe_set, config = DEFAULT_THEME, "", "", {}
     own_sources = True  # without a target, count every metric's cases
     if target_id is not None:
         config = _target_or_404(target_id)["config"]
@@ -797,9 +1000,18 @@ def api_list_metrics(target_id: int | None = None):
         probe_set = config.get("probe_set", "")
         own_sources = bool(config.get("context_path"))
 
-    def unavailable(s) -> str | None:
-        return NEEDS_OWN_SOURCES if s.needs_own_sources and not own_sources else None
+    target_config = config if target_id is not None else None
 
+    def unavailable(s) -> str | None:
+        if s.needs_own_sources and not own_sources:
+            return NEEDS_OWN_SOURCES
+        if target_config is not None and s.needs_target:
+            missing = missing_target_fields(s, metric_options(s, None, target_config))
+            if missing:
+                return missing
+        return None
+
+    custom_ids = {row["key"]: row["id"] for row in custom_store.load_metrics()}
     return [
         {
             "key": s.key,
@@ -829,9 +1041,14 @@ def api_list_metrics(target_id: int | None = None):
             if s.dataset_name in PROBE_DATASETS else None,
             # How to improve it when it fails: steps for the chatbot and for the test.
             "improve": s.improve,
+            # Knobs the user may tune per run, and target fields the metric reads.
+            "settings": s.settings,
+            "needs_target": list(s.needs_target),
+            # The user's own metric (editable at /api/custom-metrics), else None.
+            "custom_id": custom_ids.get(s.key),
         }
         # Grouped the way both UIs show them: by dashboard category, in chip order.
-        for s in sorted(ALL_SPECS, key=lambda spec: UI_CATEGORIES.index(spec.ui_category))
+        for s in sorted(all_specs(), key=lambda spec: UI_CATEGORIES.index(spec.ui_category))
     ]
 
 
@@ -843,7 +1060,7 @@ def api_metric_environments():
 @app.post("/api/run")
 def api_run(req: RunRequest):
     row = _target_or_404(req.target_id)
-    spec = SPECS_BY_KEY.get(req.metric_key)
+    spec = get_spec(req.metric_key)
     if spec is None:
         raise HTTPException(status_code=404, detail="metric not found")
     target = _client_or_400(row)
@@ -867,6 +1084,11 @@ def api_run(req: RunRequest):
             spec, judge, target, req.target_id, _conn, theme=theme, threshold=req.threshold,
             on_progress=on_progress, persona=row["config"].get("persona", ""), limit=req.limit,
             probe_set=row["config"].get("probe_set", ""), check_consistency=req.check_consistency,
+            metric_kwargs=metric_options(spec, req.settings, row["config"]),
+            enhancements=req.enhancements, enhancement_options=req.enhancement_options,
+            max_latency_s=req.max_latency_s, price_per_mtok=_judge_price(),
+            calibration_examples=_calibration_examples(req.target_id, req.metric_key)
+            if req.use_calibration else None,
         )
     finally:
         if req.run_id:
@@ -899,6 +1121,14 @@ class JobCreate(BaseModel):
     thresholds: dict[str, float] = Field(default_factory=dict)
     limit: int | None = Field(default=None, ge=1)
     check_consistency: bool = False
+    # Per metric key: that metric's tunable settings ({"turn_relevancy": {"window_size": 5}}).
+    settings: dict[str, dict] = Field(default_factory=dict)
+    enhancements: list[str] = Field(default_factory=list, max_length=10)
+    enhancement_options: dict = Field(default_factory=dict)
+    # Fail the run when 95% of chatbot replies are not back within this many seconds.
+    max_latency_s: float | None = Field(default=None, gt=0, le=600)
+    # G-Eval metrics only: add this chatbot's human-scored cases as few-shot examples.
+    use_calibration: bool = False
 
 
 class JobCancel(BaseModel):
@@ -911,15 +1141,21 @@ def api_create_job(body: JobCreate):
     _target_or_404(body.target_id)
     if not body.metric_keys:
         raise HTTPException(status_code=400, detail="pick at least one metric")
-    unknown = [k for k in body.metric_keys if k not in SPECS_BY_KEY]
+    unknown = [k for k in body.metric_keys if get_spec(k) is None]
     if unknown:
         raise HTTPException(status_code=404, detail=f"metric not found: {', '.join(unknown)}")
+    bad = [e for e in body.enhancements if e not in attack_enhancers.ENHANCERS]
+    if bad:
+        raise HTTPException(status_code=400, detail=f"unknown enhancement: {', '.join(bad)}")
     try:
         build_judge(**_judge_overrides())
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
     job_id = jobs.submit(body.target_id, body.metric_keys, {
         "thresholds": body.thresholds, "limit": body.limit, "check_consistency": body.check_consistency,
+        "settings": body.settings,
+        "enhancements": body.enhancements, "enhancement_options": body.enhancement_options,
+        "max_latency_s": body.max_latency_s, "use_calibration": body.use_calibration,
     })
     return {"job_id": job_id, "status": "queued"}
 
@@ -950,7 +1186,7 @@ def api_judge(body: JudgeOneRequest):
     Reference-based metrics need a golden answer or context; when the question
     is one of the theme's goldens, its row supplies them.
     """
-    spec = SPECS_BY_KEY.get(body.metric_key)
+    spec = get_spec(body.metric_key)
     if spec is None:
         raise HTTPException(status_code=404, detail="metric not found")
     expected, context = body.expected_answer, body.context
@@ -969,7 +1205,7 @@ def api_judge(body: JudgeOneRequest):
         raise HTTPException(status_code=503, detail=str(e)) from e
     return judge_one(
         spec, judge, body.question, body.actual_output, expected, context,
-        threshold=body.threshold,
+        threshold=body.threshold, metric_kwargs=metric_options(spec, None, {}),
     )
 
 
@@ -1001,3 +1237,213 @@ def api_history(target_id: int, metric_key: str):
         row.pop("result_json", None)  # the trend needs scores, not every case
     return rows
 
+
+@app.get("/api/runs/compare")
+def api_compare_runs(a: int, b: int):
+    """Two runs of one metric, case by case: regressions, fixes, score deltas."""
+    run_a, run_b = storage.get_run(_conn, a), storage.get_run(_conn, b)
+    if run_a is None or run_b is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    try:
+        return compare_runs(run_a, run_b)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+class PairwiseCreate(BaseModel):
+    target_a: int
+    target_b: int
+    criteria: str = Field(default="", max_length=2000)
+    limit: int | None = Field(default=None, ge=1)
+
+
+@app.post("/api/pairwise")
+def api_create_pairwise(body: PairwiseCreate):
+    """Queues an A/B comparison of two chatbots on chatbot A's goldens. Poll
+    GET /api/jobs/{job_id}; each case is judged in both orders (position swap)."""
+    if body.target_a == body.target_b:
+        raise HTTPException(status_code=400, detail="pick two different chatbots")
+    _target_or_404(body.target_a)
+    _target_or_404(body.target_b)
+    try:
+        build_judge(**_judge_overrides())
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    job_id = jobs.submit(body.target_a, ["pairwise"], {
+        "kind": "pairwise", "target_b": body.target_b, "criteria": body.criteria, "limit": body.limit,
+    })
+    return {"job_id": job_id, "status": "queued"}
+
+
+@app.get("/api/pairwise")
+def api_list_pairwise(target_id: int):
+    return storage.list_pairwise_runs(_conn, target_id)
+
+
+@app.get("/api/security/enhancers")
+def api_list_enhancers():
+    """Attack enhancers a run can add to its red-team probes, and their options."""
+    return {
+        "enhancers": [{"key": key, "label": label, "uses_judge": uses_judge}
+                      for key, (label, uses_judge) in attack_enhancers.ENHANCERS.items()],
+        "many_shot_counts": list(attack_enhancers.MANY_SHOT_COUNTS),
+        "languages": list(attack_enhancers.LANGUAGES),
+    }
+
+
+@app.get("/api/security/coverage")
+def api_security_coverage(target_id: int):
+    """Latest red-team results by risk category, mapped to the OWASP LLM Top 10."""
+    _target_or_404(target_id)
+    titles = {s.key: s.title for s in all_specs()}
+    return coverage_report(storage.latest_runs(_conn, target_id), titles)
+
+
+class SimulateRequest(BaseModel):
+    target_id: int
+    # A saved scenario to start from, or the fields below.
+    conversation_id: str | None = None
+    scenario: str = Field(default="", max_length=2000)
+    expected_outcome: str = Field(default="", max_length=2000)
+    chatbot_role: str = Field(default="", max_length=500)
+    user_persona: str = Field(default="", max_length=500)
+    max_turns: int = Field(default=simulator.DEFAULT_TURNS, ge=1, le=simulator.MAX_TURNS)
+    # Conversational metrics to score the finished conversation with.
+    metric_keys: list[str] = Field(default_factory=list, max_length=10)
+    # Save the simulated user turns as a fixed scenario (for regression runs).
+    save_as: str = Field(default="", max_length=200)
+
+
+@app.post("/api/simulate")
+def api_simulate(body: SimulateRequest):
+    """The judge plays the user against the chatbot, then scores the conversation.
+    Costs one judge call per turn plus the metrics; nothing goes on the trend."""
+    row = _target_or_404(body.target_id)
+    scenario = {"scenario": body.scenario, "expected_outcome": body.expected_outcome,
+                "chatbot_role": body.chatbot_role, "user_persona": body.user_persona}
+    theme = row["config"].get("theme") or DEFAULT_THEME
+    if body.conversation_id:
+        saved = next((c for c in conversations_store.load_conversations()
+                      if c["id"] == body.conversation_id), None)
+        if saved is None:
+            raise HTTPException(status_code=404, detail="conversation scenario not found")
+        theme = saved["theme"]
+        scenario = {**{k: saved.get(k, "") for k in ("scenario", "expected_outcome", "chatbot_role", "name")},
+                    **{k: v for k, v in scenario.items() if v}}
+    if not (scenario.get("scenario") or scenario.get("expected_outcome")):
+        raise HTTPException(status_code=400, detail="describe the scenario or the expected outcome")
+    specs = [get_spec(k) for k in body.metric_keys]
+    bad = [k for k, s in zip(body.metric_keys, specs) if s is None or s.kind != "conversation"]
+    if bad:
+        raise HTTPException(status_code=400, detail=f"not a conversational metric: {', '.join(bad)}")
+    target = _client_or_400(row)
+    try:
+        judge = build_judge(**_judge_overrides())
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    try:
+        result = simulator.simulate(judge, target, scenario, body.max_turns)
+    except Exception as e:  # noqa: BLE001 - the chatbot or the judge failed mid-conversation
+        raise HTTPException(status_code=502, detail=f"{type(e).__name__}: {e}") from e
+    if not result["turns"]:
+        raise HTTPException(status_code=502, detail="the simulated user wrote no message")
+    result["scores"] = [simulator.score_conversation(s, judge, scenario, result["turns"],
+                                                     metric_kwargs=metric_options(s, None, row["config"]))
+                        for s in specs]
+    if body.save_as.strip():
+        result["saved"] = conversations_store.add_conversation({
+            "theme": theme, "name": body.save_as, "scenario": scenario.get("scenario", ""),
+            "chatbot_role": scenario.get("chatbot_role", ""),
+            "expected_outcome": scenario.get("expected_outcome", ""), "user_turns": result["user_turns"],
+        })
+    return result
+
+
+@app.get("/api/export/suite")
+def api_export_suite(target_id: int, metrics: str = "", env: str = "pr"):
+    """A zip with a pytest + GitHub Actions suite that runs these metrics on
+    this chatbot's goldens with the environment's thresholds. Header values are
+    left out (see backend/export_suite.py)."""
+    row = _target_or_404(target_id)
+    if env not in ENVIRONMENTS:
+        raise HTTPException(status_code=400, detail=f"env must be one of: {', '.join(ENVIRONMENTS)}")
+    keys = [k for k in metrics.split(",") if k.strip()]
+    specs = [get_spec(k.strip()) for k in keys] if keys else list(all_specs())
+    if any(s is None for s in specs):
+        raise HTTPException(status_code=404, detail="metric not found")
+    thresholds = {s.key: s.presets().get(env, s.threshold) for s in specs}
+    theme = row["config"].get("theme") or DEFAULT_THEME
+    files = build_suite(row, specs, thresholds, env, goldens_store.load_goldens(theme=theme))
+    name = re.sub(r"[^A-Za-z0-9_-]+", "_", row["name"]).strip("_") or "chatbot"
+    return Response(zip_suite(files), media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="llm-evals-{name}.zip"'})
+
+
+def _calibration_examples(target_id: int, metric_key: str) -> list[dict]:
+    return storage.list_labels(_conn, target_id, metric_key)
+
+
+def _agreement(labels: list[dict]) -> dict | None:
+    """How close the judge was to the human: mean absolute gap, share within
+    0.2, and how often both gave the same pass/fail verdict."""
+    scored = [lb for lb in labels if lb["judge_score"] is not None]
+    if not scored:
+        return None
+    gaps = [abs(lb["judge_score"] - lb["human_score"]) for lb in scored]
+
+    def human_passes(lb):
+        if lb["threshold"] is None:
+            return lb["human_score"] >= 0.5
+        return lb["human_score"] <= lb["threshold"] if lb["direction"] == "lower" else lb["human_score"] >= lb["threshold"]
+
+    same = [bool(lb["judge_passed"]) == human_passes(lb) for lb in scored]
+    return {"n": len(scored), "mean_abs_gap": round(sum(gaps) / len(gaps), 4),
+            "within_0_2": round(sum(g <= 0.2 for g in gaps) / len(gaps), 4),
+            "verdict_agreement": round(sum(same) / len(same), 4)}
+
+
+class LabelCreate(BaseModel):
+    run_id: int
+    case_index: int = Field(ge=0)
+    # The score the human would give this case, on the metric's own scale.
+    human_score: float = Field(ge=0, le=1)
+    note: str = Field(default="", max_length=500)
+
+
+@app.post("/api/calibration")
+def api_add_label(body: LabelCreate):
+    """Scores one judged case by hand; the label is used for agreement and,
+    with use_calibration, as a few-shot example for G-Eval metrics."""
+    run = storage.get_run(_conn, body.run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    result = json.loads(run["result_json"]) if run.get("result_json") else {}
+    rows = result.get("rows") or []
+    if body.case_index >= len(rows):
+        raise HTTPException(status_code=404, detail="case not found in this run")
+    case = rows[body.case_index]
+    label_id = storage.upsert_label(_conn, {
+        "target_id": run["target_id"], "metric_key": run["metric_key"], "run_id": run["id"],
+        "case_index": body.case_index, "question": case.get("question", ""),
+        "actual_output": case.get("actual_output", ""), "judge_score": case.get("score"),
+        "judge_passed": int(bool(case.get("passed"))), "threshold": result.get("threshold"),
+        "direction": result.get("direction"), "human_score": body.human_score, "note": body.note,
+    })
+    return {"id": label_id}
+
+
+@app.get("/api/calibration")
+def api_list_labels(target_id: int, metric_key: str | None = None):
+    labels = storage.list_labels(_conn, target_id, metric_key)
+    by_metric: dict[str, list[dict]] = {}
+    for lb in labels:
+        by_metric.setdefault(lb["metric_key"], []).append(lb)
+    return {"labels": labels, "agreement": _agreement(labels),
+            "by_metric": {k: _agreement(v) for k, v in by_metric.items()}}
+
+
+@app.delete("/api/calibration/{label_id}")
+def api_delete_label(label_id: int):
+    if not storage.delete_label(_conn, label_id):
+        raise HTTPException(status_code=404, detail="label not found")
+    return {"deleted": label_id}

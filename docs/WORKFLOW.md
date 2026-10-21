@@ -200,6 +200,32 @@ Ad-hoc scores are **not stored**, so the trend charts stay a record of golden-se
 - Charts re-render on OS dark-mode changes; each dashboard chart has a table
   fallback.
 
+## 6b. Advanced tools (roadmap features)
+
+All on `ChatbotExtension/advanced/` (opened from the side panel or the dashboard header).
+
+- **Run options** are saved in the `runOptions` setting; `ui.js runMetrics` adds them to every
+  `POST /api/jobs` (`settings`, `enhancements`, `enhancement_options`, `max_latency_s`,
+  `use_calibration`). The job passes them to `run_spec`; nothing saved means nothing sent.
+- **Multi-turn attack** (`kind: "attack"`): for each goal, `runner._run_attack` asks the judge for
+  the next escalating user turn (`ATTACKER_PROMPT`), sends it with the conversation so far, and
+  the G-Eval rubric scores the whole transcript.
+- **Robustness / Self-Check** (`kind: "multi_sample"`): `spec.variants(item)` gives the messages
+  (typo + casual rewording, or the same question N times); the replies are numbered into one
+  test case.
+- **A/B**: `POST /api/pairwise` queues a job with `options.kind = "pairwise"`; `_run_job_metric`
+  hands it to `pairwise.run_pairwise` (both orderings per case) and stores a `pairwise_runs` row.
+- **Compare**: `GET /api/runs/compare?a=&b=` diffs two stored `result_json` row lists.
+- **Simulate**: `POST /api/simulate` runs `simulator.simulate` (judge as user) synchronously,
+  scores with the chosen conversational metrics, optionally saves the user turns as a scenario.
+- **Generate & review**: `POST /api/documents/url` with `generation` builds Synthesizer
+  `EvolutionConfig` / `FiltrationConfig` / `StylingConfig`; `review: true` saves drafts, which
+  `MetricSpec.cases` skips until `POST /api/goldens/review` accepts them.
+- **Calibration**: `POST /api/calibration` stores a human score for one case of a stored run;
+  `GET` reports agreement; with `use_calibration` the labels are appended to G-Eval criteria.
+- **Export**: `GET /api/export/suite` returns a zip (`backend/export_suite.py`).
+- **Health**: `GET /api/health` for monitoring (200 / 503).
+
 ## 7. Tests and CI
 
 - `python -m pytest` — offline suite, no judge tokens.

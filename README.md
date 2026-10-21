@@ -84,6 +84,9 @@ logged in; the task just means the backend is always there when you are.
 | `JUDGE_MODEL` | `openai/gpt-oss-120b` | judge model name |
 | `JUDGE_BASE_URL` | `https://api.groq.com/openai/v1` | judge API base URL |
 | `JUDGE_DB_PATH` | `judge.db` | SQLite file for chatbots and run history |
+| `JUDGE_EXTENSION_ID` | any extension | pin CORS to one installed extension id |
+| `JUDGE_LOG_LEVEL` | `INFO` | backend log level (logs paths and status codes, never bodies) |
+| `JUDGE_MAX_BODY_MB` | `25` | largest request body accepted (document uploads) |
 
 The judge is never the chatbot being judged.
 
@@ -94,16 +97,17 @@ characters); **Remove saved key** goes back to the `.env` key.
 
 ## Metrics
 
-25 DeepEval metrics in six groups (`backend/metrics_catalog.py`):
+31 DeepEval metrics in six groups, plus your own (`backend/metrics_catalog.py`):
 
 | Group | Metrics (default threshold) |
 |---|---|
 | Chatbot · safety | Bias ≤ 0.5, Toxicity ≤ 0.5, PII Leakage ≤ 0.1, No-Prompt-Leak (G-Eval) ≥ 0.7 |
-| Chatbot · conversational (multi-turn) | Conversation Completeness ≥ 0.7, Knowledge Retention ≥ 0.7 |
+| Chatbot · conversational (multi-turn) | Conversation Completeness ≥ 0.7, Knowledge Retention ≥ 0.7, Role Adherence ≥ 0.7, Turn Relevancy ≥ 0.7 (window size setting) |
 | RAG · retrieval | Contextual Precision ≥ 0.7, Contextual Recall ≥ 0.7, Contextual Relevancy ≥ 0.7 |
-| RAG · quality + Chatbot | Faithfulness ≥ 0.8, Answer Relevancy ≥ 0.7, Hallucination ≤ 0.5, Correctness (G-Eval) ≥ 0.7, Summarization ≥ 0.6 |
+| RAG · quality + Chatbot | Faithfulness ≥ 0.8, Answer Relevancy ≥ 0.7, Hallucination ≤ 0.5, Correctness (G-Eval) ≥ 0.7, Summarization ≥ 0.6, Prompt Alignment ≥ 0.7 (needs the chatbot's instructions), Robustness (G-Eval) ≥ 0.7, Self-Check Consistency (G-Eval) ≥ 0.7 |
 | RAG · G-Eval | Citation Quality ≥ 0.7, Helpfulness ≥ 0.7 |
-| Security · red team (G-Eval) | Prompt Injection, Jailbreak, Encoded Injection, Data Exfiltration, Social Engineering, Domain Misuse, Non-Advice, Role Violation, Harmful Content — all ≥ 0.7 |
+| Security · red team (G-Eval) | Prompt Injection, Jailbreak, Encoded Injection, Data Exfiltration, Social Engineering, Domain Misuse, Non-Advice, Role Violation, Harmful Content, Multi-turn Jailbreak — all ≥ 0.7 |
+| Custom · your own metrics | G-Eval rubrics and DAG decision trees you write in **Advanced tools** |
 
 Scores run from 0 to 1. **≥** metrics are higher-is-better. **≤** metrics (Hallucination,
 Bias, Toxicity, PII Leakage) are shown as a violation rate, lower is better; DeepEval 4
@@ -156,6 +160,33 @@ judge's reason (why).
 A **Run judge** sweep asks every golden question and scores the answers. To judge a
 single answer instead, chat with the chatbot in the dashboard and press **Judge this
 answer** on its reply — ad-hoc scores are not saved, so they never enter the trend.
+
+## Advanced tools
+
+**Advanced tools** (side panel button, dashboard header) opens a page with:
+
+- **Run options**: per-metric settings (Turn Relevancy window, Self-Check samples, attack
+  turns), the chatbot's **instructions** for Prompt Alignment, red-team **attack enhancers**
+  (Base64, ROT13, leetspeak, role-play, injection wrapper, disguised math, many-shot,
+  multilingual: every probe is also sent disguised, and Details shows which disguise got
+  through), a **latency limit** (fail a run when p95 reply time is over it), the judge's
+  **price** per million tokens (shows the cost of each run) and **judge calibration**. Every
+  run then reports median / min / max / std, p50 / p95 chatbot latency and cost.
+- **Custom metrics**: write G-Eval criteria (optionally strict pass/fail) or a DAG
+  decision tree (DeepEval JSON) and run them like any other metric.
+- **Compare runs**: two runs of one metric case by case: regressions, fixes, score moves.
+- **A/B test**: two chatbots answer the same goldens; the judge picks the better reply
+  twice with the order swapped, and only a consistent preference counts (else a tie).
+- **Red-team coverage**: latest results by risk category (Responsible AI, Illegal
+  Activities, Brand Image, Data Privacy, Unauthorized Access) and OWASP LLM Top 10 id.
+- **Simulate a user**: the judge plays a user with a goal against the real chatbot, then
+  conversational metrics score it; save the conversation as a fixed scenario.
+- **Generate & review**: golden generation from a help page with DeepEval evolutions,
+  quality filtering and styling, saved as drafts that runs skip until you accept them.
+- **Calibrate the judge**: score cases yourself; see how often the judge agrees, and feed
+  your scores to G-Eval metrics as examples.
+- **Export to CI**: a zip with a pytest suite and a GitHub Actions workflow that runs the
+  chosen metrics on every pull request. Header values (cookies, keys) are never exported.
 
 ## Chatbot limits and reply checks
 

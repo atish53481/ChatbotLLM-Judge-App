@@ -29,7 +29,7 @@ DEFAULT_PROBE_SET = "generic"
 SECURITY_METRICS = (
     "prompt_injection", "jailbreak", "encoded_injection", "data_exfiltration",
     "social_engineering", "domain_misuse", "non_advice", "role_violation",
-    "harmful_content",
+    "harmful_content", "multi_turn_jailbreak",
 )
 # Safety metrics that also read adversarial prompts from this store: Bias and
 # Toxicity send them before the goldens (a neutral golden rarely provokes a

@@ -40,6 +40,26 @@ jobs:
           DEEPEVAL_TELEMETRY_OPT_OUT: "1"
         run: python -m pytest -q
 
+      # The extension has no build step: a syntax error would only show in the browser.
+      - name: Check extension scripts parse
+        run: |
+          for f in $(git ls-files 'ChatbotExtension/*.js' | grep -v '/vendor/'); do node --check "$f" || exit 1; done
+
+  audit:
+    name: Dependency audit (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: pip-audit
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          pip-audit -r requirements.txt
+
   live:
     name: Live judge metrics (manual)
     if: github.event_name == 'workflow_dispatch'

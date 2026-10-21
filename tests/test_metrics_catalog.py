@@ -121,13 +121,16 @@ def test_unknown_dataset_name_raises():
 
 EXPECTED_GROUPS = {
     "safety": {"bias", "toxicity", "pii_leakage", "no_prompt_leak"},
-    "conversational": {"conversation_completeness", "knowledge_retention"},
+    "conversational": {"conversation_completeness", "knowledge_retention", "role_adherence",
+                       "turn_relevancy"},
     "rag_retrieval": {"contextual_precision", "contextual_recall", "contextual_relevancy"},
-    "rag_quality": {"faithfulness", "answer_relevancy", "hallucination", "correctness", "summarization"},
+    "rag_quality": {"faithfulness", "answer_relevancy", "hallucination", "correctness", "summarization",
+                    "prompt_alignment", "robustness", "self_check"},
     "rag_geval": {"citation_quality", "helpfulness"},
     "security": {"prompt_injection", "jailbreak", "encoded_injection", "data_exfiltration",
                  "social_engineering", "domain_misuse", "non_advice", "role_violation",
-                 "harmful_content"},
+                 "harmful_content", "multi_turn_jailbreak"},
+    "custom": set(),  # the user's own metrics are not in ALL_SPECS (see all_specs)
 }
 
 
@@ -203,8 +206,8 @@ def test_harmful_content_is_a_security_probe_metric():
     assert "self-harm" in spec.criteria
 
 
-def test_catalog_has_25_specs():
-    assert len(ALL_SPECS) == 25
+def test_catalog_has_31_specs():
+    assert len(ALL_SPECS) == 31
 
 
 def test_every_spec_has_card_copy():
@@ -222,11 +225,13 @@ def test_lower_metrics_describe_the_zero_end():
 
 def test_ui_categories_follow_the_mock():
     by_cat = {c: {s.key for s in ALL_SPECS if s.ui_category == c} for c in UI_CATEGORIES}
-    assert by_cat["quality"] == {"answer_relevancy", "faithfulness", "hallucination", "summarization"}
+    assert by_cat["quality"] == {"answer_relevancy", "faithfulness", "hallucination", "summarization",
+                                "prompt_alignment", "robustness", "self_check"}
     assert by_cat["retrieval"] == {"contextual_precision", "contextual_recall", "contextual_relevancy"}
     assert by_cat["safety"] == {"bias", "toxicity", "pii_leakage"}
     assert by_cat["geval"] == {"correctness", "no_prompt_leak", "citation_quality", "helpfulness"}
-    assert by_cat["conversational"] == {"conversation_completeness", "knowledge_retention"}
+    assert by_cat["conversational"] == {"conversation_completeness", "knowledge_retention",
+                                       "role_adherence", "turn_relevancy"}
     assert by_cat["security"] == EXPECTED_GROUPS["security"]
 
 

@@ -43,3 +43,11 @@ def fixed_security_probes(tmp_path, monkeypatch):
 
     monkeypatch.setattr(security_probes, "PROBES_PATH", str(tmp_path / "security_probes.json"))
     monkeypatch.setattr(security_probes, "DEFAULT_PROBES_PATH", str(FIXTURE_PROBES))
+
+
+@pytest.fixture(autouse=True)
+def fixed_custom_metrics(tmp_path, monkeypatch):
+    """Tests edit a throwaway copy of the user's own metrics, never theirs."""
+    from backend.datasets import custom_metrics
+
+    monkeypatch.setattr(custom_metrics, "CUSTOM_METRICS_PATH", str(tmp_path / "custom_metrics.json"))

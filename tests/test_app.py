@@ -680,7 +680,7 @@ def test_conversation_scenarios_crud_and_reset(client):
 def test_metrics_include_card_copy_and_cases_available(client):
     target = _create_target(client, config={"theme": "no_such_theme", "persona": "Shop bot"})
     rows = {m["key"]: m for m in client.get(f"/api/metrics?target_id={target['id']}").json()}
-    assert len(rows) == 25
+    assert len(rows) == 31 + 2  # shipped metrics + the two example custom metrics
     assert rows["answer_relevancy"]["cases_available"] == 0
     # Bias / Toxicity / No-Prompt-Leak read the probe store too, so they report the probe set.
     assert rows["bias"]["probe_set"] == rows["no_prompt_leak"]["probe_set"] == "generic"

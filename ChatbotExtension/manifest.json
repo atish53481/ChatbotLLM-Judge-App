@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LLM Judge",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Judge any chatbot's answers with DeepEval metrics from the Chrome side panel.",
   "minimum_chrome_version": "116",
   "icons": {

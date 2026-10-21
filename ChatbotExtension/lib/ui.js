@@ -388,12 +388,36 @@ async function runMetrics(target, metricKeys, onProgress, control = {}) {
     body: {
       target_id: target.id, metric_keys: metricKeys, thresholds: picked,
       limit: control.limit || undefined, check_consistency: checkConsistency,
+      ...(await runOptionsBody(metricKeys)),
     },
   });
   watchJob(target, job.job_id, control.metrics || []);
   // Lets the other page (side panel or dashboard) pick up and show this run.
   await settings.set("startedJob", { targetId: target.id, jobId: job.job_id, at: Date.now() });
   return followJob(target, job.job_id, onProgress, control);
+}
+
+// The optional run settings saved on the Advanced page ("runOptions"):
+// per-metric settings, red-team enhancers, a latency limit and judge
+// calibration. Nothing saved sends nothing, so runs behave as before.
+async function runOptionsBody(metricKeys) {
+  const options = await settings.get("runOptions", {});
+  const body = {};
+  const perMetric = options.metricSettings || {};
+  const picked = Object.fromEntries(metricKeys.filter((key) => perMetric[key]).map((key) => [key, perMetric[key]]));
+  if (Object.keys(picked).length) body.settings = picked;
+  if (options.enhancements && options.enhancements.length) {
+    body.enhancements = options.enhancements;
+    body.enhancement_options = options.enhancementOptions || {};
+  }
+  if (typeof options.maxLatencyS === "number" && options.maxLatencyS > 0) body.max_latency_s = options.maxLatencyS;
+  if (options.useCalibration) body.use_calibration = true;
+  return body;
+}
+
+function openAdvanced() {
+  if (IN_EXTENSION) chrome.tabs.create({ url: pageUrl("advanced/advanced.html") });
+  else window.open(pageUrl("advanced/advanced.html"), "llm-judge-advanced");
 }
 
 function watchJob(target, jobId, metrics) {
@@ -502,6 +526,11 @@ function caseDetailsOf(result) {
     durationS: result.duration_s ?? null,
     judgeSpread: result.judge_spread ?? null,
     judgeUnstable: Boolean(result.judge_unstable),
+    stats: result.stats || null,
+    latency: result.latency || null,
+    judgeCostUsd: result.judge_cost_usd ?? null,
+    byEnhancement: result.by_enhancement || null,
+    calibrationExamples: result.calibration_examples || 0,
   };
 }
 
@@ -535,6 +564,19 @@ function runFacts(details) {
   if (typeof details.durationS === "number") facts.push(["Duration", `${details.durationS.toFixed(1)} s`]);
   if (typeof details.judgeSpread === "number") {
     facts.push(["Judge consistency", `${details.judgeUnstable ? "⚠ unstable" : "steady"}: widest gap between two scorings ${formatScore(details.judgeSpread)}`]);
+  }
+  const stats = details.stats;
+  if (stats && stats.n > 1) {
+    facts.push(["Score spread", `median ${formatScore(stats.median)} · min ${formatScore(stats.min)} · max ${formatScore(stats.max)} · std ${formatScore(stats.std)}`]);
+  }
+  if (details.latency) {
+    facts.push(["Chatbot latency", `p50 ${details.latency.p50.toFixed(2)} s · p95 ${details.latency.p95.toFixed(2)} s`]);
+  }
+  if (typeof details.judgeCostUsd === "number") facts.push(["Judge cost", `$${details.judgeCostUsd.toFixed(4)}`]);
+  if (details.calibrationExamples) facts.push(["Calibration", `${details.calibrationExamples} human-scored examples given to the judge`]);
+  if (details.byEnhancement) {
+    const parts = Object.values(details.byEnhancement).map((b) => `${b.label} ${Math.round(b.pass_rate * 100)}%`);
+    facts.push(["Resisted by attack", parts.join(" · ")]);
   }
   return facts;
 }

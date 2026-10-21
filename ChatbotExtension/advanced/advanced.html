@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LLM Judge · Advanced</title>
+  <link rel="stylesheet" href="../lib/theme.css">
+  <link rel="stylesheet" href="advanced.css">
+</head>
+<body class="adv">
+  <header class="adv-topbar">
+    <div class="adv-brand">
+      <span aria-hidden="true">◆</span>
+      <div>
+        <h1>Advanced tools</h1>
+        <p class="secondary small">Beyond the dashboard: your own metrics, A/B tests, regressions, red teaming, simulation, calibration and CI.</p>
+      </div>
+    </div>
+    <label class="adv-target">Chatbot <select id="target-select"></select></label>
+  </header>
+  <p id="status" class="adv-status secondary" role="status" aria-live="polite"></p>
+
+  <div class="adv-layout">
+    <nav class="adv-nav" aria-label="Sections">
+      <button type="button" data-section="run-options" aria-current="page">Run options</button>
+      <button type="button" data-section="custom">Custom metrics</button>
+      <button type="button" data-section="compare">Compare runs</button>
+      <button type="button" data-section="pairwise">A/B test</button>
+      <button type="button" data-section="coverage">Red-team coverage</button>
+      <button type="button" data-section="simulate">Simulate a user</button>
+      <button type="button" data-section="goldens">Generate &amp; review</button>
+      <button type="button" data-section="calibration">Calibrate the judge</button>
+      <button type="button" data-section="export">Export to CI</button>
+    </nav>
+
+    <main class="adv-main">
+      <!-- Run options ------------------------------------------------------>
+      <section id="section-run-options" class="adv-section">
+        <h2>Run options</h2>
+        <p class="secondary">Used by every run you start from the side panel or the dashboard. Leave everything off and runs behave exactly as before.</p>
+
+        <div class="card stack">
+          <h3>Metric settings</h3>
+          <div id="metric-settings" class="stack"></div>
+        </div>
+
+        <div class="card stack">
+          <h3>Chatbot instructions <span class="muted small">(Prompt Alignment)</span></h3>
+          <p class="secondary small">One instruction per line, as in the chatbot's system prompt. The judge checks each one on every reply.</p>
+          <textarea id="instructions" rows="5" placeholder="Answer in English.&#10;Never promise delivery dates.&#10;Keep replies under 120 words."></textarea>
+          <div class="row"><button id="save-instructions" type="button" class="primary">Save instructions</button></div>
+        </div>
+
+        <div class="card stack">
+          <h3>Red-team attack enhancers</h3>
+          <p class="secondary small">Every security probe is also sent in these disguises; results show which disguise gets through. Each enhancer adds one chatbot call per probe.</p>
+          <div id="enhancer-list" class="check-grid"></div>
+          <div class="row wrap">
+            <label>Many-shot examples <select id="many-shot"></select></label>
+            <label>Language <select id="language"></select></label>
+          </div>
+        </div>
+
+        <div class="card stack">
+          <h3>Performance and cost</h3>
+          <label class="row">Fail a run when 95% of replies take longer than
+            <input id="max-latency" type="number" min="0" step="0.5" class="num-input" placeholder="off"> seconds</label>
+          <label class="row">Judge price, USD per million tokens
+            <input id="judge-price" type="number" min="0" step="0.01" class="num-input" placeholder="not set"></label>
+          <label class="row"><input id="use-calibration" type="checkbox"> Give the judge my calibration labels as examples (G-Eval metrics)</label>
+        </div>
+        <div class="row"><button id="save-run-options" type="button" class="primary">Save run options</button></div>
+      </section>
+
+      <!-- Custom metrics --------------------------------------------------->
+      <section id="section-custom" class="adv-section hidden">
+        <h2>Custom metrics</h2>
+        <p class="secondary">G-Eval scores a subjective quality you describe. A DAG (decision tree) scores explicit rules the same way every time. Both appear under <b>Custom</b> in the side panel and the dashboard.</p>
+        <div id="custom-list" class="stack"></div>
+        <form id="custom-form" class="card stack">
+          <h3 id="custom-form-title">New metric</h3>
+          <input type="hidden" id="custom-id">
+          <div class="row wrap">
+            <label class="grow">Name <input id="custom-name" required maxlength="80"></label>
+            <label>Kind
+              <select id="custom-kind"><option value="geval">G-Eval (criteria)</option><option value="dag">DAG (decision tree)</option></select>
+            </label>
+            <label>Threshold <input id="custom-threshold" type="number" min="0" max="1" step="0.05" value="0.7" class="num-input"></label>
+          </div>
+          <label>Description <input id="custom-description" maxlength="300"></label>
+          <fieldset><legend>The judge reads</legend><div id="custom-params" class="check-grid"></div></fieldset>
+          <div id="custom-geval-fields" class="stack">
+            <label>Criteria <textarea id="custom-criteria" rows="3" placeholder="Is the reply polite and free of sarcasm? A firm refusal can still be polite."></textarea></label>
+            <label>Evaluation steps <span class="muted small">(optional, one per line; used instead of the criteria)</span>
+              <textarea id="custom-steps" rows="3"></textarea></label>
+            <label class="row"><input id="custom-strict" type="checkbox"> Strict: pass/fail only (score 0 or 1)</label>
+          </div>
+          <div id="custom-dag-fields" class="stack hidden">
+            <label>DAG JSON <span class="muted small">(DeepEval's format: nodes of BinaryJudgementNode / NonBinaryJudgementNode / TaskNode / VerdictNode)</span>
+              <textarea id="custom-dag" rows="12" spellcheck="false" class="mono"></textarea></label>
+            <div class="row"><button id="dag-example" type="button">Insert an example</button></div>
+          </div>
+          <div class="row wrap">
+            <button type="submit" class="primary">Save metric</button>
+            <button id="custom-cancel" type="button">Clear form</button>
+            <button id="custom-reset" type="button" class="push-right">Restore the examples</button>
+          </div>
+        </form>
+      </section>
+
+      <!-- Compare runs ----------------------------------------------------->
+      <section id="section-compare" class="adv-section hidden">
+        <h2>Compare two runs</h2>
+        <p class="secondary">Case by case: what regressed (passed before, fails now), what got fixed, and how far each score moved.</p>
+        <div class="card row wrap">
+          <label>Metric <select id="compare-metric"></select></label>
+          <label>Before <select id="compare-a"></select></label>
+          <label>After <select id="compare-b"></select></label>
+          <button id="compare-button" type="button" class="primary">Compare</button>
+        </div>
+        <div id="compare-result" class="stack"></div>
+      </section>
+
+      <!-- Pairwise ----------------------------------------------------------->
+      <section id="section-pairwise" class="adv-section hidden">
+        <h2>A/B test two chatbots</h2>
+        <p class="secondary">Both chatbots answer the selected chatbot's goldens; the judge picks the better reply. Every case is judged twice with the order swapped, and a reply only wins when it wins both times (position bias counts as a tie).</p>
+        <div class="card stack">
+          <div class="row wrap">
+            <span>A = <b id="pair-a-name"></b></span>
+            <label>B = <select id="pair-b"></select></label>
+            <label>Cases <input id="pair-limit" type="number" min="1" value="5" class="num-input"></label>
+          </div>
+          <label>What makes a reply better <span class="muted small">(optional)</span>
+            <textarea id="pair-criteria" rows="2" placeholder="Correct, relevant, clear and helpful, without inventing facts."></textarea></label>
+          <div class="row"><button id="pair-run" type="button" class="primary">Start A/B test</button><span id="pair-progress" class="secondary small"></span></div>
+        </div>
+        <div id="pair-result" class="stack"></div>
+        <h3>Earlier comparisons</h3>
+        <div id="pair-history" class="stack"></div>
+      </section>
+
+      <!-- Coverage ----------------------------------------------------------->
+      <section id="section-coverage" class="adv-section hidden">
+        <h2>Red-team coverage</h2>
+        <p class="secondary">The latest run of every adversarial metric, by risk category and OWASP Top 10 for LLM Applications (2025). Untested is not the same as safe.</p>
+        <div id="coverage-grid" class="coverage-grid"></div>
+      </section>
+
+      <!-- Simulate ----------------------------------------------------------->
+      <section id="section-simulate" class="adv-section hidden">
+        <h2>Simulate a user</h2>
+        <p class="secondary">The judge plays the user and reacts to what the chatbot actually says, until the goal is reached or the turn limit. One judge call per turn, plus the metrics you tick.</p>
+        <div class="card stack">
+          <label>Start from a saved scenario <select id="sim-scenario"></select></label>
+          <label>Scenario <textarea id="sim-text" rows="2" placeholder="A customer's parcel is a week late and they want to know where it is."></textarea></label>
+          <label>What the user wants by the end <input id="sim-outcome" placeholder="A tracking update or a refund offer"></label>
+          <div class="row wrap">
+            <label class="grow">Who the user is <input id="sim-persona" placeholder="Impatient, writes short messages"></label>
+            <label class="grow">Chatbot role <input id="sim-role" placeholder="ShopEasy's support assistant"></label>
+            <label>Max turns <input id="sim-turns" type="number" min="1" max="10" value="5" class="num-input"></label>
+          </div>
+          <fieldset><legend>Score with</legend><div id="sim-metrics" class="check-grid"></div></fieldset>
+          <label class="row">Save as scenario named <input id="sim-save" class="grow" placeholder="(leave empty to not save)"></label>
+          <div class="row"><button id="sim-run" type="button" class="primary">Run simulation</button><span id="sim-progress" class="secondary small"></span></div>
+        </div>
+        <div id="sim-result" class="stack"></div>
+      </section>
+
+      <!-- Goldens ------------------------------------------------------------>
+      <section id="section-goldens" class="adv-section hidden">
+        <h2>Generate goldens with options, then review them</h2>
+        <form id="gen-form" class="card stack">
+          <h3>Generate from a help page</h3>
+          <label>Page URL <input id="gen-url" type="url" placeholder="https://help.example.com/returns"></label>
+          <fieldset><legend>Evolutions <span class="muted small">(rewrite questions to be harder or broader)</span></legend><div id="gen-evolutions" class="check-grid"></div></fieldset>
+          <div class="row wrap">
+            <label>Evolution steps <input id="gen-steps" type="number" min="1" max="5" class="num-input" placeholder="1"></label>
+            <label>Quality bar <input id="gen-quality" type="number" min="0" max="1" step="0.05" class="num-input" placeholder="0.5"></label>
+            <label>Retries <input id="gen-retries" type="number" min="0" max="10" class="num-input" placeholder="3"></label>
+          </div>
+          <div class="row wrap">
+            <label class="grow">Scenario <input id="gen-scenario" placeholder="Customers asking a shop's support bot"></label>
+            <label class="grow">Task <input id="gen-task" placeholder="Answer questions about orders and returns"></label>
+          </div>
+          <div class="row wrap">
+            <label class="grow">Question format <input id="gen-input-format" placeholder="A short chat message"></label>
+            <label class="grow">Answer format <input id="gen-output-format" placeholder="Two or three friendly sentences"></label>
+          </div>
+          <label class="row"><input id="gen-review" type="checkbox" checked> Save as drafts I review first (runs skip drafts)</label>
+          <div class="row"><button type="submit" class="primary">Generate</button><span id="gen-progress" class="secondary small"></span></div>
+        </form>
+        <div class="card stack">
+          <div class="row wrap"><h3 class="grow">Drafts waiting for review</h3>
+            <button id="drafts-accept-all" type="button">Accept all</button>
+            <button id="drafts-reject-all" type="button" class="danger">Reject all</button></div>
+          <div id="draft-list" class="stack"></div>
+        </div>
+      </section>
+
+      <!-- Calibration -------------------------------------------------------->
+      <section id="section-calibration" class="adv-section hidden">
+        <h2>Calibrate the judge</h2>
+        <p class="secondary">Score a few cases yourself. You see how often the judge agrees with you, and with “Give the judge my calibration labels” (Run options) your scores become examples in G-Eval prompts.</p>
+        <div class="card row wrap">
+          <label>Metric <select id="cal-metric"></select></label>
+          <span id="cal-agreement" class="secondary"></span>
+        </div>
+        <div id="cal-cases" class="stack"></div>
+      </section>
+
+      <!-- Export ------------------------------------------------------------->
+      <section id="section-export" class="adv-section hidden">
+        <h2>Export to CI</h2>
+        <p class="secondary">A zip with a pytest suite (tests/evals) and a GitHub Actions workflow that runs these metrics on this chatbot's goldens on every pull request. Header values such as cookies and API keys are never exported; CI reads them from a secret.</p>
+        <div class="card stack">
+          <label>Thresholds from <select id="export-env"></select></label>
+          <fieldset><legend>Metrics</legend><div id="export-metrics" class="check-grid"></div></fieldset>
+          <div class="row"><button id="export-button" type="button" class="primary">Download suite (.zip)</button></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="../lib/api.js"></script>
+  <script src="../lib/announce.js"></script>
+  <script src="../lib/ui.js"></script>
+  <script src="advanced.js"></script>
+</body>
+</html>

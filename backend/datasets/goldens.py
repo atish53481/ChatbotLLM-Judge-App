@@ -135,7 +135,10 @@ def add_golden(
     source: str = "manual",
     source_document: str | None = None,
     source_document_id: int | None = None,
+    extra: dict | None = None,
 ) -> dict:
+    """extra: optional fields stored with the row (a generated golden's
+    evolutions, status "draft" while it waits for review)."""
     with _LOCK:
         rows = _read_all()
         new_row = {
@@ -148,6 +151,7 @@ def add_golden(
             "source": source,
             "source_document": source_document,
             "source_document_id": source_document_id,
+            **{k: v for k, v in (extra or {}).items() if v not in (None, [], "")},
         }
         rows.append(new_row)
         _write_all(rows)
@@ -200,6 +204,34 @@ def update_golden(
                 _write_all(rows)
                 return dict(row)
         return None
+
+
+DRAFT = "draft"
+
+
+def is_draft(row: dict) -> bool:
+    """A generated golden waiting for review: listed, but never sent in a run."""
+    return row.get("status") == DRAFT
+
+
+def review_goldens(golden_ids: list[str], action: str) -> int:
+    """accept: the drafts become ordinary goldens; reject: they are deleted.
+    Returns how many rows changed."""
+    if action not in ("accept", "reject"):
+        raise ValueError("action must be accept or reject")
+    wanted = set(golden_ids)
+    with _LOCK:
+        rows = _read_all()
+        hits = [r for r in rows if r["id"] in wanted and is_draft(r)]
+        if not hits:
+            return 0
+        if action == "reject":
+            rows = [r for r in rows if r not in hits]
+        else:
+            for r in hits:
+                r.pop("status", None)
+        _write_all(rows)
+    return len(hits)
 
 
 def delete_golden(golden_id: str) -> bool:

@@ -24,12 +24,18 @@ RUN_EXTRA_COLUMNS = (
     ("judge_spread", "REAL"),
     ("cases_skipped", "INTEGER"),
     ("result_json", "TEXT"),
+    # Chatbot reply latency (seconds) and judge cost (USD, when a price is set).
+    ("latency_p50", "REAL"),
+    ("latency_p95", "REAL"),
+    ("judge_cost_usd", "REAL"),
 )
 
 
 def init_db(path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(path, check_same_thread=False)
+    conn = sqlite3.connect(path, check_same_thread=False, timeout=10)
     conn.row_factory = sqlite3.Row
+    # Wait (up to 10 s) instead of failing when another connection holds a lock.
+    conn.execute("PRAGMA busy_timeout = 10000")
     with _LOCK:
         conn.execute(
             """
@@ -115,6 +121,44 @@ def init_db(path: str) -> sqlite3.Connection:
             (JOB_INTERRUPTED,),
         )
         conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        # Human scores for judged cases (judge calibration): one per run case.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS human_labels (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                target_id INTEGER NOT NULL,
+                metric_key TEXT NOT NULL,
+                run_id INTEGER NOT NULL,
+                case_index INTEGER NOT NULL,
+                question TEXT,
+                actual_output TEXT,
+                judge_score REAL,
+                judge_passed INTEGER,
+                threshold REAL,
+                direction TEXT,
+                human_score REAL NOT NULL,
+                note TEXT,
+                ts TEXT NOT NULL,
+                UNIQUE (run_id, case_index)
+            )
+            """
+        )
+        # Pairwise A/B comparisons (backend/dashboard/pairwise.py): one row per
+        # comparison, kept apart from runs so the per-metric trend stays clean.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pairwise_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                target_a INTEGER NOT NULL,
+                target_b INTEGER NOT NULL,
+                ts TEXT NOT NULL,
+                wins_a INTEGER,
+                wins_b INTEGER,
+                ties INTEGER,
+                result_json TEXT
+            )
+            """
+        )
         _migrate_targets(conn)
         conn.commit()
     return conn
@@ -257,18 +301,92 @@ def record_run(
     judge_spread: float | None = None,
     cases_skipped: int | None = None,
     result_json: str | None = None,
+    latency_p50: float | None = None,
+    latency_p95: float | None = None,
+    judge_cost_usd: float | None = None,
 ) -> int:
     with _LOCK:
         cur = conn.execute(
             "INSERT INTO runs (target_id, metric_key, score, passed, ts, cases_run, judge_model,"
             " judge_tokens, judge_calls, target_calls, duration_s, judge_spread, cases_skipped,"
-            " result_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " result_json, latency_p50, latency_p95, judge_cost_usd)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (target_id, metric_key, score, int(passed), ts, cases_run, judge_model,
              judge_tokens, judge_calls, target_calls, duration_s, judge_spread, cases_skipped,
-             result_json),
+             result_json, latency_p50, latency_p95, judge_cost_usd),
         )
         conn.commit()
         return cur.lastrowid
+
+
+def get_run(conn: sqlite3.Connection, run_id: int) -> dict[str, Any] | None:
+    with _LOCK:
+        row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+    return None if row is None else dict(row)
+
+
+def add_pairwise_run(conn: sqlite3.Connection, target_a: int, target_b: int, result: dict) -> int:
+    with _LOCK:
+        cur = conn.execute(
+            "INSERT INTO pairwise_runs (target_a, target_b, ts, wins_a, wins_b, ties, result_json)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (target_a, target_b, _now_iso(), result.get("wins_a"), result.get("wins_b"),
+             result.get("ties"), json.dumps(result, default=str)),
+        )
+        conn.commit()
+        return cur.lastrowid
+
+
+def upsert_label(conn: sqlite3.Connection, label: dict) -> int:
+    """One human score per run case; labelling the same case again replaces it."""
+    fields = ("target_id", "metric_key", "run_id", "case_index", "question", "actual_output",
+              "judge_score", "judge_passed", "threshold", "direction", "human_score", "note")
+    values = [label.get(f) for f in fields] + [_now_iso()]
+    with _LOCK:
+        conn.execute(
+            f"INSERT INTO human_labels ({', '.join(fields)}, ts) VALUES ({', '.join('?' * (len(fields) + 1))}) "
+            "ON CONFLICT(run_id, case_index) DO UPDATE SET human_score = excluded.human_score, "
+            "note = excluded.note, ts = excluded.ts",
+            values,
+        )
+        row = conn.execute("SELECT id FROM human_labels WHERE run_id = ? AND case_index = ?",
+                           (label["run_id"], label["case_index"])).fetchone()
+        conn.commit()
+    return row["id"]
+
+
+def list_labels(conn: sqlite3.Connection, target_id: int, metric_key: str | None = None) -> list[dict[str, Any]]:
+    with _LOCK:
+        if metric_key:
+            rows = conn.execute("SELECT * FROM human_labels WHERE target_id = ? AND metric_key = ? ORDER BY id DESC",
+                                (target_id, metric_key)).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM human_labels WHERE target_id = ? ORDER BY id DESC",
+                                (target_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_label(conn: sqlite3.Connection, label_id: int) -> bool:
+    with _LOCK:
+        cur = conn.execute("DELETE FROM human_labels WHERE id = ?", (label_id,))
+        conn.commit()
+    return cur.rowcount > 0
+
+
+def list_pairwise_runs(conn: sqlite3.Connection, target_id: int) -> list[dict[str, Any]]:
+    """Comparisons a chatbot took part in (as A or B), newest first."""
+    with _LOCK:
+        rows = conn.execute(
+            "SELECT * FROM pairwise_runs WHERE target_a = ? OR target_b = ? ORDER BY id DESC",
+            (target_id, target_id),
+        ).fetchall()
+    out = []
+    for r in rows:
+        row = dict(r)
+        raw = row.pop("result_json", None)
+        row["result"] = json.loads(raw) if raw else None
+        out.append(row)
+    return out
 
 
 def latest_runs(conn: sqlite3.Connection, target_id: int) -> list[dict[str, Any]]:

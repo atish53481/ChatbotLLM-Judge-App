@@ -473,12 +473,14 @@ function caseFields(metric, row) {
     if (row.scores && row.scores.length === 2) {
       add("Two scorings", `${formatScore(row.scores[0])} and ${formatScore(row.scores[1])} (averaged)`);
     }
+    if (row.enhancement) add("Attack sent as", row.enhancement.replace(/_/g, " "));
     add("Actual result", row.actual_output);
     add("Expected result", row.expected_output);
     if (row.context && row.context.length) {
       add(contextLabel(metric, row), el("ul", {}, ...row.context.map((line) => el("li", {}, line))));
     }
   }
+  if (typeof row.latency_s === "number") add("Chatbot latency", `${row.latency_s.toFixed(2)} s`);
   add("Why", row.reason || "No reason given.");
   return pairs;
 }
@@ -961,6 +963,7 @@ $("chat-form").addEventListener("submit", async (event) => {
   }
 });
 
+$("advanced-button").addEventListener("click", openAdvanced);
 $("report-button").addEventListener("click", () => {
   const target = currentTarget();
   if (!target) {

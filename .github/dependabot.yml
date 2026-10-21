@@ -1,0 +1,14 @@
+# Weekly update PRs for the Python dependencies and the CI actions. The offline
+# suite runs on each one, so a DeepEval release that breaks the app shows up as
+# a red PR instead of a surprise on the next install.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

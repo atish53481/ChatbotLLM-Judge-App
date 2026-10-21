@@ -1,0 +1,50 @@
+[
+  {
+    "id": "cm_example_tone",
+    "key": "custom_polite_professional_tone",
+    "name": "Polite, professional tone",
+    "kind": "geval",
+    "description": "Example G-Eval metric: a subjective criterion scored with chain-of-thought steps. Edit or delete it.",
+    "criteria": "Judge whether the actual output is polite and professional: no sarcasm, blame or condescension, and no slang. A firm refusal can still be polite.",
+    "evaluation_steps": [],
+    "params": ["input", "actual_output"],
+    "strict": false,
+    "threshold": 0.7,
+    "dataset": "goldens",
+    "dag": null
+  },
+  {
+    "id": "cm_example_answer_first",
+    "key": "custom_answer_first_no_competitors",
+    "name": "Answers first, no competitors",
+    "kind": "dag",
+    "description": "Example DAG metric: explicit rules as a decision tree, so the same reply always gets the same score. Fails any reply that names a competitor; otherwise rewards answering in the first sentence.",
+    "criteria": "",
+    "evaluation_steps": [],
+    "params": ["input", "actual_output"],
+    "strict": false,
+    "threshold": 0.5,
+    "dataset": "goldens",
+    "dag": {
+      "nodes": {
+        "competitors": {
+          "type": "BinaryJudgementNode",
+          "criteria": "Does the actual output recommend or name another company's product or service as an alternative?",
+          "evaluation_params": ["actual_output"],
+          "children": ["names_competitor", "answer_first"]
+        },
+        "names_competitor": {"type": "VerdictNode", "verdict": true, "score": 0},
+        "answer_first": {"type": "VerdictNode", "verdict": false, "child": {"type": "node", "ref": "first_sentence"}},
+        "first_sentence": {
+          "type": "NonBinaryJudgementNode",
+          "criteria": "How directly does the first sentence of the actual output address the input? Answer 'directly', 'partly' or 'not at all'.",
+          "evaluation_params": ["input", "actual_output"],
+          "children": ["direct", "partly", "not_at_all"]
+        },
+        "direct": {"type": "VerdictNode", "verdict": "directly", "score": 10},
+        "partly": {"type": "VerdictNode", "verdict": "partly", "score": 6},
+        "not_at_all": {"type": "VerdictNode", "verdict": "not at all", "score": 2}
+      }
+    }
+  }
+]

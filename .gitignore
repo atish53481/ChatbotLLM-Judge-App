@@ -28,3 +28,6 @@ backend/datasets/goldens_changes.log
 
 # Output of run-backend-service.bat (the always-on backend task).
 logs/
+
+# The user's own metrics (G-Eval / DAG), seeded from custom_metrics.default.json.
+backend/datasets/custom_metrics.json
