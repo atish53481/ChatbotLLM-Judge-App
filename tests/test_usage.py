@@ -1,4 +1,6 @@
+import threading
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from deepeval.models import LocalModel
@@ -71,3 +73,59 @@ def test_judge_generate_without_usage_still_counts(monkeypatch):
     _judge().generate("hi")
     snap = usage.snapshot()
     assert snap["judge_calls"] == 1 and snap["judge_tokens"] == 0
+
+
+def test_a_meter_counts_only_its_own_work():
+    usage.reset()
+    seen = {}
+
+    def work(name, calls):
+        with usage.meter() as counts:
+            for _ in range(calls):
+                usage.record_target()
+            seen[name] = usage.view(counts)["target_calls"]
+
+    threads = [threading.Thread(target=work, args=("a", 2)), threading.Thread(target=work, args=("b", 3))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert seen == {"a": 2, "b": 3}
+    assert usage.snapshot()["target_calls"] == 5
+
+
+def test_parallel_runs_report_their_own_chatbot_calls(tmp_path, monkeypatch):
+    from backend import storage
+    from backend.dashboard import runner
+    from backend.dashboard.runner import run_spec
+
+    monkeypatch.setattr(runner, "JUDGE_CONCURRENCY", 4)
+    conn = storage.init_db(str(tmp_path / "t.db"))
+    target_id = storage.add_target(conn, "bot", "http", {})
+
+    class Bot:
+        def chat(self, message, history=None):
+            usage.record_target()
+            return SimpleNamespace(reply="ok")
+
+    def spec(n):
+        metric = MagicMock(score=1.0, reason="r")
+        metric.is_successful.return_value = True
+        return SimpleNamespace(
+            key=f"m{n}", title="M", threshold=0.5, needs=(),
+            cases=lambda theme="", **_kw: [{"id": i, "question": f"q{i}"} for i in range(n)],
+            build_metric=lambda judge, threshold=0.5: metric,
+            build_case=lambda g, reply, retrieval=None: SimpleNamespace(input=g["question"], actual_output=reply),
+        )
+
+    results = {}
+
+    def run(n):
+        results[n] = run_spec(spec(n), judge=object(), target=Bot(), target_id=target_id, conn=conn)
+
+    threads = [threading.Thread(target=run, args=(n,)) for n in (2, 3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert results[2]["chatbot_calls"] == 2 and results[3]["chatbot_calls"] == 3

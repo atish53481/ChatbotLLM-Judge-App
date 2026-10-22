@@ -1,6 +1,6 @@
 // Side panel: pick or add a chatbot, manage its golden answers, run the judge,
 // and see the latest scores. The dashboard tab follows the same selection
-// through chrome.storage.
+// through the shared settings (localStorage).
 
 const $ = (id) => document.getElementById(id);
 const state = {
@@ -343,7 +343,7 @@ async function renderLatest() {
   if (!target) return;
   box.classList.add("loading");
   try {
-    const rows = await api(`/api/runs/latest?target_id=${target.id}`);
+    const rows = await api(`/api/runs/latest?target_id=${target.id}&since_id=${await sessionSince()}`);
     const hasRuns = rows.length > 0;
     box.classList.toggle("hidden", !hasRuns);
     $("latest-empty").classList.toggle("hidden", hasRuns);
@@ -780,7 +780,7 @@ armConfirm($("reset-target-runs"), async () => {
     await api(`/api/targets/${target.id}/runs`, { method: "DELETE" });
     const lastRun = await settings.get("lastRun", null);
     if (lastRun && lastRun.targetId === target.id) await settings.set("lastRun", null);
-    await clearCaseDetails(target.id);
+    await settings.set("runsChangedAt", Date.now());
     await renderLatest();
   } catch (error) {
     $("status").textContent = error.message;
@@ -1073,13 +1073,14 @@ $("threshold-env").addEventListener("change", async () => {
 $("open-dashboard").addEventListener("click", openDashboard);
 $("open-advanced").addEventListener("click", openAdvanced);
 // Inside the web app's two-pane page the dashboard is already beside the panel.
-if (!IN_EXTENSION && window.parent !== window) $("open-dashboard").hidden = true;
+if (window.parent !== window) $("open-dashboard").hidden = true;
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => renderLatest());
 
 settings.onChange((changes) => {
   const target = currentTarget();
   const run = changes.lastRun && changes.lastRun.newValue;
   if (run && target && run.targetId === target.id) renderLatest();
+  if ((changes.freshSinceRunId || changes.runsChangedAt) && target) renderLatest();
   const started = changes.startedJob && changes.startedJob.newValue;
   if (started && target && started.targetId === target.id) followActiveJob(target).catch(() => {});
   if (changes.selectedTargetId && changes.selectedTargetId.newValue !== (target ? target.id : null)) {
@@ -1100,6 +1101,10 @@ async function loadEverything() {
     // Golden edits and deletes last one session: every fresh load of the
     // panel starts again from the shipped golden answers.
     await api("/api/goldens/reset", { method: "POST", body: {} });
+    // Scores start fresh too: earlier runs stay stored, shown under History.
+    const session = await api("/api/session/start", { method: "POST", body: {} });
+    await settings.set("freshSinceRunId", session.since_id);
+    await settings.set("lastRun", null);
     await loadJudgeSettings();
     await loadMetrics();
     await loadTargets();

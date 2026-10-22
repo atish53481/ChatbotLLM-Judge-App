@@ -139,12 +139,14 @@
     <div class="card-head">
       <h2 id="history-heading">Run history</h2>
       <p id="history-count" class="muted small"></p>
+      <button type="button" id="history-clear" aria-label="Delete every stored run of this chatbot">Delete all</button>
     </div>
+    <p class="muted small">Every run is stored. Scores, trend and cases start fresh each time the panel loads; this list keeps them all.</p>
     <p id="history-empty" class="muted">No runs yet for this chatbot.</p>
     <div class="table-scroll">
       <table id="history-table" class="hidden">
         <thead>
-          <tr><th>Run time</th><th>Metric</th><th class="num">Score</th><th class="num">Minimum</th><th>Result</th></tr>
+          <tr><th>Run time</th><th>Metric</th><th class="num">Score</th><th class="num">Minimum</th><th>Result</th><th></th></tr>
         </thead>
         <tbody></tbody>
       </table>

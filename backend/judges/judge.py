@@ -13,7 +13,7 @@ import time
 from deepeval.models import LocalModel
 from dotenv import load_dotenv
 
-from backend import usage
+from backend import traffic, usage
 
 load_dotenv()
 
@@ -24,8 +24,21 @@ JUDGE_API_KEY_ENV = "JUDGE_API_KEY"
 DEFAULT_MODEL = "openai/gpt-oss-120b"
 DEFAULT_BASE_URL = "https://api.groq.com/openai/v1"
 
-_LOCK = threading.Lock()
+
+def _concurrency() -> int:
+    try:
+        return max(1, min(16, int(os.getenv("JUDGE_CONCURRENCY", "4"))))
+    except ValueError:
+        return 4
+
+
+# Judge calls (and chatbot cases, see runner.case_workers) in flight at once.
+# 1 = one at a time; raise it for providers with generous rate limits.
+JUDGE_CONCURRENCY = _concurrency()
+_SLOTS = threading.BoundedSemaphore(JUDGE_CONCURRENCY)
 _MAX_RETRIES = 5
+# Seconds one judge call may take before it is abandoned (and retried by the client).
+JUDGE_TIMEOUT_S = 90
 
 
 def _is_rate_limit(err: Exception) -> bool:
@@ -36,12 +49,12 @@ def _is_rate_limit(err: Exception) -> bool:
 
 
 class GroqJudge(LocalModel):
-    """LocalModel plus serialisation and backoff for rate limits."""
+    """LocalModel plus a cap on calls in flight and backoff for rate limits."""
 
     def _call(self, fn, *args, **kwargs):
         for attempt in range(_MAX_RETRIES):
             try:
-                with _LOCK:
+                with _SLOTS:
                     return fn(*args, **kwargs)
             except Exception as e:  # noqa: BLE001 - provider raises many types
                 if not _is_rate_limit(e) or attempt == _MAX_RETRIES - 1:
@@ -54,7 +67,7 @@ class GroqJudge(LocalModel):
         return self._call(super().generate, *args, **kwargs)
 
     async def a_generate(self, *args, **kwargs):
-        # Same lock and rate-limit backoff as the sync path.
+        # Same cap and rate-limit backoff as the sync path.
         return await asyncio.to_thread(self.generate, *args, **kwargs)
 
     def load_model(self, async_mode: bool = False):
@@ -68,8 +81,23 @@ class GroqJudge(LocalModel):
             return client  # already wrapped: DeepEval loads the model at init and per call
 
         def counted(*args, **kwargs):
+            # Without a timeout one hung request stalls the run for up to 30 min
+            # (the client's 600 s default, tried 3 times).
+            kwargs.setdefault("timeout", JUDGE_TIMEOUT_S)
+            messages = kwargs.get("messages") or []
+            prompt = sum(len(str(m.get("content") or "")) for m in messages if isinstance(m, dict))
+            traffic.log("-> judge %s: prompt of %d chars", kwargs.get("model", ""), prompt)
+            started = time.monotonic()
             response = create(*args, **kwargs)
-            usage.record_judge(getattr(response, "usage", None))
+            u = getattr(response, "usage", None)
+            usage.record_judge(u)
+            try:
+                output = response.choices[0].message.content
+            except (AttributeError, IndexError, TypeError):
+                output = ""
+            tokens = getattr(u, "total_tokens", None) if u is not None else None
+            traffic.log("<- judge in %.1fs, %s tokens: %s", time.monotonic() - started,
+                        tokens if tokens is not None else "?", traffic.clip(output))
             return response
 
         counted.counts_usage = True

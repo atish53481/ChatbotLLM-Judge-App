@@ -10,7 +10,6 @@ from fastapi.testclient import TestClient
 from backend.datasets import goldens as goldens_store
 from backend.targets.base import ChatReply
 
-EXTENSION_ORIGIN = "chrome-extension://" + "a" * 32
 _REPLY = ChatReply(reply="ok", model="m", mode="http")
 
 
@@ -280,17 +279,12 @@ def test_judge_404s_on_unknown_metric_and_503s_without_a_judge(client, monkeypat
     assert r.status_code == 503
 
 
-def test_cors_allows_only_the_extension_origin(client):
+def test_cors_allows_no_other_origin(client):
+    # The web app is same-origin; every other origin, extensions included, is refused.
     preflight = {"Access-Control-Request-Method": "POST"}
-    ok = client.options("/api/targets", headers={"Origin": EXTENSION_ORIGIN, **preflight})
-    assert ok.status_code == 200
-    assert ok.headers["access-control-allow-origin"] == EXTENSION_ORIGIN
-
-    # Editing a golden sends PUT from the extension, so the preflight must allow it.
-    put_ok = client.options("/api/goldens/g_0001", headers={
-        "Origin": EXTENSION_ORIGIN, "Access-Control-Request-Method": "PUT"})
-    assert put_ok.status_code == 200
-    assert "PUT" in put_ok.headers["access-control-allow-methods"]
+    for origin in ("chrome-extension://" + "a" * 32, "https://evil.example"):
+        r = client.options("/api/targets", headers={"Origin": origin, **preflight})
+        assert "access-control-allow-origin" not in r.headers
 
     bad = client.options("/api/targets", headers={"Origin": "https://evil.example", **preflight})
     assert "access-control-allow-origin" not in bad.headers
@@ -371,16 +365,6 @@ def test_posts_without_a_json_content_type_are_refused(client, path, body):
     # refusing those keeps them from driving this API.
     assert client.post(path, content=body).status_code == 422
     assert client.post(path, content=body, headers={"Content-Type": "text/plain"}).status_code == 422
-
-
-def test_extension_origin_can_be_pinned(app_module):
-    import re
-
-    any_extension = app_module.extension_origin_regex(None)
-    assert re.fullmatch(any_extension, "chrome-extension://" + "b" * 32)
-    pinned = app_module.extension_origin_regex("abcdefghijklmnopabcdefghijklmnop")
-    assert re.fullmatch(pinned, "chrome-extension://abcdefghijklmnopabcdefghijklmnop")
-    assert not re.fullmatch(pinned, "chrome-extension://" + "b" * 32)
 
 
 def test_upload_document_creates_goldens(app_module, client):
@@ -1136,3 +1120,39 @@ def test_queued_job_can_be_cancelled(client, app_module):
     assert client.post(f"/api/jobs/{job_id}/cancel", json={}).json() == {"cancelling": True}
     _run_jobs(app_module)
     assert client.get(f"/api/jobs/{job_id}").json()["status"] == "cancelled"
+
+
+def _record_run(app_module, target_id, key, score):
+    return app_module.storage.record_run(
+        app_module._conn, target_id, key, score, score >= 0.5, "2026-10-21T10:00:00+00:00",
+    )
+
+
+def test_session_start_hides_older_runs_but_history_keeps_them(client, app_module):
+    target = _create_target(client)
+    _record_run(app_module, target["id"], "answer_relevancy", 0.4)
+
+    since = client.post("/api/session/start").json()["since_id"]
+    assert client.get(f"/api/runs/latest?target_id={target['id']}&since_id={since}").json() == []
+    assert client.get(
+        f"/api/history?target_id={target['id']}&metric_key=answer_relevancy&since_id={since}"
+    ).json() == []
+
+    _record_run(app_module, target["id"], "answer_relevancy", 0.9)
+    latest = client.get(f"/api/runs/latest?target_id={target['id']}&since_id={since}").json()
+    assert [r["score"] for r in latest] == [0.9]
+
+    # Without since_id (the History view) every stored run is still there.
+    full = client.get(f"/api/history?target_id={target['id']}&metric_key=answer_relevancy").json()
+    assert [r["score"] for r in full] == [0.4, 0.9]
+
+
+def test_delete_one_run(client, app_module):
+    target = _create_target(client)
+    keep = _record_run(app_module, target["id"], "answer_relevancy", 0.4)
+    gone = _record_run(app_module, target["id"], "answer_relevancy", 0.9)
+
+    assert client.delete(f"/api/runs/{gone}").json() == {"deleted": gone}
+    rows = client.get(f"/api/history?target_id={target['id']}&metric_key=answer_relevancy").json()
+    assert [r["id"] for r in rows] == [keep]
+    assert client.delete(f"/api/runs/{gone}").status_code == 404

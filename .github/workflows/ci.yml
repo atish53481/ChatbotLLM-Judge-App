@@ -40,8 +40,8 @@ jobs:
           DEEPEVAL_TELEMETRY_OPT_OUT: "1"
         run: python -m pytest -q
 
-      # The extension has no build step: a syntax error would only show in the browser.
-      - name: Check extension scripts parse
+      # The web app has no build step: a syntax error would only show in the browser.
+      - name: Check web app scripts parse
         run: |
           for f in $(git ls-files 'ChatbotExtension/*.js' | grep -v '/vendor/'); do node --check "$f" || exit 1; done
 

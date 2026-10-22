@@ -449,7 +449,9 @@ async function loadDetailHistory(key) {
   const target = currentTarget();
   if (!target) return;
   try {
-    state.detailHistory[key] = await api(`/api/history?target_id=${target.id}&metric_key=${encodeURIComponent(key)}`);
+    state.detailHistory[key] = await api(
+      `/api/history?target_id=${target.id}&metric_key=${encodeURIComponent(key)}&since_id=${await sessionSince()}`,
+    );
   } catch {
     state.detailHistory[key] = [];  // the panel works without it
   }
@@ -508,10 +510,10 @@ async function toggleCardDetails(key) {
   state.expandedDetailKeys.add(key);
   const target = currentTarget();
   if (target) {
-    // The backend keeps each run's cases; this browser's copy covers older runs.
+    // The cases come from the database (the run's stored result).
     const run = latestRowsCache.find((r) => r.metric_key === key);
-    const [stored] = await Promise.all([loadCaseDetails(target.id, key), loadDetailHistory(key)]);
-    state.caseDetailsCache[key] = caseDetailsFromRun(run) || stored;
+    await loadDetailHistory(key);
+    state.caseDetailsCache[key] = caseDetailsFromRun(run);
   }
   renderMetricGrid();
 }
@@ -744,7 +746,7 @@ async function renderLatest() {
   const target = currentTarget();
   if (!target) return;
   try {
-    latestRowsCache = await api(`/api/runs/latest?target_id=${target.id}`);
+    latestRowsCache = await api(`/api/runs/latest?target_id=${target.id}&since_id=${await sessionSince()}`);
     renderCounts(latestRowsCache);
     renderMetricGrid();
   } catch (error) {
@@ -817,9 +819,10 @@ async function renderTrend() {
   const box = $("trend-chart-box");
   box.classList.add("loading");
   try {
+    const since = await sessionSince();
     const histories = await Promise.all(
       metrics.map((m) =>
-        api(`/api/history?target_id=${target.id}&metric_key=${encodeURIComponent(m.key)}`),
+        api(`/api/history?target_id=${target.id}&metric_key=${encodeURIComponent(m.key)}&since_id=${since}`),
       ),
     );
     const historyByMetric = Object.fromEntries(metrics.map((m, i) => [m.key, histories[i]]));
@@ -875,6 +878,7 @@ async function renderHistory() {
             ? `${comparator(byKey.get(r.metric_key).direction)} ${formatScore(thresholdFor(byKey.get(r.metric_key), state.thresholds))}`
             : "–"),
           el("td", { className: r.passed ? "status-pass" : "status-fail" }, resultLabel(r.passed)),
+          el("td", {}, confirmButton("Delete", "Delete this run from the history", () => deleteRuns(`/api/runs/${r.id}`))),
         ),
       ),
     );
@@ -882,6 +886,22 @@ async function renderHistory() {
     setStatus(error.message, true);
   }
 }
+
+// Deletes stored runs (one, or all of this chatbot's), then tells every open
+// view to reload its scores.
+async function deleteRuns(path) {
+  try {
+    await api(path, { method: "DELETE" });
+    await settings.set("runsChangedAt", Date.now());
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
+armConfirm($("history-clear"), async () => {
+  const target = currentTarget();
+  if (target) await deleteRuns(`/api/targets/${target.id}/runs`);
+});
 
 function setView(view) {
   state.view = view;
@@ -1040,6 +1060,15 @@ settings.onChange((changes) => {
   const affectsThisTarget = target && ((run && run.targetId === target.id) || (!run && wasRun && wasRun.targetId === target.id));
   if (affectsThisTarget) {
     renderCases(run || null);
+    renderLatest();
+    renderTrend();
+    if (state.view === "history") renderHistory();
+  }
+  if ((changes.freshSinceRunId || changes.runsChangedAt) && target) {
+    // Open Details panels may show a run that is now hidden or deleted.
+    state.detailHistory = {};
+    state.caseDetailsCache = {};
+    state.expandedDetailKeys.clear();
     renderLatest();
     renderTrend();
     if (state.view === "history") renderHistory();

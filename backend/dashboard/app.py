@@ -11,7 +11,6 @@ from urllib.parse import urlparse
 from typing import Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -59,16 +58,8 @@ DB_PATH = os.getenv("JUDGE_DB_PATH", "judge.db")
 TARGET_TYPES = ("http",)
 SUPPORTED_DOCUMENT_EXTENSIONS = {".pdf", ".txt", ".docx", ".md", ".markdown", ".mdx"}
 DOCUMENTS_DIR = Path(__file__).resolve().parent.parent / "datasets" / "documents"
-# The extension's pages, also served as the web app at /app/ (same origin as the
-# API, so the browser needs no CORS for it).
+# The web app's pages, served at /app/ (same origin as the API, so no CORS).
 WEB_APP_DIR = Path(__file__).resolve().parent.parent.parent / "ChatbotExtension"
-
-
-def extension_origin_regex(extension_id: str | None) -> str:
-    """Origins allowed to call the API: one pinned extension id, or any extension."""
-    if extension_id:
-        return rf"^chrome-extension://{re.escape(extension_id)}$"
-    return r"^chrome-extension://[a-z]{32}$"
 
 
 def get_spec(key: str):
@@ -85,16 +76,11 @@ def generate_goldens_from_document(*args, **kwargs) -> int:
 
 
 app = FastAPI(title="Chrome Sidebar LLM Judge", version=hardening.APP_VERSION)
-# Only the extension may call this API: with "*", any page the user visits
-# could read stored target API keys and spend judge credits. Request bodies
-# must be JSON (FastAPI refuses other content types), which forces a CORS
-# preflight, so other sites cannot send POSTs either.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origin_regex=extension_origin_regex(os.getenv("JUDGE_EXTENSION_ID")),
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
-    allow_headers=["Content-Type"],
-)
+# No CORS middleware on purpose: only the web app (same origin) may call this
+# API. Allowing other origins would let any page the user visits read stored
+# target API keys and spend judge credits. Request bodies must be JSON (FastAPI
+# refuses other content types), which forces a preflight that other sites fail,
+# so they cannot send POSTs either.
 # Blocks DNS-rebinding pages that reach 127.0.0.1 under their own host name.
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
 # Request log (paths and status only), body size limit, security headers and a
@@ -547,6 +533,22 @@ def api_clear_target_runs(target_id: int):
     _target_or_404(target_id)
     cleared = storage.clear_runs(_conn, target_id)
     return {"target_id": target_id, "cleared": cleared}
+
+
+@app.delete("/api/runs/{run_id}")
+def api_delete_run(run_id: int):
+    if not storage.delete_run(_conn, run_id):
+        raise HTTPException(status_code=404, detail="run not found")
+    return {"deleted": run_id}
+
+
+@app.post("/api/session/start")
+def api_session_start():
+    """Mark a fresh panel load: views then show only the runs after `since_id`.
+
+    Every run stays in the database; the History view still lists all of them.
+    """
+    return {"since_id": storage.max_run_id(_conn)}
 
 
 class GenerationOptions(BaseModel):
@@ -1221,8 +1223,8 @@ def api_chat(req: ChatRequest):
 
 
 @app.get("/api/runs/latest")
-def api_runs_latest(target_id: int):
-    rows = storage.latest_runs(_conn, target_id)
+def api_runs_latest(target_id: int, since_id: int = 0):
+    rows = storage.latest_runs(_conn, target_id, since_id)
     # Each run's full result (cases, note, judge facts) for Details and the report.
     for row in rows:
         raw = row.pop("result_json", None)
@@ -1231,8 +1233,8 @@ def api_runs_latest(target_id: int):
 
 
 @app.get("/api/history")
-def api_history(target_id: int, metric_key: str):
-    rows = storage.history(_conn, target_id, metric_key)
+def api_history(target_id: int, metric_key: str, since_id: int = 0):
+    rows = storage.history(_conn, target_id, metric_key, since_id)
     for row in rows:
         row.pop("result_json", None)  # the trend needs scores, not every case
     return rows

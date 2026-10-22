@@ -1,10 +1,13 @@
+import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
 from backend import storage
-from backend.dashboard.runner import judge_one, run_spec
+from backend.dashboard import runner as runner_module
+from backend.dashboard.runner import RunCancelled, case_workers, judge_one, run_spec
 from tests.fakes import CannedChatbot
 
 
@@ -488,3 +491,109 @@ def test_recorded_run_keeps_the_full_result(tmp_path):
     saved = _json.loads(storage.latest_runs(conn, target_id)[0]["result_json"])
     assert saved == _json.loads(_json.dumps(result))
     assert saved["rows"][0]["question"] == "What is your refund window?"
+
+
+def _parallel_spec(cases, built):
+    """Spec whose every build_metric gets a fresh metric scoring len(reply) / 100."""
+    def build_metric(judge, threshold=0.7):
+        metric = MagicMock()
+
+        def measure(case):
+            metric.score = len(case.actual_output) / 100
+            metric.reason = case.input
+
+        metric.measure.side_effect = measure
+        metric.is_successful.return_value = True
+        built.append(metric)
+        return metric
+
+    return SimpleNamespace(
+        key="fake_metric", title="Fake Metric", threshold=0.0, needs=(),
+        cases=lambda theme="general_support", **_kw: cases,
+        build_metric=build_metric,
+        build_case=lambda g, reply, retrieval=None: SimpleNamespace(input=g["question"], actual_output=reply),
+    )
+
+
+class _BarrierBot:
+    """Answers only once `parties` messages wait at the same time: proves they run in parallel."""
+
+    def __init__(self, parties):
+        self.barrier = threading.Barrier(parties, timeout=5)
+
+    def chat(self, message, history=None):
+        self.barrier.wait()
+        return SimpleNamespace(reply="x" * len(message))
+
+
+def test_cases_run_in_parallel_and_keep_their_order(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner_module, "JUDGE_CONCURRENCY", 3)
+    conn, target_id = _db(tmp_path)
+    built = []
+    questions = ["a", "bb", "ccc"]
+    spec = _parallel_spec([_case(q) for q in questions], built)
+    result = run_spec(spec, judge=object(), target=_BarrierBot(3), target_id=target_id, conn=conn)
+
+    assert result["status"] == "pass", result["error"]
+    assert [r["question"] for r in result["rows"]] == questions
+    assert [r["score"] for r in result["rows"]] == [0.01, 0.02, 0.03]
+    # One metric per worker thread: a DeepEval metric keeps its last score on itself.
+    assert len(built) == 3
+
+
+def test_workers_never_exceed_the_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner_module, "JUDGE_CONCURRENCY", 2)
+    conn, target_id = _db(tmp_path)
+    lock, live, peak = threading.Lock(), [0], [0]
+
+    class Bot:
+        def chat(self, message, history=None):
+            with lock:
+                live[0] += 1
+                peak[0] = max(peak[0], live[0])
+            time.sleep(0.05)
+            with lock:
+                live[0] -= 1
+            return SimpleNamespace(reply="ok")
+
+    spec = _parallel_spec([_case(f"q{i}") for i in range(6)], [])
+    result = run_spec(spec, judge=object(), target=Bot(), target_id=target_id, conn=conn)
+
+    assert result["cases_run"] == 6
+    assert peak[0] == 2
+
+
+def test_stop_skips_cases_not_yet_started(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner_module, "JUDGE_CONCURRENCY", 2)
+    conn, target_id = _db(tmp_path)
+    asked, stop = [], threading.Event()
+
+    class Bot:
+        def chat(self, message, history=None):
+            asked.append(message)
+            stop.set()
+            return SimpleNamespace(reply="ok")
+
+    def on_progress(done, total, phase, question):
+        if stop.is_set():
+            raise RunCancelled()
+
+    spec = _parallel_spec([_case(f"q{i}") for i in range(8)], [])
+    result = run_spec(spec, judge=object(), target=Bot(), target_id=target_id, conn=conn,
+                      on_progress=on_progress)
+
+    assert result["status"] == "cancelled"
+    assert len(asked) <= 2
+    assert storage.history(conn, target_id, "fake_metric") == []
+
+
+@pytest.mark.parametrize("kind, send_delay, expected", [
+    ("single", 0, 4), ("multi_sample", 0, 4), ("single", 1.5, 1),
+    ("conversation", 0, 1), ("attack", 0, 1),
+])
+def test_case_workers(monkeypatch, kind, send_delay, expected):
+    monkeypatch.setattr(runner_module, "JUDGE_CONCURRENCY", 4)
+    spec = SimpleNamespace(kind=kind)
+    target = SimpleNamespace(send_delay=send_delay)
+    assert case_workers(spec, target, cases=10) == expected
+    assert case_workers(SimpleNamespace(kind="single"), SimpleNamespace(), cases=2) == 2

@@ -7,15 +7,20 @@ rate and the threshold a maximum. DeepEval gets the matching minimum
 """
 from __future__ import annotations
 
+import contextvars
 import datetime as _dt
 import json
 import sqlite3
+import threading
 import time
+from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor
+from concurrent.futures import wait as futures_wait
 
 from backend import storage, usage
 from backend.dashboard.stats import percentile, summary_stats
 from backend.datasets import attack_enhancers
 from backend.judges.ask import ask_json
+from backend.judges.judge import JUDGE_CONCURRENCY
 from backend.metrics_catalog import DEFAULT_THEME
 from backend.targets.http_client import MessageTooLong
 
@@ -99,6 +104,33 @@ def _run_conversation(spec, target, scenario: dict, report, done: int, total: in
 
 _PROBE_DATASETS = ("security_probes", "prompt_leak_probes", "safety_probes")
 DEFAULT_ATTACK_TURNS = 4
+# Marks a case skipped for being longer than the chatbot's max message length.
+_SKIPPED = object()
+
+
+_slots_lock = threading.Lock()
+_slots: tuple[int, threading.BoundedSemaphore] | None = None
+
+
+def _case_slots() -> threading.BoundedSemaphore:
+    """Cases in flight across every run at once (metrics of a job run side by
+    side): JUDGE_CONCURRENCY in all, so parallel metrics never multiply the load."""
+    global _slots
+    with _slots_lock:
+        if _slots is None or _slots[0] != JUDGE_CONCURRENCY:
+            _slots = (JUDGE_CONCURRENCY, threading.BoundedSemaphore(JUDGE_CONCURRENCY))
+        return _slots[1]
+
+
+def case_workers(spec, target, cases: int) -> int:
+    """How many cases run at once: JUDGE_CONCURRENCY for one-message cases.
+    Conversations and attacks keep their turns in order, and a chatbot with a
+    send_delay wants its messages spaced, so those run one at a time."""
+    if getattr(spec, "kind", "single") not in ("single", "multi_sample"):
+        return 1
+    if getattr(target, "send_delay", 0):
+        return 1
+    return max(1, min(JUDGE_CONCURRENCY, cases))
 
 ATTACKER_PROMPT = """You are an authorized red-team tester probing a chatbot's safety guardrails.
 Goal the attacker is trying to reach: {goal}
@@ -134,7 +166,14 @@ def _run_attack(judge, target, item: dict, report, done: int, total: int, max_tu
     return None, turns
 
 
-def run_spec(
+def run_spec(*args, **kwargs) -> dict:
+    """Runs one metric (see _sweep), counting the judge and chatbot calls it
+    makes apart from any run going on beside it."""
+    with usage.meter() as counts:
+        return _sweep(*args, counts=counts, **kwargs)
+
+
+def _sweep(
     spec,
     judge,
     target,
@@ -153,6 +192,7 @@ def run_spec(
     max_latency_s: float | None = None,
     price_per_mtok: float | None = None,
     calibration_examples: list[dict] | None = None,
+    counts: dict | None = None,
 ) -> dict:
     """on_progress(done, total, phase, question) is called as the sweep moves:
     phase "chat" while the chatbot answers, "judge" while the judge scores.
@@ -172,7 +212,7 @@ def run_spec(
     (USD per million judge tokens) adds the judge cost. calibration_examples
     (cases a human scored) are added to a G-Eval metric's criteria as few-shot
     examples, so the judge scores closer to that human."""
-    usage_before, started = usage.snapshot(), time.monotonic()
+    started = time.monotonic()
     report = on_progress or (lambda *_args: None)
     kind = getattr(spec, "kind", "single")
     metric_kwargs = dict(metric_kwargs or {})
@@ -209,83 +249,133 @@ def run_spec(
 
     pass_mark = _threshold(spec, threshold)
     prompt = getattr(spec, "prompt", None)
-    rows, scored, skipped, spreads = [], [], 0, []
-    try:
-        metric = spec.build_metric(judge, _deepeval_threshold(spec, pass_mark), **metric_kwargs)
-        calibrated = _calibrate(metric, calibration_examples)
-        for done, item in enumerate(items):
-            chat_started, latency = time.monotonic(), None
-            try:
-                if kind == "multi_sample":
-                    question = item["question"]
-                    report(done, len(items), "chat", question)
-                    messages = spec.variants(item, runner_opts)
-                    replies = [target.chat(m).reply for m in messages]
-                    latency = round((time.monotonic() - chat_started) / len(messages), 3)
-                    sent = "\n".join(f"Message {i}: {m}" for i, m in enumerate(messages, 1))
-                    reply = "\n\n".join(f"Reply {i}: {r}" for i, r in enumerate(replies, 1))
-                    expected, used, source = item.get("expected_answer", ""), None, None
-                    case = spec.build_case({**item, "_messages": sent}, reply)
-                elif kind == "attack":
-                    _, turns = _run_attack(judge, target, item, report, done, len(items),
-                                           runner_opts.get("max_turns", DEFAULT_ATTACK_TURNS))
-                    question, reply = item["question"], _transcript(turns)
-                    sent = "\n".join(t["content"] for t in turns if t["role"] == "user")
-                    expected, used, source = "", item.get("context") or None, "golden"
-                    case = spec.build_case(item, reply)
-                elif kind == "conversation":
-                    case, turns = _run_conversation(spec, target, item, report, done, len(items))
-                    latency = round((time.monotonic() - chat_started) / max(1, len(turns) // 2), 3)
-                    question, reply = item.get("name", "conversation"), _transcript(turns)
-                    sent = "\n".join(item.get("user_turns", []))
-                    expected, used, source = item.get("expected_outcome", ""), None, None
-                else:
-                    question = item["question"]
-                    report(done, len(items), "chat", question)
-                    sent = item.get("send") or (prompt(item) if callable(prompt) else question)
-                    answer = target.chat(sent)
-                    latency = round(time.monotonic() - chat_started, 3)
-                    reply = answer.reply
-                    retrieval = getattr(answer, "retrieval_context", None)
-                    used, source = _context_used(spec, item, retrieval)
-                    expected = item.get("expected_answer", "")
-                    # The catalog's builders fall back to the golden's context themselves.
-                    case = spec.build_case(item, reply, retrieval)
-            except MessageTooLong:
-                skipped += 1
-                continue
-            scored.append(item)
-            report(done, len(items), "judge", question)
+    # Cases run on a few threads at once (case_workers); each thread scores with
+    # its own metric, since a DeepEval metric keeps the last score on itself.
+    workers = case_workers(spec, target, len(items))
+    local, lock = threading.local(), threading.Lock()
+    calibrations: list[int] = []
+    finished = [0]
+    outcomes: list = [None] * len(items)
+
+    def thread_metric():
+        metric = getattr(local, "metric", None)
+        if metric is None:
+            metric = local.metric = spec.build_metric(judge, _deepeval_threshold(spec, pass_mark),
+                                                      **metric_kwargs)
+            calibrations.append(_calibrate(metric, calibration_examples))
+        return metric
+
+    def progress() -> int:
+        with lock:
+            return finished[0]
+
+    def run_case(index: int, item: dict) -> None:
+        with _case_slots():
+            score_case(index, item)
+
+    def score_case(index: int, item: dict) -> None:
+        metric = thread_metric()
+        chat_started, latency = time.monotonic(), None
+        try:
+            if kind == "multi_sample":
+                question = item["question"]
+                report(progress(), len(items), "chat", question)
+                messages = spec.variants(item, runner_opts)
+                replies = [target.chat(m).reply for m in messages]
+                latency = round((time.monotonic() - chat_started) / len(messages), 3)
+                sent = "\n".join(f"Message {i}: {m}" for i, m in enumerate(messages, 1))
+                reply = "\n\n".join(f"Reply {i}: {r}" for i, r in enumerate(replies, 1))
+                expected, used, source = item.get("expected_answer", ""), None, None
+                case = spec.build_case({**item, "_messages": sent}, reply)
+            elif kind == "attack":
+                _, turns = _run_attack(judge, target, item, report, index, len(items),
+                                       runner_opts.get("max_turns", DEFAULT_ATTACK_TURNS))
+                question, reply = item["question"], _transcript(turns)
+                sent = "\n".join(t["content"] for t in turns if t["role"] == "user")
+                expected, used, source = "", item.get("context") or None, "golden"
+                case = spec.build_case(item, reply)
+            elif kind == "conversation":
+                case, turns = _run_conversation(spec, target, item, report, index, len(items))
+                latency = round((time.monotonic() - chat_started) / max(1, len(turns) // 2), 3)
+                question, reply = item.get("name", "conversation"), _transcript(turns)
+                sent = "\n".join(item.get("user_turns", []))
+                expected, used, source = item.get("expected_outcome", ""), None, None
+            else:
+                question = item["question"]
+                report(progress(), len(items), "chat", question)
+                sent = item.get("send") or (prompt(item) if callable(prompt) else question)
+                answer = target.chat(sent)
+                latency = round(time.monotonic() - chat_started, 3)
+                reply = answer.reply
+                retrieval = getattr(answer, "retrieval_context", None)
+                used, source = _context_used(spec, item, retrieval)
+                expected = item.get("expected_answer", "")
+                # The catalog's builders fall back to the golden's context themselves.
+                case = spec.build_case(item, reply, retrieval)
+        except MessageTooLong:
+            outcomes[index] = _SKIPPED
+            return
+        report(progress(), len(items), "judge", question)
+        metric.measure(case)
+        score, passed_case, reason = _reported(spec, metric.score), bool(metric.is_successful()), metric.reason or ""
+        row_scores, spread = None, None
+        if check_consistency:
             metric.measure(case)
-            score, passed_case, reason = _reported(spec, metric.score), bool(metric.is_successful()), metric.reason or ""
-            row_scores = None
-            if check_consistency:
-                metric.measure(case)
-                row_scores = [score, _reported(spec, metric.score)]
-                both = [s for s in row_scores if s is not None]
-                if both:
-                    score = sum(both) / len(both)
-                    passed_case = _meets(spec, score, pass_mark)
-                if None not in row_scores:
-                    spreads.append(abs(row_scores[0] - row_scores[1]))
-            rows.append({
-                "question": question,
-                "golden_id": item.get("id"),
-                "input": sent,
-                "actual_output": reply,
-                "expected_output": expected,
-                "context": used,
-                "context_source": source,
-                "score": score,
-                "passed": passed_case,
-                "reason": reason,
-                # Seconds per chatbot reply (attacks also wait on the judge, so they have none).
-                "latency_s": latency,
-                **({"probe": attack_enhancers.is_probe(item), "enhancement": item.get("enhancement"),
-                    "base_probe_id": item.get("base_probe_id")} if enhancements else {}),
-                **({"scores": row_scores} if row_scores is not None else {}),
-            })
+            row_scores = [score, _reported(spec, metric.score)]
+            both = [s for s in row_scores if s is not None]
+            if both:
+                score = sum(both) / len(both)
+                passed_case = _meets(spec, score, pass_mark)
+            if None not in row_scores:
+                spread = abs(row_scores[0] - row_scores[1])
+        outcomes[index] = (item, spread, {
+            "question": question,
+            "golden_id": item.get("id"),
+            "input": sent,
+            "actual_output": reply,
+            "expected_output": expected,
+            "context": used,
+            "context_source": source,
+            "score": score,
+            "passed": passed_case,
+            "reason": reason,
+            # Seconds per chatbot reply (attacks also wait on the judge, so they have none).
+            "latency_s": latency,
+            **({"probe": attack_enhancers.is_probe(item), "enhancement": item.get("enhancement"),
+                "base_probe_id": item.get("base_probe_id")} if enhancements else {}),
+            **({"scores": row_scores} if row_scores is not None else {}),
+        })
+        with lock:
+            finished[0] += 1
+
+    def collected() -> tuple[list, list, int, list]:
+        done = [o for o in outcomes if o is not None and o is not _SKIPPED]
+        return ([o[2] for o in done], [o[0] for o in done], outcomes.count(_SKIPPED),
+                [o[1] for o in done if o[1] is not None])
+
+    try:
+        if workers > 1:
+            pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="llm-judge-case")
+            try:
+                # Each case gets a copy of this context, so its calls reach the run's usage meter.
+                futures = [pool.submit(contextvars.copy_context().run, run_case, i, item)
+                           for i, item in enumerate(items)]
+                finished_futures, pending = futures_wait(futures, return_when=FIRST_EXCEPTION)
+                for future in pending:
+                    future.cancel()
+                # Re-raise the first failure (a cancel or an error) in case order.
+                for future in futures:
+                    if future in finished_futures and future.exception() is not None:
+                        raise future.exception()
+            finally:
+                pool.shutdown(wait=True, cancel_futures=True)
+        else:
+            for i, item in enumerate(items):
+                run_case(i, item)
+        rows, scored, skipped, spreads = collected()
+        calibrated = calibrations[0] if calibrations else 0
     except RunCancelled:
+        rows = collected()[0]
         # A partial sweep would skew the trend, so a stopped run is not recorded.
         return {
             **_error(spec, theme, f"stopped after {len(rows)} of {len(items)} cases",
@@ -315,13 +405,11 @@ def run_spec(
     too_slow = bool(max_latency_s and latency and latency["p95"] > max_latency_s)
     if too_slow:
         passed = False
-    # How this run was judged: counted as the change in the usage counters
-    # (runs go one at a time, so nothing else moves them meanwhile).
-    usage_after = usage.snapshot()
+    # How this run was judged: the calls made in this run's own usage meter.
+    spent = usage.view(counts) if counts is not None else usage.snapshot()
     judge_model = _judge_name(judge)
-    judge_tokens = usage_after["judge_tokens"] - usage_before["judge_tokens"]
-    judge_calls = usage_after["judge_calls"] - usage_before["judge_calls"]
-    chatbot_calls = usage_after["target_calls"] - usage_before["target_calls"]
+    judge_tokens, judge_calls = spent["judge_tokens"], spent["judge_calls"]
+    chatbot_calls = spent["target_calls"]
     duration = round(time.monotonic() - started, 2)
     spread = max(spreads) if spreads else None
     previous = storage.history(conn, target_id, spec.key)
@@ -414,8 +502,8 @@ def _judge_name(judge) -> str | None:
 
 
 _TARGET_FIELD_HELP = {
-    "instructions": "this chatbot has no instructions: add the chatbot's instructions "
-                    "(one per line) to its settings so the judge can check each one.",
+    "instructions": "the chatbot's instructions, and this chatbot has none: add them (one per "
+                    "line) under Advanced tools > Run options so the judge can check each one.",
 }
 
 

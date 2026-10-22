@@ -26,6 +26,25 @@ def fixed_goldens(request, tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def serial_cases(monkeypatch):
+    """Cases and a job's metrics run one at a time, so doubles that hand out
+    scores in order stay deterministic; the parallel paths have their own tests
+    (test_runner.py, test_jobs.py)."""
+    from backend.dashboard import jobs, runner
+
+    monkeypatch.setattr(runner, "JUDGE_CONCURRENCY", 1)
+    monkeypatch.setattr(jobs, "METRIC_CONCURRENCY", 1)
+
+
+@pytest.fixture(autouse=True)
+def fresh_send_pacing():
+    """send_delay pacing is shared per chatbot URL; start every test without it."""
+    from backend.targets import http_client
+
+    http_client._PACES.clear()
+
+
+@pytest.fixture(autouse=True)
 def fixed_conversations(tmp_path, monkeypatch):
     """Tests edit a throwaway copy of the conversation scenarios, never the user's."""
     from backend.datasets import conversations

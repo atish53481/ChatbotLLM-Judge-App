@@ -389,30 +389,47 @@ def list_pairwise_runs(conn: sqlite3.Connection, target_id: int) -> list[dict[st
     return out
 
 
-def latest_runs(conn: sqlite3.Connection, target_id: int) -> list[dict[str, Any]]:
+def latest_runs(conn: sqlite3.Connection, target_id: int, since_id: int = 0) -> list[dict[str, Any]]:
+    """Each metric's newest run; `since_id` hides runs made before a session began."""
     with _LOCK:
         rows = conn.execute(
             """
             SELECT r.* FROM runs r
             INNER JOIN (
                 SELECT metric_key, MAX(id) AS max_id
-                FROM runs WHERE target_id = ?
+                FROM runs WHERE target_id = ? AND id > ?
                 GROUP BY metric_key
             ) latest ON r.id = latest.max_id
             ORDER BY r.metric_key
             """,
-            (target_id,),
+            (target_id, since_id),
         ).fetchall()
     return [dict(r) for r in rows]
 
 
-def history(conn: sqlite3.Connection, target_id: int, metric_key: str) -> list[dict[str, Any]]:
+def history(conn: sqlite3.Connection, target_id: int, metric_key: str,
+            since_id: int = 0) -> list[dict[str, Any]]:
     with _LOCK:
         rows = conn.execute(
-            "SELECT * FROM runs WHERE target_id = ? AND metric_key = ? ORDER BY id",
-            (target_id, metric_key),
+            "SELECT * FROM runs WHERE target_id = ? AND metric_key = ? AND id > ? ORDER BY id",
+            (target_id, metric_key, since_id),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def max_run_id(conn: sqlite3.Connection) -> int:
+    """The newest run id: a session started now shows only the runs made after it."""
+    with _LOCK:
+        row = conn.execute("SELECT COALESCE(MAX(id), 0) FROM runs").fetchone()
+    return int(row[0])
+
+
+def delete_run(conn: sqlite3.Connection, run_id: int) -> bool:
+    """Remove one run from the stored history."""
+    with _LOCK:
+        cur = conn.execute("DELETE FROM runs WHERE id = ?", (run_id,))
+        conn.commit()
+        return cur.rowcount > 0
 
 
 # Background runs (backend/dashboard/jobs.py): one row per batch of metrics.

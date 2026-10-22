@@ -1,4 +1,4 @@
-"""Runs the extension's JavaScript report tests (tests/js) with Node's built-in
+"""Runs the web app's JavaScript report tests (tests/js) with Node's built-in
 test runner, so the offline suite and CI cover the PDF report too.
 
 Skipped when Node is not installed; GitHub's ubuntu runners ship with it.

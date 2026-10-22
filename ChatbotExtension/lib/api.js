@@ -1,6 +1,5 @@
-// Client for the local LLM Judge backend. The address is fixed on purpose
-// (see README): the extension talks to nothing else. Served as the web app by
-// the backend itself, the pages call their own origin instead.
+// Client for the local LLM Judge backend. The backend serves these pages
+// itself, so they call their own origin and nothing else.
 const BACKEND_URL = /^https?:$/.test((typeof location !== "undefined" && location.protocol) || "")
   ? location.origin
   : "http://127.0.0.1:8765";

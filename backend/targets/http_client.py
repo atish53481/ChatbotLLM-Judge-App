@@ -12,13 +12,14 @@ is given.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from typing import Any
 from urllib.parse import quote, quote_plus, urlsplit
 
 import requests
 
-from backend import usage
+from backend import traffic, usage
 from backend.targets.base import ChatbotClient, ChatReply
 from backend.targets.curl import MESSAGE_PLACEHOLDER, context_texts, find_history_path
 from backend.targets.reply_check import ChatbotUnavailable, service_message
@@ -38,6 +39,16 @@ MAX_SEND_DELAY = 60
 # Patched in tests so retries and spacing cost no real time.
 _sleep = time.sleep
 _clock = time.monotonic
+
+# send_delay pacing per chatbot URL, shared by every client and thread (runs of
+# one job go side by side): {"lock": held while waiting and sending, "last": time}.
+_PACES: dict[str, dict] = {}
+_PACES_LOCK = threading.Lock()
+
+
+def _pace_for(url: str) -> dict:
+    with _PACES_LOCK:
+        return _PACES.setdefault(url, {"lock": threading.Lock(), "last": None})
 
 
 class MessageTooLong(ValueError):
@@ -161,7 +172,7 @@ class HttpTargetClient(ChatbotClient):
         self.send_delay = float(send_delay)
         # Treat service messages ("limit reached", "please log in") as errors.
         self.check_replies = check_replies
-        self._last_sent: float | None = None
+        self._pace = _pace_for(self.url) if self.send_delay else None
 
     def _encode_for_body(self, message: str) -> str:
         content_type = next(
@@ -176,7 +187,16 @@ class HttpTargetClient(ChatbotClient):
     def chat(self, message: str, history: list[dict] | None = None) -> ChatReply:
         # Golden questions are asked on their own (no history); multi-turn
         # scenarios pass the conversation so far, which goes into history_path.
-        reply = self.read_reply(self.send(message, history))
+        host = urlsplit(self.url).netloc
+        earlier = f" (+{len(history)} earlier turns)" if history else ""
+        traffic.log("-> chatbot %s%s: %s", host, earlier, traffic.clip(message))
+        started = time.monotonic()
+        try:
+            reply = self.read_reply(self.send(message, history))
+        except Exception as e:
+            traffic.log("x  chatbot %s failed after %.1fs: %s", host, time.monotonic() - started, e)
+            raise
+        traffic.log("<- chatbot %s in %.1fs: %s", host, time.monotonic() - started, traffic.clip(reply.reply))
         if self.check_replies:
             problem = service_message(reply.reply)
             if problem:
@@ -223,8 +243,13 @@ class HttpTargetClient(ChatbotClient):
             k: v for k, v in self.headers.items() if k.lower() not in _DROPPED_HEADERS
         }
         for attempt in range(BUSY_RETRIES + 1):
-            self._wait_for_send_delay()
-            r = self._request(url, body, headers)
+            if self._pace is None:
+                r = self._request(url, body, headers)
+            else:
+                # One message at a time to a paced chatbot, send_delay apart.
+                with self._pace["lock"]:
+                    self._wait_for_send_delay()
+                    r = self._request(url, body, headers)
             if r.status_code not in BUSY_STATUSES or attempt == BUSY_RETRIES:
                 break
             _sleep(_retry_wait(r, attempt))
@@ -233,8 +258,9 @@ class HttpTargetClient(ChatbotClient):
         return r
 
     def _wait_for_send_delay(self) -> None:
-        if self.send_delay and self._last_sent is not None:
-            wait = self.send_delay - (_clock() - self._last_sent)
+        last = self._pace["last"]
+        if last is not None:
+            wait = self.send_delay - (_clock() - last)
             if wait > 0:
                 _sleep(wait)
 
@@ -249,8 +275,8 @@ class HttpTargetClient(ChatbotClient):
                 f"Could not reach the chatbot at {host}: check the URL and that the site is up. ({e})"
             ) from e
         finally:
-            if self.send_delay:
-                self._last_sent = _clock()
+            if self._pace is not None:
+                self._pace["last"] = _clock()
         usage.record_target()
         return r
 

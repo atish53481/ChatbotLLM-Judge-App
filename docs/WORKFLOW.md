@@ -6,9 +6,9 @@ How a judged answer travels from a click in the side panel to a score on the cha
 
 | Piece | Path | Role |
 |---|---|---|
+| Web app | `ChatbotExtension/index.html` | Served at `http://127.0.0.1:8765/`: side panel and dashboard side by side. |
 | Side panel | `ChatbotExtension/sidebar/` | Primary UI: manage chatbots and goldens, run a metric, see the latest scores. |
-| Dashboard tab | `ChatbotExtension/dashboard/` | Chat with the chatbot; latest / trend / case-by-case views. |
-| Service worker | `ChatbotExtension/background.js` | Opens the side panel and the dashboard tab. |
+| Dashboard | `ChatbotExtension/dashboard/` | Chat with the chatbot; latest / trend / case-by-case views; History of every stored run. |
 | Backend | `backend/dashboard/app.py` | FastAPI control plane on `http://127.0.0.1:8765`. |
 | Judge | `backend/judges/judge.py` | The scoring model — never the chatbot under test. |
 | Metrics catalog | `backend/metrics_catalog.py` | The 25 metrics in 6 groups (incl. 9 Security red-team metrics): direction (≥ / ≤), default threshold, environment presets, what each scores on. |
@@ -80,8 +80,10 @@ laptop sleeps or is shut down.
 2. On import, `backend/dashboard/app.py` opens `judge.db` and creates the tables.
    `storage.init_db` also migrates older HTTP chatbots to the cURL-template config and
    drops retired sample (`mock`) and web-page (`dom`) chatbots.
-3. The extension loads from `ChatbotExtension/`. The side panel calls `/api/status`,
-   which reports the judge model name and whether a key is configured.
+3. The browser opens `http://127.0.0.1:8765/`, which serves the web app from
+   `ChatbotExtension/` at `/app/`. On load the side panel resets the goldens, calls
+   `POST /api/session/start` (scores start fresh; older runs stay in History) and
+   `/api/status`, which reports the judge model name and whether a key is configured.
 
 ## 2. Adding a chatbot (target)
 
@@ -190,9 +192,12 @@ Ad-hoc scores are **not stored**, so the trend charts stay a record of golden-se
 
 ## 6. Views and history
 
-- The side panel and dashboard sync selections through `chrome.storage.local`
-  (`selectedTargetId`, `selectedMetric`, `lastRun`); the latest run is shared that
-  way rather than re-fetched.
+- The side panel and dashboard sync selections through `localStorage`
+  (`llmJudge:selectedTargetId`, `selectedMetric`, `lastRun`, `freshSinceRunId`) and
+  the browser's `storage` event; the latest run is shared that way rather than re-fetched.
+- Scores, trend and cases pass `since_id` (the session start) so they begin empty on
+  each load; the dashboard's **History** lists every stored run and deletes them
+  (`DELETE /api/runs/{id}`, or all via `DELETE /api/targets/{id}/runs`).
 - `GET /api/runs/latest?target_id=` returns the newest run per metric
   (`storage.latest_runs`) for the latest-scores chart.
 - `GET /api/history?target_id=&metric_key=` returns every run of one metric in

@@ -1,7 +1,7 @@
-// What a finished run says in the notification and on the toolbar badge.
-// Loaded by the service worker (importScripts) and by the extension pages.
+// What a finished run says in the browser notification and the tab-title mark.
+// Loaded by the web app's pages.
 
-// What the notification and toolbar badge say when a run ends; null when there
+// What the notification and tab-title mark say when a run ends; null when there
 // is nothing to announce (nothing ran, or the user pressed Stop themselves).
 function runAnnouncement(target, keys, results, metrics) {
   if (!results.length) return null;

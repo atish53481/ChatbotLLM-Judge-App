@@ -30,7 +30,7 @@ Sources this backlog was distilled from (re-read when a feature needs detail):
      with `group`, `direction`, `threshold`, `presets()` for all 4 `ENVIRONMENTS`, `kind`,
      `ui_category`, `scale_hint`, `question`, `scores_on`, `criteria`, `needs`, dataset.
    - "lower" metrics go through `deepeval_threshold` / `reported_score`. Never invert scores by hand.
-   - CORS stays `chrome-extension://` only, `TrustedHostMiddleware` stays `127.0.0.1`/`localhost`.
+   - No CORS middleware (web app is same-origin), `TrustedHostMiddleware` stays `127.0.0.1`/`localhost`.
    - `sentence_transformers` stays lazily imported behind `generate_goldens_from_document`.
    - `pytest.ini` plugin disables stay.
    - Runs go through `jobs.py` + `runner.run_spec`; failures are `status: "error"` dicts, not exceptions.
@@ -40,7 +40,7 @@ Sources this backlog was distilled from (re-read when a feature needs detail):
    - The judge is never the chatbot under test.
 5. New stored data → add columns via `storage.RUN_EXTRA_COLUMNS`-style migration (additive, nullable),
    never drop or rename.
-6. UI changes must work in both contexts (`IN_EXTENSION` true/false in `lib/ui.js`) and at narrow widths.
+6. UI changes must work in the web app (standalone pages and the two-pane `index.html`) and at narrow widths.
 7. Keep the metric budget advice: the guides recommend ≤ 5 metrics per use case
    (1–2 custom G-Eval/DAG + 2–3 system metrics). Presets should reflect that.
 8. Update `CLAUDE.md` architecture notes and `docs/WORKFLOW.md` when a feature adds an endpoint,
@@ -83,7 +83,7 @@ as context. Uses the scenario's existing `chatbot_role`.
 **F2. Turn / Conversation Relevancy with window size** (conversational). Sliding window of last N turns.
 - Where: new spec using DeepEval `TurnRelevancyMetric` (or `ConversationRelevancyMetric` per installed
   DeepEval 4 name — check `deepeval.metrics` first). Expose `window_size` as an optional per-metric
-  setting stored like `thresholds` in `chrome.storage.local`, default 10.
+  setting stored like `thresholds` in the web app's `settings` (localStorage), default 10.
 - Done when: window size round-trips side panel → `/api/run` → metric.
 
 **F3. Prompt Alignment** (rag_quality). Checks each instruction separately.

@@ -1,9 +1,9 @@
-# Chrome Sidebar LLM Judge
+# LLM Judge
 
 Judge any chatbot's answers with [DeepEval](https://github.com/confident-ai/deepeval)
-metrics from a Chrome side panel. A local FastAPI backend scores the answers with a
-separate judge model; the extension shows the scores, the trend across runs, and a
-chat window for the chatbot being judged.
+metrics from a web app. A local FastAPI backend scores the answers with a
+separate judge model and serves the app, which shows the scores, the trend across
+runs, and a chat window for the chatbot being judged.
 
 ## Quick start (Windows)
 
@@ -13,7 +13,8 @@ chat window for the chatbot being judged.
 2. Double-click `run-backend.bat`. The first start creates `.venv` and installs the
    packages (a few minutes); later starts take seconds. The backend listens on
    `http://127.0.0.1:8765`.
-3. Load the extension: see [ChatbotExtension/README.md](ChatbotExtension/README.md).
+3. Open **http://127.0.0.1:8765/** (or double-click `start-llm-judge.bat`, which does
+   steps 2–3). See [ChatbotExtension/README.md](ChatbotExtension/README.md).
 
 To add a chatbot, capture one real request from its website and paste it as cURL:
 
@@ -73,7 +74,8 @@ logged in; the task just means the backend is always there when you are.
   the metric catalog (`metrics_catalog.py`); run history in SQLite
   (`storage.py`, `judge.db`).
 - `tests/` — pytest suite.
-- `ChatbotExtension/` — Chrome extension (side panel, dashboard tab).
+- `ChatbotExtension/` — the web app's pages (side panel, dashboard, report,
+  Advanced tools), served by the backend at `/app/`.
 - `docs/superpowers/` — design spec and implementation plan.
 
 ## Configuration (.env)
@@ -84,7 +86,6 @@ logged in; the task just means the backend is always there when you are.
 | `JUDGE_MODEL` | `openai/gpt-oss-120b` | judge model name |
 | `JUDGE_BASE_URL` | `https://api.groq.com/openai/v1` | judge API base URL |
 | `JUDGE_DB_PATH` | `judge.db` | SQLite file for chatbots and run history |
-| `JUDGE_EXTENSION_ID` | any extension | pin CORS to one installed extension id |
 | `JUDGE_LOG_LEVEL` | `INFO` | backend log level (logs paths and status codes, never bodies) |
 | `JUDGE_MAX_BODY_MB` | `25` | largest request body accepted (document uploads) |
 
@@ -228,17 +229,14 @@ at 17:42 · 5 passed · took 1m 12s" (green), "✕ … · 1 failed" (red), "■ 
 "✕ Run interrupted: why". **Show results** scrolls to the per-metric rows, **×**
 dismisses it; the **Run judge** button reads "Running…" until the run ends.
 
-A Chrome notification also says how the run went ("Shop bot: 18 passed · 2 failed
-(Faithfulness, Bias)"; for a single metric that could not run, why), and the
-toolbar icon shows a badge: a green ✓ when everything passed, the number of failed
-metrics in red, or an amber ! when a metric could not run. Clicking the
-notification opens (or focuses) the dashboard; opening the side panel or dashboard
-clears the badge. A run you stop yourself is not announced. Runs are backend
-jobs: closing the side panel or dashboard does not stop them, reopening either
-shows the live progress, and the notification arrives when the job ends (within 30
-seconds if no page is open). If no notification appears, Windows may be hiding them:
-allow Google Chrome under Settings → System → Notifications and check Focus assist /
-Do not disturb.
+A browser notification also says how the run went ("Shop bot: 18 passed · 2 failed
+(Faithfulness, Bias)"; for a single metric that could not run, why), and the tab
+title gets a mark (✓, the number failed, or !) while the tab is in the background;
+looking at the tab clears it. A run you stop yourself is not announced. Runs are
+backend jobs: closing the page does not stop them, and reopening it shows the live
+progress. If no notification appears, allow it when the browser asks, and check
+that Windows allows your browser under Settings → System → Notifications (and
+Focus assist / Do not disturb).
 
 ## Details and the PDF report
 
@@ -273,9 +271,10 @@ selected chatbot:
 
 Before saving, tick on the page which sections and which metrics (All / Failed only /
 None, or one by one) go into the PDF; the choice is remembered in this browser and is
-not printed. Then click **Save as PDF** and pick *Save as PDF* as the printer. Case
-details come from the runs this browser made; a metric run elsewhere shows its score
-without the cases. Every metric is handled from the catalog's data, so new metrics
+not printed. Then click **Save as PDF** and pick *Save as PDF* as the printer. All
+report data comes from the database (`judge.db`): each metric's latest run in this
+session with its stored cases (`runs.result_json`), so any browser shows the same
+report. A metric not run since the page was loaded is listed as not run. Every metric is handled from the catalog's data, so new metrics
 appear without changes to the report. Tests: `node --test tests/js/report.test.js`
 (also run by `pytest` via `tests/test_report_js.py`).
 
@@ -291,8 +290,7 @@ is the online-shop set the ShopEasy sample bot answers; `legacy_store` holds the
 answers migrated from the earlier `evals/` suite. For a chatbot's own facts, give
 it its own theme and fill it from its docs.
 Add, edit or delete answers in the side panel (each row has an **Edit** button). Changes
-last until the side panel is loaded again: every fresh load (reopening the panel or
-reloading the extension) restores the shipped sets from
+last until the page is loaded again: every fresh load restores the shipped sets from
 `backend/datasets/goldens.default.json`. To change the defaults, edit that file.
 A golden set with your own theme name is not shipped, so it is never reset.
 

@@ -104,7 +104,7 @@ function summaryTable(metrics, latestByKey, thresholds) {
   );
 }
 
-// Details saved by this browser belong to this run only if not older than it.
+// Details (from the run's stored result) belong to this run only if not older than it.
 function detailsFor(run, details) {
   return details && run && details.status !== "error" && details.finishedAt >= Date.parse(run.ts) - 60_000
     ? details : null;
@@ -349,7 +349,7 @@ function metricSection(metric, run, details, thresholds, caseIds, options = DEFA
     el("h3", {}, metric.title, " ", resultCell(run)),
     dl(metricMeaning(metric)),
   ];
-  // Details saved by this browser match this run only if they are not older than it.
+  // Details (from the run's stored result) match this run only if they are not older than it.
   const sameRun = details && run && details.finishedAt >= Date.parse(run.ts) - 60_000;
   if (!sameRun || details.status === "error") {
     parts.push(dl([
@@ -357,7 +357,7 @@ function metricSection(metric, run, details, thresholds, caseIds, options = DEFA
       ["Cases", run.cases_run != null ? String(run.cases_run) : "–"],
       ["Judge", run.judge_model || "–"],
     ]));
-    parts.push(el("p", { className: "muted small" }, "Case-by-case details were not saved in this browser for this run; run the metric from the dashboard or side panel to include them."));
+    parts.push(el("p", { className: "muted small" }, "Case-by-case details are not stored for this run (it predates storing them, or it failed); run the metric again to include them."));
     return el("section", { className: "metric" }, ...parts);
   }
   const verdict = runVerdict(details);
@@ -529,13 +529,11 @@ async function loadReportData() {
   if (!target) throw new Error("Chatbot not found: open the report from the dashboard.");
   const [metrics, latest] = await Promise.all([
     api(`/api/metrics?target_id=${target.id}`),
-    api(`/api/runs/latest?target_id=${target.id}`),
+    api(`/api/runs/latest?target_id=${target.id}&since_id=${await sessionSince()}`),
   ]);
   const latestByKey = Object.fromEntries(latest.map((r) => [r.metric_key, r]));
-  const details = Object.fromEntries(await Promise.all(
-    // The backend keeps each run's cases; this browser's copy covers older runs.
-    metrics.map(async (m) => [m.key, caseDetailsFromRun(latestByKey[m.key]) || await loadCaseDetails(target.id, m.key)]),
-  ));
+  // Every case comes from the database: each run's stored result.
+  const details = Object.fromEntries(metrics.map((m) => [m.key, caseDetailsFromRun(latestByKey[m.key])]));
   return { target, judge, metrics, latestByKey, details, thresholds };
 }
 

@@ -288,7 +288,7 @@ The loop: **define what good means, choose metrics, build a dataset, run, improv
 
 ## Using the LLM Judge app
 
-This project does all of the above for you, with no test code. It opens in your browser as a web app (it also works as a Chrome extension side panel). Both talk to a local backend at `http://127.0.0.1:8765`.
+This project does all of the above for you, with no test code. It opens in your browser as a web app served by a local backend at `http://127.0.0.1:8765`.
 
 ![LLM Judge web app: side panel on the left, dashboard on the right](images/app-overview.jpg)
 

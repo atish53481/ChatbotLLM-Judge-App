@@ -237,9 +237,9 @@ def test_judge_cost_uses_the_price(tmp_path, monkeypatch):
     from backend.dashboard.runner import run_spec
 
     conn, target_id = _db(tmp_path)
-    snapshots = iter([{"judge_tokens": 0, "judge_calls": 0, "target_calls": 0},
-                      {"judge_tokens": 2_000_000, "judge_calls": 4, "target_calls": 1}])
-    monkeypatch.setattr(usage, "snapshot", lambda: next(snapshots))
+    # What the run's own usage meter counted.
+    monkeypatch.setattr(usage, "view", lambda _counts: {"judge_tokens": 2_000_000, "judge_calls": 4,
+                                                        "target_calls": 1})
     result = run_spec(_fake_spec(1), judge=object(), target=SlowBot([0.0]), target_id=target_id, conn=conn,
                       price_per_mtok=0.5)
     assert result["judge_cost_usd"] == 1.0

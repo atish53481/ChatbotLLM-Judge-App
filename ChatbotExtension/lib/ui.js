@@ -3,7 +3,7 @@
 
 const ALL_METRICS = "__all__";
 const DEFAULT_THEME = "generic";
-// Thresholds per metric live in chrome.storage.local ("thresholds": {key: value});
+// Thresholds per metric live in settings ("thresholds": {key: value});
 // a metric with none set uses its catalog default. "thresholdEnv" names the
 // preset they came from (default / local / pr / staging / production / custom).
 const THRESHOLD_ENVS = [
@@ -218,11 +218,9 @@ function thresholdFor(metric, thresholds) {
   return typeof value === "number" ? value : metric.threshold;
 }
 
-// The pages run either as the Chrome extension or as a web app served by the
-// backend (http://127.0.0.1:8765/). Outside the extension, chrome.storage,
-// the service worker and the toolbar badge are replaced by localStorage,
-// in-page notifications and the tab title.
-const IN_EXTENSION = Boolean(globalThis.chrome && chrome.storage && chrome.storage.local);
+// The pages run as a web app served by the backend (http://127.0.0.1:8765/):
+// settings live in localStorage, finished runs show as browser notifications
+// plus a mark in the tab title.
 const STORAGE_PREFIX = "llmJudge:";
 const webListeners = [];
 
@@ -238,8 +236,8 @@ function webRead(key) {
   return parseStored(localStorage.getItem(STORAGE_PREFIX + key));
 }
 
-// Like chrome.storage.onChanged: every listener hears every change, the
-// writing page's own included; other tabs and frames hear it via "storage".
+// Every listener hears every change, the writing page's own included; other
+// tabs and frames hear it via the "storage" event.
 function webWrite(key, value) {
   const oldValue = webRead(key);
   localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(value));
@@ -251,48 +249,40 @@ function webWrite(key, value) {
 // the side panel and the dashboard.
 const settings = {
   async get(key, fallback) {
-    if (!IN_EXTENSION) return webRead(key) ?? fallback;
-    const data = await chrome.storage.local.get(key);
-    return data[key] ?? fallback;
+    return webRead(key) ?? fallback;
   },
   async set(key, value) {
-    if (!IN_EXTENSION) return webWrite(key, value);
-    return chrome.storage.local.set({ [key]: value });
+    return webWrite(key, value);
   },
   onChange(callback) {
-    if (!IN_EXTENSION) {
-      webListeners.push(callback);
-      return;
-    }
-    chrome.storage.onChanged.addListener((changes, area) => {
-      if (area === "local") callback(changes);
-    });
+    webListeners.push(callback);
   },
 };
 
+// Each fresh load of the panel starts a session (POST /api/session/start):
+// scores, trend and cases show only runs with an id above this, while every
+// run stays in SQLite and the dashboard's History view lists them all.
+async function sessionSince() {
+  return Number(await settings.get("freshSinceRunId", 0)) || 0;
+}
+
 // A page of this app (path relative to the app root, e.g. "report/report.html").
 function pageUrl(path) {
-  if (IN_EXTENSION) return chrome.runtime.getURL(path);
   return new URL(`../${path}`, location.href).href;
 }
 
 function openDashboard() {
-  if (IN_EXTENSION) {
-    chrome.runtime.sendMessage({ type: "OPEN_DASHBOARD" });
-  } else {
-    window.open(pageUrl("dashboard/dashboard.html"), "llm-judge-dashboard");
-  }
+  window.open(pageUrl("dashboard/dashboard.html"), "llm-judge-dashboard");
 }
 
-// The web app's stand-in for the toolbar badge: a mark in the tab title.
+// A finished run puts a mark in the tab title; seeing the tab clears it.
 const BASE_TITLE = document.title;
 function clearBadge() {
-  if (IN_EXTENSION) chrome.runtime.sendMessage({ type: "CLEAR_BADGE" }).catch(() => {});
-  else document.title = BASE_TITLE;
+  document.title = BASE_TITLE;
 }
 
-// Web app only: announces a finished job this browser started, once, even
-// with the side panel and the dashboard both following it.
+// Announces a finished job this browser started, once, even with the side
+// panel and the dashboard both following it.
 async function announceWebJob(job) {
   const watchedJobs = webRead("watchedJobs") || {};
   const info = watchedJobs[job.id];
@@ -308,16 +298,14 @@ async function announceWebJob(job) {
   }
 }
 
-if (!IN_EXTENSION) {
-  // Changes written by the other pane or another tab.
-  window.addEventListener("storage", (event) => {
-    if (!event.key || !event.key.startsWith(STORAGE_PREFIX)) return;
-    const key = event.key.slice(STORAGE_PREFIX.length);
-    const changes = { [key]: { oldValue: parseStored(event.oldValue), newValue: parseStored(event.newValue) } };
-    webListeners.forEach((callback) => callback(changes));
-  });
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) clearBadge(); });
-}
+// Changes written by the other pane or another tab.
+window.addEventListener("storage", (event) => {
+  if (!event.key || !event.key.startsWith(STORAGE_PREFIX)) return;
+  const key = event.key.slice(STORAGE_PREFIX.length);
+  const changes = { [key]: { oldValue: parseStored(event.oldValue), newValue: parseStored(event.newValue) } };
+  webListeners.forEach((callback) => callback(changes));
+});
+document.addEventListener("visibilitychange", () => { if (!document.hidden) clearBadge(); });
 
 async function fetchTargets() {
   return api("/api/targets");
@@ -416,20 +404,15 @@ async function runOptionsBody(metricKeys) {
 }
 
 function openAdvanced() {
-  if (IN_EXTENSION) chrome.tabs.create({ url: pageUrl("advanced/advanced.html") });
-  else window.open(pageUrl("advanced/advanced.html"), "llm-judge-advanced");
+  window.open(pageUrl("advanced/advanced.html"), "llm-judge-advanced");
 }
 
 function watchJob(target, jobId, metrics) {
   const info = { target: { id: target.id, name: target.name }, metrics: metrics.map((m) => ({ key: m.key, title: m.title })) };
-  if (!IN_EXTENSION) {
-    webWrite("watchedJobs", { ...(webRead("watchedJobs") || {}), [jobId]: info });
-    if (typeof Notification !== "undefined" && Notification.permission === "default") {
-      Notification.requestPermission().catch(() => {});
-    }
-    return;
+  webWrite("watchedJobs", { ...(webRead("watchedJobs") || {}), [jobId]: info });
+  if (typeof Notification !== "undefined" && Notification.permission === "default") {
+    Notification.requestPermission().catch(() => {});
   }
-  chrome.runtime.sendMessage({ type: "WATCH_JOB", jobId, ...info }).catch(() => {});
 }
 
 // Polls a job until it ends, reporting each metric once: onProgress(key, null,
@@ -458,11 +441,13 @@ async function followJob(target, jobId, onProgress, control = {}) {
       onProgress(result.key, result);
       if (result.status !== "cancelled") {
         await settings.set("lastRun", { targetId: target.id, metricKey: result.key, finishedAt: Date.now(), result });
-        await saveCaseDetails(target.id, result.key, result);
       }
     }
-    if (job.current && !reported.has(job.current.metric_key)) {
-      onProgress(job.current.metric_key, null, jobProgress(job.current));
+    // Metrics of one job run side by side: report each one still running.
+    const running = (job.running || (job.current ? [job.current] : []))
+      .filter((current) => !reported.has(current.metric_key));
+    if (running.length) {
+      for (const current of running) onProgress(current.metric_key, null, jobProgress(current));
     } else if (job.status === "queued" && job.metric_keys && job.metric_keys.length) {
       // Waiting behind another run: say so instead of looking hung.
       onProgress(job.metric_keys[0], null, {
@@ -470,8 +455,7 @@ async function followJob(target, jobId, onProgress, control = {}) {
       });
     }
     if (job.status !== "queued" && job.status !== "running") {
-      if (IN_EXTENSION) chrome.runtime.sendMessage({ type: "JOB_ENDED", jobId }).catch(() => {});
-      else announceWebJob(job).catch(() => {});
+      announceWebJob(job).catch(() => {});
       control.jobStatus = job.status;
       control.jobError = job.error || null;
       return job.results;
@@ -497,14 +481,15 @@ async function stopRun(control) {
   }
 }
 
-// Case details for Details and the report from a /api/runs/latest row's stored result.
+// Case details for Details and the report from a /api/runs/latest row's stored
+// result (runs.result_json in the database): the only source for them.
 function caseDetailsFromRun(run) {
   if (!run || !run.result) return null;
   return { ...caseDetailsOf(run.result), finishedAt: Date.parse(run.ts) };
 }
 
 // Opening the side panel, the dashboard or a report means the user has seen the
-// outcome: clear the toolbar badge a finished run left.
+// outcome: clear the tab-title mark a finished run left.
 clearBadge();
 
 // What the dashboard's Details panel and the PDF report show for one metric's
@@ -644,21 +629,10 @@ function caseAsText(metric, row, direction, threshold) {
   return lines.join("\n");
 }
 
-async function saveCaseDetails(targetId, metricKey, result) {
-  const all = await settings.get("caseDetails", {});
-  const forTarget = all[targetId] || {};
-  forTarget[metricKey] = caseDetailsOf(result);
-  await settings.set("caseDetails", { ...all, [targetId]: forTarget });
-}
-
-async function loadCaseDetails(targetId, metricKey) {
-  const all = await settings.get("caseDetails", {});
-  return (all[targetId] && all[targetId][metricKey]) || null;
-}
-
-async function clearCaseDetails(targetId) {
-  const all = await settings.get("caseDetails", {});
-  if (!(targetId in all)) return;
-  const { [targetId]: _dropped, ...rest } = all;
-  await settings.set("caseDetails", rest);
+// Case details come from the database only (runs.result_json); drop the copy
+// older versions kept in this browser.
+try {
+  localStorage.removeItem(STORAGE_PREFIX + "caseDetails");
+} catch {
+  // storage blocked: nothing to clean up
 }

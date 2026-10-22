@@ -1,4 +1,6 @@
 import json
+import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -242,3 +244,31 @@ def test_stage_one_settings_are_validated(overrides, error):
 def test_stage_one_settings_are_optional():
     client = HttpTargetClient(_config(max_message_length=None, send_delay=None))
     assert client.max_message_length is None and client.send_delay == 0 and client.check_replies
+
+
+@patch("backend.targets.http_client.requests.request")
+def test_send_delay_holds_across_clients_and_threads(mock_request):
+    # Two runs of one job talk to the same paced chatbot at once: still one
+    # message at a time, send_delay apart.
+    lock, live, peak, sent = threading.Lock(), [0], [0], []
+
+    def request(*_args, **_kwargs):
+        with lock:
+            live[0] += 1
+            peak[0] = max(peak[0], live[0])
+            sent.append(time.monotonic())
+        time.sleep(0.02)
+        with lock:
+            live[0] -= 1
+        return _response('{"data": {"text": "ok"}}')
+
+    mock_request.side_effect = request
+    clients = [HttpTargetClient(_config(send_delay=0.05)) for _ in range(2)]
+    threads = [threading.Thread(target=lambda c=c: [c.chat("hi") for _ in range(2)]) for c in clients]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert peak[0] == 1
+    gaps = [b - a for a, b in zip(sent, sent[1:])]
+    assert len(sent) == 4 and min(gaps) >= 0.05

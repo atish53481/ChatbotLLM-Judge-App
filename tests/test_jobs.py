@@ -1,6 +1,7 @@
 import threading
 
 from backend import storage
+from backend.dashboard import jobs as jobs_module
 from backend.dashboard.jobs import JobFailed, JobQueue
 from backend.dashboard.runner import RunCancelled
 
@@ -117,3 +118,63 @@ def test_an_unexpected_error_ends_the_job_instead_of_leaving_it_running(tmp_path
     # The queue keeps working after it.
     later = queue.submit(1, ["b"], {})
     assert queue.process_next() and queue.get(later)["status"] == "done"
+
+
+def test_metrics_of_a_job_run_side_by_side(tmp_path, monkeypatch):
+    monkeypatch.setattr(jobs_module, "METRIC_CONCURRENCY", 2)
+    barrier, seen, holder = threading.Barrier(2, timeout=5), {}, {}
+
+    def run(job, key, on_progress):
+        on_progress(0, 1, "chat", key)
+        barrier.wait()  # both metrics must be running at once to get past here
+        seen[key] = [c["metric_key"] for c in holder["queue"].get(job["id"])["running"]]
+        barrier.wait()
+        return {"key": key, "status": "pass"}
+
+    queue, _ = _queue(tmp_path, run)
+    holder["queue"] = queue
+    job_id = queue.submit(1, ["a", "b"], {})
+    queue.process_next()
+    job = queue.get(job_id)
+    assert job["status"] == "done"
+    assert [r["key"] for r in job["results"]] == ["a", "b"]
+    assert seen == {"a": ["a", "b"], "b": ["a", "b"]}
+
+
+def test_job_failed_stops_the_metric_running_beside_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(jobs_module, "METRIC_CONCURRENCY", 2)
+    failed = threading.Event()
+
+    def run(job, key, on_progress):
+        if key == "a":
+            failed.set()
+            raise JobFailed("chatbot deleted")
+        failed.wait(timeout=5)
+        on_progress(1, 2, "judge", "q")  # the next step sees the job has ended
+        return {"key": key, "status": "pass"}
+
+    queue, _ = _queue(tmp_path, run)
+    job_id = queue.submit(1, ["a", "b"], {})
+    queue.process_next()
+    job = queue.get(job_id)
+    assert job["status"] == "error" and job["error"] == "chatbot deleted"
+    assert job["results"] == []
+
+
+def test_pairwise_jobs_stay_one_metric_at_a_time(tmp_path, monkeypatch):
+    monkeypatch.setattr(jobs_module, "METRIC_CONCURRENCY", 4)
+    live, peak, lock = [0], [0], threading.Lock()
+
+    def run(job, key, on_progress):
+        with lock:
+            live[0] += 1
+            peak[0] = max(peak[0], live[0])
+        threading.Event().wait(0.05)
+        with lock:
+            live[0] -= 1
+        return {"key": key, "status": "pass"}
+
+    queue, _ = _queue(tmp_path, run)
+    queue.submit(1, ["a", "b", "c"], {"kind": "pairwise"})
+    queue.process_next()
+    assert peak[0] == 1

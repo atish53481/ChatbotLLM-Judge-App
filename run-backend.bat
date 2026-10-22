@@ -1,5 +1,5 @@
 @echo off
-rem Starts the LLM Judge backend on http://127.0.0.1:8765 (the extension expects this address).
+rem Starts the LLM Judge backend on http://127.0.0.1:8765 and serves the web app there.
 rem Runs in the project's own environment (.venv), which is created on the first run.
 cd /d "%~dp0"
 if not exist ".venv\Scripts\python.exe" (

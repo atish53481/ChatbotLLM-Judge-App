@@ -1,6 +1,6 @@
 // Tests for the printable report (ChatbotExtension/report/report.js).
 // Runs the real api.js, ui.js and report.js in a VM with a small fake DOM,
-// a fake backend and a fake chrome.storage, so it needs no browser and no
+// a fake backend and a fake localStorage, so it needs no browser and no
 // npm packages: `node --test tests/js`. tests/test_report_js.py runs it with pytest.
 "use strict";
 
@@ -149,7 +149,7 @@ async function loadReport({ saved = {}, runs = latestRuns() } = {}) {
     "/api/targets": [{ id: 1, name: "Shop bot", config: { url: "https://bot.example/chat?token=secret", theme: "generic" } }],
     "/api/judge/settings": { model: "judge-x", base_url: "https://judge.example/v1" },
     "/api/metrics?target_id=1": METRICS,
-    "/api/runs/latest?target_id=1": runs,
+    "/api/runs/latest?target_id=1&since_id=0": runs,
   };
   const printed = [];
   const context = {
@@ -163,17 +163,18 @@ async function loadReport({ saved = {}, runs = latestRuns() } = {}) {
       if (!(key in responses)) return { ok: false, status: 404, statusText: "Not Found", text: async () => "" };
       return { ok: true, status: 200, text: async () => JSON.stringify(responses[key]) };
     },
-    chrome: {
-      runtime: { sendMessage: () => Promise.resolve() },
-      storage: {
-        local: {
-          get: async (key) => (key in storage ? { [key]: storage[key] } : {}),
-          set: async (items) => Object.assign(storage, items),
-        },
-        onChanged: { addListener() {} },
+    // ui.js keeps settings in localStorage as "llmJudge:<key>" → JSON;
+    // `storage` holds the parsed values so tests can read them directly.
+    localStorage: {
+      getItem: (k) => {
+        const key = k.replace(/^llmJudge:/, "");
+        return key in storage ? JSON.stringify(storage[key]) : null;
       },
+      setItem: (k, v) => { storage[k.replace(/^llmJudge:/, "")] = JSON.parse(v); },
     },
   };
+  context.window.addEventListener = () => {};
+  document.addEventListener = () => {};
   vm.createContext(context);
   for (const file of SCRIPTS) {
     vm.runInContext(fs.readFileSync(path.join(EXT, file), "utf8"), context, { filename: file });
