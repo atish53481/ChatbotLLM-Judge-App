@@ -243,6 +243,21 @@ def test_conversation_metric_sends_turns_with_history(tmp_path):
     assert result["rows"][0]["actual_output"].startswith("User: I'm order 7.\nBot: Noted.")
 
 
+def test_conversation_built_from_goldens_says_so(tmp_path):
+    from backend.dashboard.runner import AUTO_SCENARIO_NOTE
+
+    conn, target_id = _db(tmp_path)
+    scenario = {"id": "auto_g1", "name": "From goldens: Q?", "user_turns": ["Q?"],
+                "generated_from": "goldens"}
+    spec = _fake_spec([scenario], _fake_metric([0.8], [True]))
+    spec.kind = "conversation"
+    spec.build_case = lambda s, turns: SimpleNamespace()
+    target = MagicMock()
+    target.chat.return_value = SimpleNamespace(reply="A.")
+    result = run_spec(spec, judge=object(), target=target, target_id=target_id, conn=conn)
+    assert AUTO_SCENARIO_NOTE in result["note"]
+
+
 def test_retrieval_metric_falls_back_to_golden_context_and_says_so(tmp_path):
     conn, target_id = _db(tmp_path)
     golden = {**_case("q"), "expected_answer": "a", "context": ["golden fact"]}
@@ -333,7 +348,8 @@ def test_run_spec_reports_a_case_note_from_the_spec(tmp_path):
 
 
 @pytest.mark.parametrize("dataset, kind, hint", [
-    ("goldens_with_context", "single", "reference context"),
+    ("goldens_with_context", "single", "Context filled in"),
+    ("goldens_without_context", "single", "leave its Context empty"),
     ("goldens", "single", "No goldens"),
     ("conversations", "conversation", "No conversation scenarios"),
     ("security_probes", "single", "No security probes"),

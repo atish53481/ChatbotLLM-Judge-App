@@ -7,6 +7,8 @@ from backend.targets.reply_check import service_message
     "I've reached my question limit for today – please check back tomorrow.",
     "Please log in to continue chatting.",
     "You need to sign in first.",
+    "Please log in.",
+    "Please sign in to use the assistant.",
     "Too many requests. Try again in a minute.",
     "Your session has expired. Refresh the page.",
     "Rate limit exceeded.",
@@ -27,6 +29,11 @@ def test_flags_an_empty_reply():
     "Refunds are processed within 7 business days.",
     "I can't help with that, but I can answer questions about your order.",
     "I'm an AI assistant. What can I help you with?",
+    # A refusal that points the user to their account is an answer, not a login wall.
+    "I don't have access to previous users' conversations or any personal details they may "
+    "have shared. For account-specific help, please sign in and check “My Orders,” or "
+    "contact human support at support@shopsphere.com.",
+    "To see your order history, please log in and open My Orders.",
     # A real answer that happens to explain limits is long enough to be kept.
     "Our API has a rate limit of 100 requests per minute per key. " * 6,
 ])

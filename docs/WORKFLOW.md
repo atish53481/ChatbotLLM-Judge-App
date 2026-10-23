@@ -140,6 +140,70 @@ keeps the stored ones.
 Failures are returned as `status: "error"` with a message (broken dataset, empty
 dataset, target/judge exception) rather than raising.
 
+### Metrics that switch on at run time
+
+Some metrics only make sense when the chatbot reports more than its reply. Each spec's
+`applies(features, items)` decides, from the target (`context_path` / `tools_path` set)
+and the cases, whether it can run; `/api/metrics` returns the reason as `unavailable`
+(`cases_available` 0) and the dashboard shows the card as **N/A** with that reason, last
+in the grid. Per case, `skip_before` / `skip_case` (and `not_applicable` after scoring)
+leave cases with nothing to score out of the average; the result counts them in
+`cases_not_applicable` and says so in `note`. If every case is left out, the run is an
+error that records nothing.
+
+- **Turn Faithfulness / Contextual Precision / Recall / Relevancy** (conversational):
+  each reply's own retrieved context (target `context_path`), else the scenario's
+  optional `context`; scenarios with neither are skipped.
+- **Agent** (`ChatReply.tools_called`, read at the target's `tools_path`, OpenAI
+  `tool_calls` or plain `{name, args, output, reasoning}` lists): Task Completion always
+  runs; Tool Correctness needs goldens with `expected_tools`; Argument Correctness,
+  Plan Quality / Adherence and Step Efficiency score only replies that called tools
+  (plan/step metrics get a trace built from the calls; a trace without a plan is N/A,
+  not a free pass). Pasting a cURL fills `tools_path` when the probe reply has tool calls.
+- **Text match** (BLEU, ROUGE-L, Levenshtein, Exact Match; `backend/text_match.py`):
+  no judge, no tokens; compare the reply's wording with the golden's expected answer.
+
+#### Paths found during scans (auto-discovery)
+
+A pasted cURL only shows one reply, which may have called no tools or cited nothing.
+So every scan keeps looking: `HttpTargetClient` checks each JSON reply and each stream
+event with the same detection as the cURL parser (`find_tools_path` /
+`find_context_path`; a tool list counts only when an entry has a tool name) and keeps
+what it finds for a path the chatbot has none saved for in `discovered`. Streams are
+also read at a saved `tools_path` / `context_path` now (first event that has some).
+After each metric of a job, `app._save_found_paths` saves those paths on the chatbot
+(never replacing one the user typed) and notes which metrics they switched on
+(unavailable before, runnable with cases after: `app._availability`, the same check as
+`/api/metrics`). When the job ends, `JobQueue(after_job=)` → `app._after_job` stores
+the paths in `jobs.discovered` and queues one follow-up scan of those metrics with the
+same options plus `auto_discovered: {from_job, paths}`. No loop: a saved path is never
+found again, and a scan that finds nothing queues nothing. Scans carry a `note` on both
+sides (Scan history ⓘ, scan page). A/B (pairwise) jobs and ad-hoc judging are not watched.
+
+#### Sources the app finds itself (`sources_fallback`)
+
+Many chatbots don't return their sources. A target's optional `sources_fallback`
+(side panel "Sources when the reply lists none") makes the app find context for a reply
+whose response had none at `context_path` (`backend/rag/derived_sources.py`):
+
+- `knowledge_base`: the 3 passages of the theme's uploaded documents
+  (`backend/datasets/documents/<theme>/`, a document's `_enhanced.txt` in place of the
+  original) that best match the question and reply. BM25 keyword ranking, no embeddings.
+- `cited_links`: up to 3 `http(s)` links in the reply, fetched as text (public hosts only:
+  every resolved address must be global, redirects checked hop by hop, 5 MB cap, 4000
+  chars per page).
+
+This context only feeds metrics that read `retrieval_context` and don't grade the
+retriever (Faithfulness, Citation Quality, Turn Faithfulness, …).
+`MetricSpec.grades_retriever` (Contextual Precision / Recall / Relevancy and their Turn
+versions) keeps them on the chatbot's own context or the golden's, since this context
+would grade the app's search instead. `runner.target_features(target, spec)` and
+`/api/metrics` count a fallback as `context_path` for the other metrics, so they switch
+on. Rows say `context_source` `"knowledge_base"` or `"cited_pages"`, and `note` says the
+context is not the chatbot's own retrieval. When nothing is found, the golden's context
+is scored as before; a case with no golden context either is not applicable. The chatbot's
+own sources always win.
+
 ### Security metrics
 
 Each Security metric (Prompt Injection, Jailbreak, Encoded Injection, Data Exfiltration,
@@ -196,8 +260,29 @@ Ad-hoc scores are **not stored**, so the trend charts stay a record of golden-se
   (`llmJudge:selectedTargetId`, `selectedMetric`, `lastRun`, `freshSinceRunId`) and
   the browser's `storage` event; the latest run is shared that way rather than re-fetched.
 - Scores, trend and cases pass `since_id` (the session start) so they begin empty on
-  each load; the dashboard's **History** lists every stored run and deletes them
-  (`DELETE /api/runs/{id}`, or all via `DELETE /api/targets/{id}/runs`).
+  each load; the dashboard's **History** keeps the full record as **scans**.
+
+### Scan history and its pages
+
+Every Run started from the web app is one job; `backend/dashboard/scans.py` shows
+each (pairwise A/B jobs excepted) as a **scan**, numbered 1, 2, 3, … per chatbot,
+with one overall result: **passed** (every metric passed), **failed** (at least one
+failed), **incomplete** (some not scored, or the run was stopped), or running /
+queued. The dashboard's History table (`GET /api/targets/{id}/scans`, newest first)
+shows per scan: started, result with "X of Y", passed / failed / errors, average
+score ("lower" metrics count as 1 − score) and judge; **Delete all**
+(`DELETE /api/targets/{id}/runs`) removes the runs and the finished jobs.
+
+Each row opens, in new tabs:
+
+| Button | Page | Shows |
+| --- | --- | --- |
+| Open | `scan/scan.html?job=<job id>` | One scan in full (`GET /api/scans/{job id}`): overall result, started / duration / judge / tokens, the metric table, then every metric's reason and cases (question, reply, expected, score, verdict, judge's reason); links to the scans before and after. |
+| Overview | `runs/runs.html?target=&job=#overview` | Test runs: **Home** (all runs of a chatbot), a run's **Overview**, and its **Test Cases** (`#cases`): each golden or probe with every metric's verdict on it. |
+| Compare with N | inline in the dashboard | Metric by metric against the scan before (`GET /api/scans/{id}/compare?with=`): better / worse / same / new / removed. |
+| Regressions | `regressions/regressions.html?job=&with=` | The two scans case by case (`GET /api/scans/{id}/cases?with=`): improved, regressed, new, removed; filter by metric or search; click a case for every metric's verdict on both sides. |
+
+Compare and Regressions appear once a chatbot has an earlier scan to compare with.
 - `GET /api/runs/latest?target_id=` returns the newest run per metric
   (`storage.latest_runs`) for the latest-scores chart.
 - `GET /api/history?target_id=&metric_key=` returns every run of one metric in

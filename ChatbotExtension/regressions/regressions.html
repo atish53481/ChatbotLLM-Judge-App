@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Regressions</title>
+  <link rel="stylesheet" href="../lib/theme.css">
+  <link rel="stylesheet" href="regressions.css">
+  <link rel="stylesheet" href="../lib/skin.css">
+  <script src="../lib/theme-mode.js"></script>
+</head>
+<body>
+  <header class="reg-top">
+    <p class="reg-back"><a href="../runs/runs.html#home">← Test runs</a></p>
+    <h1>Regressions</h1>
+    <p class="muted">Two scans of one chatbot, test case by test case: what got better, what broke.</p>
+  </header>
+
+  <details class="reg-explain" open>
+    <summary>What is a regression, and why look case by case?</summary>
+    <div class="reg-explain-body">
+      <p>A <strong>regression</strong> is something that used to work and broke after a change. This page
+        catches those by comparing two scans of the same chatbot <strong>question by question</strong>,
+        not just by overall score.</p>
+      <p><strong>Why overall scores aren't enough.</strong> Say Scan 1 and Scan 2 both average 0.90. That
+        looks like nothing changed, but underneath 3 questions the bot used to answer correctly may now fail,
+        while 3 others that used to fail now pass. The average hides both; this page shows exactly which
+        questions went which way.</p>
+      <table class="reg-explain-table">
+        <thead><tr><th>Mark</th><th>Meaning</th><th>What to do</th></tr></thead>
+        <tbody>
+          <tr><td class="reg-mark-regressed">↘ Regressed</td><td>Passed in the old scan, fails now</td><td><strong>Look here first:</strong> your change broke this</td></tr>
+          <tr><td class="reg-mark-improved">↗ Improved</td><td>Failed before, passes now</td><td>Your fix worked</td></tr>
+          <tr><td>Same</td><td>No change</td><td>Nothing</td></tr>
+          <tr><td>New / Removed</td><td>The question was only in one of the two scans</td><td>Your golden set changed</td></tr>
+        </tbody>
+      </table>
+      <p class="muted">Click a question to see every metric's verdict on it, old and new side by side.
+        Tip: run a scan before and after every change to the chatbot (prompt, model, knowledge base), then come here.</p>
+    </div>
+  </details>
+
+  <nav class="reg-tabs" role="tablist" aria-label="Which test cases">
+    <button type="button" role="tab" data-view="all" aria-selected="true">All test cases <span id="count-all"></span></button>
+    <button type="button" role="tab" data-view="regressed" aria-selected="false">↘ Regressions <span id="count-regressed"></span></button>
+    <button type="button" role="tab" data-view="improved" aria-selected="false">↗ Improvements <span id="count-improved"></span></button>
+    <button type="button" role="tab" data-view="same" aria-selected="false">Unchanged <span id="count-same"></span></button>
+  </nav>
+
+  <main class="reg-main">
+    <details class="reg-filters" open>
+      <summary>Select scans and filters</summary>
+      <div class="reg-filter-grid">
+        <label>Chatbot <select id="reg-target"></select></label>
+        <label>Baseline scan (left) <select id="reg-before"></select></label>
+        <label>Compared scan (right) <select id="reg-now"></select></label>
+        <label>Metric <select id="reg-metric"><option value="">Any metric</option></select></label>
+        <label class="reg-search">Input contains <input id="reg-search" type="search" placeholder="e.g. refund"></label>
+      </div>
+    </details>
+
+    <div class="reg-meta">
+      <p id="reg-showing" role="status">Loading…</p>
+      <p class="muted">Match by: <strong>Input</strong> (golden id when it has one)</p>
+    </div>
+
+    <section class="reg-table" aria-live="polite">
+      <div class="reg-colhead">
+        <span></span>
+        <span id="reg-head-before">Baseline</span>
+        <span id="reg-head-now">Compared</span>
+      </div>
+      <div id="reg-rows"></div>
+    </section>
+
+    <nav class="reg-pager" aria-label="Pages">
+      <button type="button" id="reg-prev">← Previous</button>
+      <span id="reg-page"></span>
+      <button type="button" id="reg-next">Next →</button>
+    </nav>
+  </main>
+
+  <script src="../lib/api.js"></script>
+  <script src="../lib/announce.js"></script>
+  <script src="../lib/ui.js"></script>
+  <script src="regressions.js"></script>
+</body>
+</html>

@@ -272,3 +272,63 @@ def test_send_delay_holds_across_clients_and_threads(mock_request):
     assert peak[0] == 1
     gaps = [b - a for a, b in zip(sent, sent[1:])]
     assert len(sent) == 4 and min(gaps) >= 0.05
+
+
+# Paths the connector notices in replies when the chatbot has none saved
+# (saved by the job runner, which then runs the metrics they switch on).
+
+_AGENT_REPLY = json.dumps({
+    "data": {"text": "Order 123 ships tomorrow."},
+    "tool_calls": [{"name": "lookup_order", "arguments": {"order_id": "123"}}],
+    "sources": [{"content": "Orders ship in 1-2 days."}],
+})
+
+
+@patch("backend.targets.http_client.requests.request")
+def test_notices_tool_and_source_paths_it_was_not_given(mock_request):
+    mock_request.return_value = _response(_AGENT_REPLY)
+    client = HttpTargetClient(_config())
+    reply = client.chat("where is order 123?")
+    assert client.discovered == {"tools_path": "tool_calls", "context_path": "sources"}
+    # This reply is still read with the saved config (no paths yet).
+    assert reply.tools_called is None and reply.retrieval_context is None
+
+
+@patch("backend.targets.http_client.requests.request")
+def test_does_not_notice_paths_already_saved_or_empty_lists(mock_request):
+    mock_request.return_value = _response(_AGENT_REPLY)
+    client = HttpTargetClient(_config(tools_path="tool_calls", context_path="sources"))
+    client.chat("hi")
+    assert client.discovered == {}
+    mock_request.return_value = _response('{"data": {"text": "hi"}, "tool_calls": [], "sources": []}')
+    fresh = HttpTargetClient(_config())
+    fresh.chat("hi")
+    assert fresh.discovered == {}
+
+
+@patch("backend.targets.http_client.requests.request")
+def test_does_not_notice_tool_lists_without_tool_names(mock_request):
+    mock_request.return_value = _response('{"data": {"text": "hi"}, "tool_calls": [{"id": 7}]}')
+    client = HttpTargetClient(_config())
+    client.chat("hi")
+    assert client.discovered == {}
+
+
+@patch("backend.targets.http_client.requests.request")
+def test_stream_notices_paths_and_reads_saved_ones(mock_request):
+    stream = (
+        'data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n'
+        'data: {"choices":[{"delta":{"content":"lo"}}], "tool_calls": [{"name": "lookup_order"}]}\n\n'
+        'data: {"sources": ["Orders ship in 1-2 days."]}\n\n'
+        "data: [DONE]\n\n"
+    )
+    mock_request.return_value = _response(stream, content_type="text/event-stream")
+    client = HttpTargetClient(_config(response_path="choices.0.delta.content"))
+    assert client.chat("hi").reply == "Hello"
+    assert client.discovered == {"tools_path": "tool_calls", "context_path": "sources"}
+    saved = HttpTargetClient(_config(response_path="choices.0.delta.content",
+                                     tools_path="tool_calls", context_path="sources"))
+    reply = saved.chat("hi")
+    assert [t["name"] for t in reply.tools_called] == ["lookup_order"]
+    assert reply.retrieval_context == ["Orders ship in 1-2 days."]
+    assert saved.discovered == {}

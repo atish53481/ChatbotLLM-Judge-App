@@ -15,12 +15,24 @@ set PYTHONUTF8=1
 rem An LLM Judge backend left running from an earlier start holds port 8765 and
 rem runs old code: stop it. Anything else on the port is left alone.
 powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { $p = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $_.OwningProcess); if ($p.CommandLine -like '*backend.dashboard.app*') { Write-Host 'Stopping the LLM Judge backend that was already running...'; Stop-Process -Id $p.ProcessId -Force; $parent = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $p.ParentProcessId); if ($parent.CommandLine -like '*backend.dashboard.app*') { Stop-Process -Id $parent.ProcessId -Force -ErrorAction SilentlyContinue } } }"
+rem Newest package versions requirements.txt allows; runs after the old backend
+rem is stopped, since a running backend locks package files on Windows.
+call "%~dp0update-packages.bat"
 echo Starting LLM Judge backend on http://127.0.0.1:8765 - please wait...
 echo Open http://127.0.0.1:8765/ in your browser to use the web app.
 ".venv\Scripts\python.exe" -m uvicorn backend.dashboard.app:app --host 127.0.0.1 --port 8765 || goto :error
 goto :eof
 
 :error
+rem Two starts at once (double-click, or another window still loading): the other
+rem one won the port. It serves the app, so this is not a failure.
+powershell -NoProfile -Command "try { Invoke-WebRequest 'http://127.0.0.1:8765/api/health' -UseBasicParsing -TimeoutSec 3 | Out-Null; exit 0 } catch { exit 1 }"
+if not errorlevel 1 (
+    echo.
+    echo The LLM Judge backend is already running in another window - use that one:
+    echo http://127.0.0.1:8765/  ^(its traffic shows in that window, not in this log^)
+    exit /b 0
+)
 echo.
 echo Backend failed or stopped. See the messages above.
 echo (If it says the port is in use, another program holds port 8765 - close it first.)

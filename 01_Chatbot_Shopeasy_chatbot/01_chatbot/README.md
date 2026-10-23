@@ -26,4 +26,4 @@ Use `http://localhost:5173`, not `127.0.0.1`: the Vite dev server listens on IPv
 
 ## API
 - `GET /health` — status + active model
-- `POST /chat` — `{message, history?}` → `{reply, model, mode}`
+- `POST /chat` — `{message, history?}` → `{reply, model, mode, usage, sources}`; `sources` lists the knowledge-base chunks retrieved for the question (`{id, title, text}`, top `CHATBOT_TOP_K`, default 3). Only those reach the model, so the LLM Judge can score retrieval: set the chatbot's "Retrieved context path" to `sources`.

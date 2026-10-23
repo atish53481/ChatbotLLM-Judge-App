@@ -20,23 +20,23 @@ body.dash {
   padding: 0 0 24px;
 }
 
-@media (prefers-color-scheme: dark) {
-  body.dash {
-    --page: #1b1816;
-    --surface-1: #24201d;
-    --surface-raised: #2d2825;
-    --text-primary: #f3ede3;
-    --text-secondary: #cfc6ba;
-    --text-muted: #9a9086;
-    --border: rgba(243, 237, 227, 0.12);
-    --accent: #d9785b;
-    --button-primary: #c0654a;
-    --header-bg: #120f0d;
-    --pass-bg: #1f3a24;
-    --fail-bg: #4a2620;
-    --pending-bg: #3a332d;
-  }
+/* Dark look: lib/theme-mode.js sets data-theme (dark by default). */
+:root[data-theme="dark"] body.dash {
+  --page: #1b1816;
+  --surface-1: #24201d;
+  --surface-raised: #2d2825;
+  --text-primary: #f3ede3;
+  --text-secondary: #cfc6ba;
+  --text-muted: #9a9086;
+  --border: rgba(243, 237, 227, 0.12);
+  --accent: #d9785b;
+  --button-primary: #c0654a;
+  --header-bg: #120f0d;
+  --pass-bg: #1f3a24;
+  --fail-bg: #4a2620;
+  --pending-bg: #3a332d;
 }
+
 
 .topbar {
   display: flex;
@@ -70,7 +70,14 @@ body.dash {
   text-transform: none; letter-spacing: 0;
 }
 .header-controls button { padding: 6px 12px; border-radius: 4px; }
-.header-controls .ghost { background: #fff; color: #231f1b; border: 1px solid transparent; }
+/* Secondary header actions: outlined on the dark bar, so the terracotta
+   primary ("Run all visible", the active view) stays the one that stands out. */
+.header-controls .ghost {
+  background: rgba(247, 243, 236, 0.06); color: var(--header-text);
+  border: 1px solid rgba(247, 243, 236, 0.22);
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+.header-controls .ghost:hover { background: rgba(247, 243, 236, 0.14); border-color: rgba(247, 243, 236, 0.45); }
 .header-controls .primary { background: var(--button-primary); color: #fff; border-color: transparent; }
 
 #status { margin: 8px 20px 0; min-height: 1.45em; }
@@ -91,6 +98,7 @@ body.dash {
 .tile .tile-title { margin-bottom: 6px; }
 .tile-mono { font: 11px/1.6 var(--mono); color: var(--text-secondary); overflow-wrap: anywhere; }
 .tile-big { font: 700 22px/1.2 var(--mono); }
+.tile-ring-row { display: flex; align-items: center; gap: 12px; }
 .tile-reset { margin-left: auto; font-size: 10px; padding: 1px 6px; }
 .tile-counts { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 8px; }
 .count-pills { display: flex; gap: 6px; }
@@ -139,6 +147,8 @@ body.dash {
 .badge-security { background: #ece6dc; color: #231f1b; }
 .badge-geval { background: #ebe3f5; color: #6a45a3; }
 .badge-conversational { background: #dff1e6; color: #2f7d4b; }
+.badge-agent { background: #fdecc8; color: #8a5a00; }
+.badge-reference { background: #e4eef6; color: #2d5f86; }
 .badge-target { text-transform: none; font-weight: 400; }
 .badge-unticked { text-transform: none; font-weight: 400; background: var(--pending-bg); color: var(--text-muted); }
 /* Not ticked in the side panel: still runnable on its own, but out of the totals. */
@@ -158,6 +168,25 @@ body.dash {
 .status-pill.status-pass { background: var(--pass-bg); color: var(--success-text); }
 .status-pill.status-fail { background: var(--fail-bg); color: var(--status-critical); }
 .status-pill.status-running { background: var(--accent); color: #fff; }
+.status-pill.status-na { background: transparent; color: var(--text-muted); box-shadow: inset 0 0 0 1px var(--border); }
+/* Cannot run for this chatbot: quieter card, dashed edge, the notice says why. */
+.metric-card.status-na { border-style: dashed; background: transparent; }
+.metric-card.status-na .card-inset { background: transparent; box-shadow: inset 0 0 0 1px var(--border); }
+.metric-card.status-na .score-row,
+.metric-card.status-na .score-bar,
+.metric-card.status-na .scale-hint { opacity: 0.45; }
+.card-notice {
+  display: flex; flex-direction: column; gap: 3px;
+  margin: 2px 0 0; padding: 8px 10px; border-radius: 4px;
+  font-size: 12px; line-height: 1.45; color: var(--text-secondary);
+  border-left: 3px solid var(--text-muted); background: var(--surface-1);
+  overflow-wrap: anywhere;
+}
+.card-notice strong { font-size: 12px; color: var(--text-primary); }
+.card-notice-empty { border-left-color: var(--accent); }
+.metric-card.status-na .metric-card-actions .primary {
+  background: transparent; color: var(--text-muted); border: 1px dashed var(--border);
+}
 .score-cell { display: flex; flex-direction: column; }
 .score-cell b { font: 700 16px var(--mono); }
 .score-cell small { font: 8px var(--mono); letter-spacing: 0.08em; color: var(--text-muted); }
@@ -170,11 +199,11 @@ body.dash {
 .metric-card-actions { display: flex; gap: 8px; margin-top: auto; padding-top: 6px; }
 .metric-card-actions button { flex: 1; padding: 7px 8px; border-radius: 4px; }
 .metric-card-actions .primary { background: var(--button-primary); color: #fff; border-color: transparent; }
-@media (prefers-color-scheme: dark) {
-  .badge-quality, .badge-retrieval, .badge-safety, .badge-security, .badge-geval, .badge-conversational {
-    background: var(--surface-raised); color: var(--text-primary);
-  }
+/* Dark look: lib/theme-mode.js sets data-theme (dark by default). */
+:root[data-theme="dark"] .badge-quality, :root[data-theme="dark"] .badge-retrieval, :root[data-theme="dark"] .badge-safety, :root[data-theme="dark"] .badge-security, :root[data-theme="dark"] .badge-geval, :root[data-theme="dark"] .badge-conversational, :root[data-theme="dark"] .badge-agent, :root[data-theme="dark"] .badge-reference {
+  background: var(--surface-raised); color: var(--text-primary);
 }
+
 
 /* Case details (per-card Details panel and the last-run table). */
 .small { font-size: 11px; }
@@ -198,9 +227,44 @@ body.dash {
 .case-fields dt { font-weight: 600; color: var(--text-secondary); overflow-wrap: anywhere; }
 .case-fields dd { margin: 0; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 /* Per-case fields hold long answers: label above value, full width. */
-.case-row .case-fields { grid-template-columns: minmax(0, 1fr); gap: 2px; }
-.case-row .case-fields dt { margin-top: 6px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+.case-row .case-fields { grid-template-columns: minmax(0, 1fr); gap: 2px; font-size: 13px; line-height: 1.5; cursor: zoom-in; }
+.case-row .case-fields dt { margin-top: 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
 .case-row .case-fields dt:first-child { margin-top: 2px; }
+.case-row-actions { display: inline-flex; gap: 6px; }
+
+/* One case full size (Expand / double-click): over the dashboard, or the monitor in Full screen. */
+.case-viewer {
+  position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center;
+  padding: 24px; background: rgba(0, 0, 0, 0.55);
+}
+.case-viewer:fullscreen { padding: 32px; }
+.case-viewer-panel {
+  width: min(1000px, 100%); max-height: 100%; overflow: auto;
+  padding: 22px 28px 28px; border-radius: 10px; border: 1px solid var(--border);
+  background: var(--surface-1); color: var(--text-primary); box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+}
+.case-viewer:fullscreen .case-viewer-panel { width: min(1200px, 100%); }
+.case-viewer-head {
+  display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 12px;
+  position: sticky; top: -22px; margin: -22px -28px 12px; padding: 18px 28px 12px;
+  background: var(--surface-1); border-bottom: 1px solid var(--border);
+}
+.case-viewer-head h2 { margin: 0 0 4px; font-size: 18px; }
+.case-viewer-head .case-score { font-size: 14px; }
+.case-viewer-actions { display: flex; gap: 8px; }
+.case-viewer-actions button { padding: 6px 12px; border-radius: 6px; }
+.case-viewer .case-fields { grid-template-columns: minmax(0, 1fr); gap: 4px; font-size: 16px; line-height: 1.6; }
+.case-viewer .case-fields dt {
+  margin-top: 14px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted);
+}
+.case-viewer .case-fields dt:first-child { margin-top: 0; }
+.case-viewer .case-fields dd { padding: 10px 14px; border-radius: 6px; background: var(--surface-raised); }
+@media (max-width: 600px) {
+  .case-viewer { padding: 0; }
+  .case-viewer-panel { border-radius: 0; height: 100%; padding: 16px; }
+  .case-viewer-head { margin: -16px -16px 12px; padding: 12px 16px; top: -16px; }
+  .case-viewer .case-fields { font-size: 15px; }
+}
 .case-fields ul { margin: 0; padding-left: 16px; }
 .cases-context { font-size: 11px; color: var(--text-secondary); max-width: 320px; overflow-wrap: anywhere; }
 
@@ -561,4 +625,85 @@ body.dash {
 #cases-table td {
   max-width: 320px;
   overflow-wrap: anywhere;
+}
+
+/* A link that looks like the theme's buttons (Scan history's "Open", a new tab). */
+.button-link {
+  display: inline-block;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-raised);
+  padding: 6px 10px;
+  color: inherit;
+  text-decoration: none;
+}
+
+/* ---- Metric cards: the score and its verdict read first. Overrides the
+   card rules above by coming later; built from the classes metricCard() sets
+   (status-pass / -fail / -running / -not-run / -na), so no markup changes. */
+.metric-card {
+  border-radius: 10px;
+  gap: 8px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+.metric-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+}
+/* Verdict: a 4px top edge and a faint wash of its colour. */
+.metric-card.status-pass {
+  box-shadow: inset 0 4px 0 var(--status-good), 0 1px 2px rgba(0, 0, 0, 0.06);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--status-good) 7%, var(--surface-1)), var(--surface-1) 45%);
+}
+.metric-card.status-fail {
+  box-shadow: inset 0 4px 0 var(--status-critical), 0 1px 2px rgba(0, 0, 0, 0.06);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--status-critical) 9%, var(--surface-1)), var(--surface-1) 45%);
+}
+.metric-card.status-running { box-shadow: inset 0 4px 0 var(--accent), 0 1px 2px rgba(0, 0, 0, 0.06); }
+.metric-card.status-pass:hover,
+.metric-card.status-fail:hover { box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12); }
+
+/* "chatbot" is on every card, so it says nothing; the category tag stays. */
+.metric-card .badge-target { display: none; }
+.metric-card h3 { font-size: 16px; line-height: 1.25; }
+.metric-card-desc {
+  min-height: 0;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.card-threshold {
+  padding: 2px 6px; border-radius: 4px; background: var(--surface-raised); color: var(--text-secondary);
+}
+
+/* Score as the hero: big mono number in the verdict's colour, threshold quiet. */
+.card-inset { padding: 12px 14px; border-radius: 8px; gap: 8px; }
+.score-row { gap: 12px; align-items: flex-end; }
+.score-row .score-cell:nth-of-type(2) b { font: 700 28px/1 var(--mono); letter-spacing: -0.02em; }
+.score-row .score-cell:nth-of-type(3) b { font: 600 13px/1.6 var(--mono); color: var(--text-secondary); }
+.score-row .score-cell:nth-of-type(3) { margin-left: auto; text-align: right; }
+.metric-card.status-pass .score-row .score-cell:nth-of-type(2) b { color: var(--success-text); }
+.metric-card.status-fail .score-row .score-cell:nth-of-type(2) b { color: var(--status-critical); }
+.metric-card.status-not-run .score-row .score-cell:nth-of-type(2) b,
+.metric-card.status-na .score-row .score-cell:nth-of-type(2) b { color: var(--text-muted); }
+.score-cell small { font-size: 9px; margin-top: 3px; }
+.status-pill { align-self: center; padding: 5px 9px; border-radius: 999px; }
+
+/* Bar: thicker, filled in the verdict's colour, with a clear threshold mark. */
+.score-bar { height: 8px; border-radius: 4px; background: color-mix(in srgb, var(--text-muted) 22%, transparent); }
+.score-bar-fill { border-radius: 4px; transition: width 0.5s ease; }
+.metric-card.status-pass .score-bar-fill { background: var(--status-good); }
+.metric-card.status-fail .score-bar-fill { background: var(--status-critical); }
+.score-bar-tick { top: -4px; width: 3px; height: 16px; border-radius: 2px; background: var(--text-primary); opacity: 0.7; }
+
+.scale-hint { font-size: 11px; color: var(--text-muted); }
+.card-question { font-size: 14.5px; }
+.card-meta { font-size: 10px; }
+.metric-card-actions button { border-radius: 6px; padding: 8px; font-weight: 600; }
+.metric-card-actions button:not(.primary):hover { border-color: var(--accent); }
+
+@media (prefers-reduced-motion: reduce) {
+  .metric-card,
+  .score-bar-fill { transition: none; }
+  .metric-card:hover { transform: none; }
 }

@@ -22,6 +22,8 @@ from backend.datasets import attack_enhancers
 from backend.judges.ask import ask_json
 from backend.judges.judge import JUDGE_CONCURRENCY
 from backend.metrics_catalog import DEFAULT_THEME
+from backend.rag import derived_sources
+from backend.targets import instructions as target_instructions
 from backend.targets.http_client import MessageTooLong
 
 
@@ -71,6 +73,12 @@ NEEDS_OWN_SOURCES = (
     "the documents it used."
 )
 
+AUTO_SCENARIO_NOTE = (
+    "This theme has no conversation scenarios of its own, so these were built from its "
+    "golden answers (two questions, then the first again). Add scenarios that follow "
+    "real user journeys under Conversation scenarios for a sharper test."
+)
+
 GOLDEN_CONTEXT_NOTE = (
     "The chatbot's responses carry no retrieved context, so the retrieval context "
     "scored here is each golden's reference context. It checks the reference data, "
@@ -91,14 +99,28 @@ def _transcript(turns: list[dict]) -> str:
     return "\n".join(f"{'User' if t['role'] == 'user' else 'Bot'}: {t['content']}" for t in turns)
 
 
-def _run_conversation(spec, target, scenario: dict, report, done: int, total: int) -> tuple[object, list[dict]]:
-    """Sends the scenario's user turns one by one, each with the conversation so far."""
+def _run_conversation(spec, target, scenario: dict, report, done: int, total: int,
+                      theme: str = DEFAULT_THEME) -> tuple[object, list[dict]]:
+    """Sends the scenario's user turns one by one, each with the conversation so
+    far. The returned turns also keep what each reply came with (its retrieved
+    context and tool calls, when the chatbot reports them, or context the app
+    found itself, marked with its context_source); the history sent back to the
+    chatbot carries only role and content."""
+    fallback = _sources_fallback(spec, target)
     turns: list[dict] = []
+    history: list[dict] = []
     user_turns = scenario["user_turns"]
     for i, message in enumerate(user_turns):
         report(done, total, "chat", f"{scenario.get('name', 'conversation')} · turn {i + 1}/{len(user_turns)}")
-        reply = target.chat(message, history=list(turns)).reply
-        turns += [{"role": "user", "content": message}, {"role": "assistant", "content": reply}]
+        answer = target.chat(message, history=list(history))
+        extra = {k: v for k, v in (("retrieval_context", getattr(answer, "retrieval_context", None)),
+                                   ("tools_called", getattr(answer, "tools_called", None))) if v}
+        if fallback and not extra.get("retrieval_context"):
+            found, label = derived_sources.derive(fallback, theme, message, answer.reply)
+            if found:
+                extra.update(retrieval_context=found, context_source=label)
+        history += [{"role": "user", "content": message}, {"role": "assistant", "content": answer.reply}]
+        turns += [history[-2], {**history[-1], **extra}]
     return spec.build_case(scenario, turns), turns
 
 
@@ -106,6 +128,33 @@ _PROBE_DATASETS = ("security_probes", "prompt_leak_probes", "safety_probes")
 DEFAULT_ATTACK_TURNS = 4
 # Marks a case skipped for being longer than the chatbot's max message length.
 _SKIPPED = object()
+
+
+class _NotApplicable(str):
+    """A case the metric has nothing to score in (e.g. no tool was called): its
+    reason, left out of the score instead of counted as a failure."""
+
+
+def _sources_fallback(spec, target) -> str:
+    """The target's sources_fallback mode when this metric may use it: it reads
+    retrieval_context and does not grade the chatbot's retriever; else ""."""
+    if spec is None or getattr(spec, "grades_retriever", False):
+        return ""
+    if "retrieval_context" not in getattr(spec, "scores_on", ()):
+        return ""
+    mode = getattr(target, "sources_fallback", "")
+    return mode if isinstance(mode, str) else ""
+
+
+def target_features(target, spec=None) -> dict:
+    """What the chatbot reports beside its reply, for MetricSpec.applies. Given
+    the spec, context the app finds itself (sources_fallback) counts as context."""
+    return {"context_path": bool(getattr(target, "context_path", "")) or bool(_sources_fallback(spec, target)),
+            "tools_path": bool(getattr(target, "tools_path", ""))}
+
+
+def _not_applicable_error(reason: str) -> str:
+    return reason if reason.startswith("Not applicable") else f"Not applicable for any case: {reason}"
 
 
 _slots_lock = threading.Lock()
@@ -216,9 +265,11 @@ def _sweep(
     report = on_progress or (lambda *_args: None)
     kind = getattr(spec, "kind", "single")
     metric_kwargs = dict(metric_kwargs or {})
+    # Prompt Alignment's rules may come from the captured request or the standard set.
+    rules_note = target_instructions.source_note(metric_kwargs.get("instructions"))
     runner_opts = {name: metric_kwargs.pop(name) for name in getattr(spec, "runner_settings", ())
                    if name in metric_kwargs}
-    if getattr(spec, "needs_own_sources", False) and not getattr(target, "context_path", ""):
+    if getattr(spec, "needs_own_sources", False) and not target_features(target, spec)["context_path"]:
         return _error(spec, theme, NEEDS_OWN_SOURCES, cases_total=0)
     missing_target = missing_target_fields(spec, metric_kwargs)
     if missing_target:
@@ -229,6 +280,12 @@ def _sweep(
         return _error(spec, theme, f"{type(e).__name__}: {e}", cases_total=0)
     if not items:
         return _error(spec, theme, _empty_dataset_message(spec, theme, probe_set), cases_total=0)
+    features = target_features(target, spec)
+    fallback = _sources_fallback(spec, target)
+    applies = getattr(spec, "applies", None)
+    not_applicable = applies(features, items) if callable(applies) else None
+    if not_applicable:
+        return _error(spec, theme, not_applicable, cases_total=0)
     available = len(items)
     if limit:
         items = items[:limit]
@@ -273,9 +330,17 @@ def _sweep(
         with _case_slots():
             score_case(index, item)
 
+    skip_before = getattr(spec, "skip_before", None)
+    skip_case = getattr(spec, "skip_case", None)
+    after_score = getattr(spec, "not_applicable", None)
+
     def score_case(index: int, item: dict) -> None:
+        reason = skip_before(item, features) if callable(skip_before) else None
+        if reason:
+            outcomes[index] = _NotApplicable(reason)
+            return
         metric = thread_metric()
-        chat_started, latency = time.monotonic(), None
+        chat_started, latency, tools = time.monotonic(), None, None
         try:
             if kind == "multi_sample":
                 question = item["question"]
@@ -295,11 +360,18 @@ def _sweep(
                 expected, used, source = "", item.get("context") or None, "golden"
                 case = spec.build_case(item, reply)
             elif kind == "conversation":
-                case, turns = _run_conversation(spec, target, item, report, index, len(items))
+                case, turns = _run_conversation(spec, target, item, report, index, len(items), theme)
                 latency = round((time.monotonic() - chat_started) / max(1, len(turns) // 2), 3)
                 question, reply = item.get("name", "conversation"), _transcript(turns)
                 sent = "\n".join(item.get("user_turns", []))
                 expected, used, source = item.get("expected_outcome", ""), None, None
+                if "retrieval_context" in getattr(spec, "scores_on", ()):
+                    own = [c for t in turns for c in t.get("retrieval_context") or []]
+                    used, source = (own, "chatbot") if own else (item.get("context") or None, "golden")
+                    labels = {t.get("context_source") for t in turns if t.get("retrieval_context")}
+                    if own and None not in labels:
+                        source = labels.pop()  # every turn's context was found by the app
+                info = {"turns": turns}
             else:
                 question = item["question"]
                 report(progress(), len(items), "chat", question)
@@ -308,15 +380,38 @@ def _sweep(
                 latency = round(time.monotonic() - chat_started, 3)
                 reply = answer.reply
                 retrieval = getattr(answer, "retrieval_context", None)
+                tools = getattr(answer, "tools_called", None)
+                derived = None
+                if fallback and not retrieval:
+                    found, derived = derived_sources.derive(fallback, theme, question, reply)
+                    if found:
+                        retrieval = found
+                    elif not item.get("context"):
+                        outcomes[index] = _NotApplicable(derived_sources.NOTHING_FOUND[derived])
+                        return
+                    else:
+                        derived = None  # nothing found: the golden's context is scored, as before
                 used, source = _context_used(spec, item, retrieval)
+                if derived:
+                    source = derived
                 expected = item.get("expected_answer", "")
+                info = {"tools": tools}
                 # The catalog's builders fall back to the golden's context themselves.
-                case = spec.build_case(item, reply, retrieval)
+                case = spec.build_case({**item, "_tools": tools} if tools else item, reply, retrieval)
+            if kind in ("single", "conversation") and callable(skip_case):
+                skipped_reason = skip_case(item, info)
+                if skipped_reason:
+                    outcomes[index] = _NotApplicable(skipped_reason)
+                    return
         except MessageTooLong:
             outcomes[index] = _SKIPPED
             return
         report(progress(), len(items), "judge", question)
         metric.measure(case)
+        empty = after_score(metric) if callable(after_score) else None
+        if empty:
+            outcomes[index] = _NotApplicable(empty)
+            return
         score, passed_case, reason = _reported(spec, metric.score), bool(metric.is_successful()), metric.reason or ""
         row_scores, spread = None, None
         if check_consistency:
@@ -341,6 +436,7 @@ def _sweep(
             "reason": reason,
             # Seconds per chatbot reply (attacks also wait on the judge, so they have none).
             "latency_s": latency,
+            **({"tools_called": tools} if tools else {}),
             **({"probe": attack_enhancers.is_probe(item), "enhancement": item.get("enhancement"),
                 "base_probe_id": item.get("base_probe_id")} if enhancements else {}),
             **({"scores": row_scores} if row_scores is not None else {}),
@@ -349,7 +445,7 @@ def _sweep(
             finished[0] += 1
 
     def collected() -> tuple[list, list, int, list]:
-        done = [o for o in outcomes if o is not None and o is not _SKIPPED]
+        done = [o for o in outcomes if isinstance(o, tuple)]
         return ([o[2] for o in done], [o[0] for o in done], outcomes.count(_SKIPPED),
                 [o[1] for o in done if o[1] is not None])
 
@@ -386,6 +482,9 @@ def _sweep(
         }
     except Exception as e:  # noqa: BLE001 - surface any target/judge failure to the caller
         return _error(spec, theme, f"{type(e).__name__}: {e}", cases_total=len(items))
+    left_out = [o for o in outcomes if isinstance(o, _NotApplicable)]
+    if not rows and left_out:
+        return _error(spec, theme, _not_applicable_error(left_out[0]), cases_total=len(items))
     if not rows:
         return _error(
             spec, theme,
@@ -416,6 +515,7 @@ def _sweep(
     previous_model = previous[-1].get("judge_model") if previous else None
     result = {
         "cases_skipped": skipped,
+        "cases_not_applicable": len(left_out),
         "judge": {"model": judge_model, "tokens": judge_tokens, "calls": judge_calls},
         "judge_cost_usd": round(judge_tokens * price_per_mtok / 1_000_000, 6) if price_per_mtok else None,
         "chatbot_calls": chatbot_calls,
@@ -439,10 +539,16 @@ def _sweep(
         "calibration_examples": calibrated,
         **({"by_enhancement": attack_enhancers.pass_rate_by_enhancement(rows)} if enhancements else {}),
         "note": _join_notes(
+            rules_note,
             _golden_context_note(spec, rows),
+            *(derived_sources.NOTES[label] for label in derived_sources.NOTES
+              if any(r["context_source"] == label for r in rows)),
+            AUTO_SCENARIO_NOTE if any(i.get("generated_from") == "goldens" for i in items) else None,
             _case_note(spec, scored),
             f"Skipped {skipped} of {len(items)} cases longer than this chatbot's max message "
             f"length ({max_len} characters)." if skipped else None,
+            f"{len(left_out)} of {len(items)} cases were not applicable and are left out of the "
+            f"score: {left_out[0]}" if left_out else None,
             f"Judge model changed from {previous_model} to {judge_model}: scores may not be "
             "comparable with earlier runs."
             if previous_model and judge_model and previous_model != judge_model else None,
@@ -503,7 +609,8 @@ def _judge_name(judge) -> str | None:
 
 _TARGET_FIELD_HELP = {
     "instructions": "the chatbot's instructions, and this chatbot has none: add them (one per "
-                    "line) under Advanced tools > Run options so the judge can check each one.",
+                    "line) under Chatbot instructions when editing the chatbot (or Advanced "
+                    "tools > Run options) so the judge can check each one.",
 }
 
 
@@ -530,8 +637,9 @@ def _empty_dataset_message(spec, theme: str, probe_set: str) -> str:
     """Says what the metric needs and where to add it, for a theme with no cases."""
     dataset = getattr(spec, "dataset_name", "")
     if getattr(spec, "kind", "single") == "conversation" or dataset == "conversations":
-        return (f"No conversation scenarios in theme {theme!r}. "
-                "Add one under Conversation scenarios in the side panel.")
+        return (f"No conversation scenarios or golden answers in theme {theme!r}. "
+                "Add a scenario under Conversation scenarios, or add golden answers "
+                "(scenarios are then built from them).")
     if dataset == "security_probes":
         return (f"No security probes for this metric in probe set {probe_set!r} (theme {theme!r}). "
                 "Add one in the side panel.")
@@ -540,7 +648,15 @@ def _empty_dataset_message(spec, theme: str, probe_set: str) -> str:
                 "Add one at /api/security-probes with metric \"no_prompt_leak\".")
     if dataset == "goldens_with_context":
         return (f"No goldens with reference context in theme {theme!r}. "
-                "Generate goldens from the chatbot's docs or help page to use this metric.")
+                "Add a golden answer with its Context filled in (the facts the answer "
+                "should rest on, one per line), or generate goldens from the chatbot's "
+                "docs or help page.")
+    if dataset == "goldens_with_tools":
+        return (f"No goldens with expected tools in theme {theme!r}. Edit a golden answer and "
+                "list the tools the chatbot should call for it under Expected tools.")
+    if dataset == "goldens_without_context":
+        return (f"No goldens without reference context in theme {theme!r}. "
+                "Add a golden answer and leave its Context empty.")
     return f"No goldens in theme {theme!r}. Add some in the side panel."
 
 

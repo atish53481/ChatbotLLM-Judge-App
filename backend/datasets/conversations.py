@@ -60,6 +60,41 @@ def _clean(fields: dict) -> dict:
     }
 
 
+# Scenarios built from goldens for a theme with none of its own.
+AUTO_SCENARIOS = 3
+DEFAULT_ROLE = "a chatbot assistant"
+_ASK_AGAIN = "Going back to my first question: "
+
+
+def from_goldens(goldens: list[dict], theme: str, chatbot_role: str = "",
+                 limit: int = AUTO_SCENARIOS) -> list[dict]:
+    """Multi-turn scenarios from a theme's goldens: two of its questions, then
+    the first one again, so the multi-turn metrics can check the bot keeps its
+    answers straight (and remembers what was asked) without a hand-written
+    scenario. Not stored; add_conversation saves them when wanted."""
+    usable = [g for g in goldens if (g.get("question") or "").strip()][: max(0, limit) * 2]
+    built = []
+    for first, second in zip(usable[::2], usable[1::2] + [None]):
+        asked = [first] + ([second] if second else [])
+        expected = " ".join(f"Question {n}: {g['expected_answer'].strip()}"
+                            for n, g in enumerate(asked, 1) if (g.get("expected_answer") or "").strip())
+        built.append({
+            "id": "auto_" + "_".join(str(g.get("id", n)) for n, g in enumerate(asked)),
+            "theme": theme,
+            "name": f"From goldens: {first['question'].strip()[:60]}",
+            "scenario": "A user asks questions this chatbot should handle, then comes back to the "
+                        "first one to check the answer stays the same.",
+            "chatbot_role": chatbot_role.strip() or DEFAULT_ROLE,
+            "expected_outcome": f"The bot answers each question correctly ({expected}) and, when "
+                                "the first question comes back, gives the same answer again "
+                                "without asking the user to repeat anything.",
+            "user_turns": [g["question"].strip() for g in asked]
+                          + [_ASK_AGAIN + first["question"].strip()],
+            "generated_from": "goldens",
+        })
+    return built
+
+
 def add_conversation(fields: dict) -> dict:
     row = {"id": f"c_{uuid.uuid4().hex[:8]}", **_clean(fields)}
     with _LOCK:

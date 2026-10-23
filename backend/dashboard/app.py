@@ -10,14 +10,15 @@ from pathlib import Path
 from urllib.parse import urlparse
 from typing import Literal
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from backend import storage, usage
+from backend import storage, traffic, usage
 from backend.dashboard import hardening
+from backend.dashboard import scans as scan_history
 from backend.dashboard.compare import compare_runs
 from backend.dashboard.jobs import JobFailed, JobQueue
 from backend.dashboard.pairwise import run_pairwise
@@ -25,6 +26,7 @@ from backend.dashboard.runner import (
     NEEDS_OWN_SOURCES, RunCancelled, missing_target_fields, judge_one, run_spec,
 )
 from backend.datasets import attack_enhancers
+from backend.datasets import autogen
 from backend.datasets import conversations as conversations_store
 from backend.datasets import custom_metrics as custom_store
 from backend.datasets import goldens as goldens_store
@@ -39,6 +41,7 @@ from backend.rag.enhance import enhance_document
 from backend.export_suite import build_suite, zip_suite
 from backend.redteam_coverage import coverage_report
 from backend.rag.fetch import fetch_page_text
+from backend.datasets.autogen import find_help_pages
 from backend.rag.generation_options import EVOLUTION_NAMES
 from backend.targets.base import ChatbotClient
 from backend.targets.curl import (
@@ -47,11 +50,13 @@ from backend.targets.curl import (
     find_history_path,
     find_reply_path,
     find_stream_reply_path,
+    find_tools_path,
     parse_curl,
     prepare_body,
     prepare_url,
 )
 from backend.targets.http_client import HttpTargetClient, is_stream, sse_events
+from backend.targets import instructions as target_instructions
 from backend.targets import presets as target_presets
 
 DB_PATH = os.getenv("JUDGE_DB_PATH", "judge.db")
@@ -122,18 +127,21 @@ def _run_job_metric(job: dict, metric_key: str, on_progress) -> dict:
     except HTTPException as e:
         raise JobFailed(str(e.detail)) from e
     options, config = job["options"], row["config"]
-    return run_spec(
-        spec, judge, target, job["target_id"], _conn,
-        theme=config.get("theme") or DEFAULT_THEME,
-        threshold=(options.get("thresholds") or {}).get(metric_key),
-        on_progress=on_progress, persona=config.get("persona", ""), limit=options.get("limit"),
-        probe_set=config.get("probe_set", ""), check_consistency=bool(options.get("check_consistency")),
-        metric_kwargs=metric_options(spec, (options.get("settings") or {}).get(metric_key), config),
-        enhancements=options.get("enhancements") or [], enhancement_options=options.get("enhancement_options"),
-        max_latency_s=options.get("max_latency_s"), price_per_mtok=_judge_price(),
-        calibration_examples=_calibration_examples(job["target_id"], metric_key)
-        if options.get("use_calibration") else None,
-    )
+    try:
+        return run_spec(
+            spec, judge, target, job["target_id"], _conn,
+            theme=config.get("theme") or DEFAULT_THEME,
+            threshold=(options.get("thresholds") or {}).get(metric_key),
+            on_progress=on_progress, persona=config.get("persona", ""), limit=options.get("limit"),
+            probe_set=config.get("probe_set", ""), check_consistency=bool(options.get("check_consistency")),
+            metric_kwargs=metric_options(spec, (options.get("settings") or {}).get(metric_key), config),
+            enhancements=options.get("enhancements") or [], enhancement_options=options.get("enhancement_options"),
+            max_latency_s=options.get("max_latency_s"), price_per_mtok=_judge_price(),
+            calibration_examples=_calibration_examples(job["target_id"], metric_key)
+            if options.get("use_calibration") else None,
+        )
+    finally:
+        _save_found_paths(job, target)
 
 
 def _run_pairwise_job(job: dict, on_progress) -> dict:
@@ -165,9 +173,68 @@ def _run_pairwise_job(job: dict, on_progress) -> dict:
     return result
 
 
+# Paths a job found in the chatbot's replies (HttpTargetClient.discovered) that the
+# chatbot had none saved for, and the metrics they switched on:
+# job id -> {"paths": {"tools_path": ...}, "keys": [...]}. Read by _after_job.
+_found: dict[int, dict] = {}
+_found_lock = threading.Lock()
+_FOUND_LABELS = {"tools_path": "tool calls", "context_path": "sources"}
+
+
+def _runnable_keys(config: dict) -> set[str]:
+    """Metrics that can run for this chatbot config and have cases to run."""
+    theme, persona, probe_set, unavailable = _availability(config)
+    return {s.key for s in all_specs()
+            if not unavailable(s) and _cases_available(s, theme, persona, probe_set)}
+
+
+def _save_found_paths(job: dict, target) -> None:
+    """Saves the paths the chatbot's replies showed and its config lacks (a path
+    the user typed is never replaced), and notes the metrics they switch on."""
+    found = getattr(target, "discovered", None)
+    if not found:
+        return
+    with _found_lock:
+        row = storage.get_target(_conn, job["target_id"])
+        if row is None:
+            return
+        config = row["config"]
+        new = {field: path for field, path in found.items() if not config.get(field)}
+        if not new:
+            return
+        updated = {**config, **new}
+        before, after = _runnable_keys(config), _runnable_keys(updated)
+        storage.update_target(_conn, row["id"], row["name"], row["type"], updated)
+        entry = _found.setdefault(job["id"], {"paths": {}, "keys": []})
+        entry["paths"].update(new)
+        entry["keys"] += [s.key for s in all_specs()
+                          if s.key in after and s.key not in before and s.key not in entry["keys"]]
+    for field, path in new.items():
+        traffic.log("== job %s: found %s at %r in the chatbot's replies; saved on the chatbot",
+                    job["id"], _FOUND_LABELS.get(field, field), path)
+
+
+def _after_job(job_id: int) -> None:
+    """Records the paths a finished job found, and queues the metrics they switched
+    on as one follow-up scan with the same settings (no loop: a saved path is
+    never found again)."""
+    with _found_lock:
+        entry = _found.pop(job_id, None)
+    if not entry:
+        return
+    storage.update_job(_conn, job_id, discovered=entry["paths"])
+    if not entry["keys"]:
+        return
+    job = storage.get_job(_conn, job_id)
+    options = {**job["options"], "auto_discovered": {"from_job": job_id, "paths": entry["paths"]}}
+    follow_up = jobs.submit(job["target_id"], entry["keys"], options)
+    traffic.log("== job %s: queued job %s with %d metrics the found paths switched on",
+                job_id, follow_up, len(entry["keys"]))
+
+
 # Background runs: one job at a time on a worker thread (backend/dashboard/jobs.py).
 # Tests run queued jobs themselves (JUDGE_START_JOB_WORKER=0) instead of racing it.
-jobs = JobQueue(_conn, _run_job_metric)
+jobs = JobQueue(_conn, _run_job_metric, after_job=_after_job)
 if os.getenv("JUDGE_START_JOB_WORKER", "1") != "0":
     jobs.start()
 
@@ -209,6 +276,14 @@ class GoldenCreate(BaseModel):
     expected_answer: str = Field(min_length=1)
     context: list[str] = Field(default_factory=list)
     categories: list[str] = Field(default_factory=list)
+    # Tools the chatbot should call for this question (Tool Correctness).
+    # Omitted on an edit = keep the golden's; [] = remove them.
+    expected_tools: list[str] | None = None
+
+    def tool_names(self) -> list[str] | None:
+        if self.expected_tools is None:
+            return None
+        return [t.strip() for t in self.expected_tools if t.strip()]
 
 
 class RunRequest(BaseModel):
@@ -314,13 +389,27 @@ def api_parse_curl(body: CurlParseRequest):
         "message_marked": MESSAGE_PLACEHOLDER in url + body_template,
         "response_path": "",
         "context_path": "",
+        "tools_path": "",
         "history_path": find_history_path(body_template),
         "reply_preview": "",
         "probe_error": None,
+        "instructions": target_instructions.from_body(body_template),
+        "existing": _saved_chatbot(url, parsed["method"]),
     }
     if result["message_marked"] and body.probe:
         result.update(_probe_reply_path(result, message))
     return result
+
+
+def _saved_chatbot(url: str, method: str) -> dict | None:
+    """The newest saved chatbot this request belongs to (same method and URL),
+    so re-pasting a cURL updates it instead of adding a duplicate."""
+    for target in reversed(storage.list_targets(_conn)):
+        config = target["config"]
+        if config.get("url") == url and (config.get("method") or "POST").upper() == method.upper():
+            return {"id": target["id"], "name": target["name"],
+                    "instructions": config.get("instructions") or []}
+    return None
 
 
 def _probe_reply_path(parsed: dict, message: str) -> dict:
@@ -329,7 +418,7 @@ def _probe_reply_path(parsed: dict, message: str) -> dict:
     try:
         client = HttpTargetClient(config)
         response = client.send(message or "Hello")
-        context_path = ""
+        context_path = tools_path = ""
         if is_stream(response):
             path = find_stream_reply_path(sse_events(response.text))
         else:
@@ -338,13 +427,16 @@ def _probe_reply_path(parsed: dict, message: str) -> dict:
                 path = find_reply_path(data)
                 # Retrieved documents, when the chatbot returns them (RAG metrics).
                 context_path = find_context_path(data)
+                # Tool calls, when the chatbot is an agent that reports them (agent metrics).
+                tools_path = find_tools_path(data)
             except ValueError:
                 path = ""  # plain-text answer: the whole body is the reply
         client.response_path = path
         reply = client.read_reply(response).reply
     except Exception as e:  # noqa: BLE001 - the fields are still filled; the user can fix the path
         return {"probe_error": f"{type(e).__name__}: {e}"}
-    return {"response_path": path, "context_path": context_path, "reply_preview": reply[:500]}
+    return {"response_path": path, "context_path": context_path, "tools_path": tools_path,
+            "reply_preview": reply[:500]}
 
 
 @app.post("/api/targets/parse-llm")
@@ -352,12 +444,14 @@ def api_parse_llm(body: LlmImport):
     """Fills the chatbot form for an OpenAI-compatible LLM API, so another model
     can be judged without capturing a request from a website."""
     try:
-        return target_presets.build_llm_config(
+        config = target_presets.build_llm_config(
             base_url=body.base_url, model=body.model,
             api_key=body.api_key, system_prompt=body.system_prompt,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    return {**config, "instructions": target_instructions.lines(body.system_prompt),
+            "existing": _saved_chatbot(config["url"], config["method"])}
 
 
 @app.post("/api/targets/test")
@@ -563,6 +657,8 @@ class GenerationOptions(BaseModel):
     input_format: str = Field(default="", max_length=500)
     expected_output_format: str = Field(default="", max_length=500)
     review: bool = False
+    # Goldens per document (rag/generate.py DEFAULT_MAX_GOLDENS = 2 when unset).
+    max_goldens: int | None = Field(default=None, ge=1, le=20)
 
 
 def _generation_options(options: GenerationOptions | None) -> dict:
@@ -577,12 +673,14 @@ def _generation_options(options: GenerationOptions | None) -> dict:
 
 @app.post("/api/documents")
 def api_upload_document(
-    theme: str = Form(...), file: UploadFile = File(...), enhance: bool = Form(True),
+    theme: str = Form(...), file: UploadFile = File(...), enhance: str = Form("true"),
     generation: str = Form(""),
 ):
     """Saves the upload and starts golden generation in the background: the
     response is the document row (status "queued"); poll GET /api/documents/{id}.
     generation: optional JSON of GenerationOptions."""
+    # Read as text: newer FastAPI turns an omitted bool form field into False, not its default.
+    enhance = enhance.strip().lower() not in ("false", "0", "no", "off")
     try:
         options = _generation_options(GenerationOptions.model_validate_json(generation)) if generation else {}
     except ValueError as e:
@@ -686,15 +784,162 @@ def api_document_from_url(body: UrlDocument):
         text, final_url = fetch_page_text(body.url)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    document_id = storage.add_document(_conn, body.theme, final_url)
-    theme_dir = DOCUMENTS_DIR / body.theme
+    return _queue_text_document(body.theme, final_url, _host_stem(final_url), text, judge,
+                                body.enhance, _generation_options(body.generation))
+
+
+def _host_stem(url: str) -> str:
+    return re.sub(r"[^A-Za-z0-9.-]", "_", urlparse(url).netloc) or "page"
+
+
+def _queue_text_document(theme: str, source: str, stem: str, text: str, judge,
+                         enhance: bool = True, options: dict | None = None) -> dict:
+    """Keeps text as one of the theme's reference documents and generates
+    goldens (with Context) from it in the background."""
+    document_id = storage.add_document(_conn, theme, source)
+    theme_dir = DOCUMENTS_DIR / theme
     theme_dir.mkdir(parents=True, exist_ok=True)
-    host = re.sub(r"[^A-Za-z0-9.-]", "_", urlparse(final_url).netloc) or "page"
-    dest = theme_dir / f"{document_id}_{host}.txt"
+    dest = theme_dir / f"{document_id}_{stem}.txt"
     dest.write_text(text, encoding="utf-8")
-    options = _generation_options(body.generation)
-    _start_job(lambda: _run_document_job(document_id, dest, body.theme, final_url, judge, body.enhance, options))
+    _start_job(lambda: _run_document_job(document_id, dest, theme, source, judge, enhance, options))
     return storage.get_document(_conn, document_id)
+
+
+class PrepareGoldens(BaseModel):
+    help_url: str = Field(default="", max_length=2000)
+    # AI generation spends judge tokens, so it runs only once the user says yes.
+    generate: bool = False
+
+
+INSTRUCTIONS_SOURCE = "chatbot instructions"
+NEEDS_CONTEXT_MESSAGE = (
+    "No help page or instructions to learn this chatbot's knowledge from. Add golden answers "
+    "with Question, Expected answer and Context (the facts the answer should rest on, one per "
+    "line) to run Faithfulness, Hallucination, Summarization and the Contextual metrics.")
+
+
+def _own_theme(target: dict) -> str:
+    """A chatbot on the shared default theme gets one of its own, named after it,
+    so its goldens and scenarios persist and never mix with another chatbot's."""
+    theme = target["config"].get("theme") or DEFAULT_THEME
+    if theme != DEFAULT_THEME:
+        return theme
+    base = re.sub(r"[^a-z0-9]+", "_", target["name"].lower()).strip("_")[:48] or f"chatbot_{target['id']}"
+    taken = {t["config"].get("theme") for t in storage.list_targets(_conn) if t["id"] != target["id"]}
+    taken |= {g["theme"] for g in goldens_store.load_goldens()} - {base}
+    taken |= {DEFAULT_THEME, "general_support"}
+    theme, n = base, 2
+    while theme in taken:
+        theme, n = f"{base}_{n}", n + 1
+    return theme
+
+
+def _learn_chatbot(target: dict, theme: str, judge, pages: list, persona: str,
+                   errors: list[str]) -> tuple[int, int] | None:
+    """Asks the chatbot what it does, then has the judge write golden answers and
+    conversation scenarios that fit it (and its help pages). Returns how many."""
+    try:
+        answers = autogen.interview(_client_or_400(target))
+    except HTTPException as e:
+        answers = []
+        errors.append(f"Could not reach the chatbot: {e.detail}")
+    if not answers and not pages:
+        errors.append("The chatbot did not answer and no help pages were found, so no golden answers "
+                      "were written for it.")
+        return None
+    try:
+        goldens, scenarios = autogen.write_dataset(judge, answers, pages, persona)
+    except Exception as e:  # noqa: BLE001 - a judge failure is reported, the rest still runs
+        errors.append(f"Writing golden answers failed: {type(e).__name__}: {e}")
+        return None
+    for g in goldens:
+        goldens_store.add_golden(theme, g["question"], g["expected_answer"], [], g["categories"],
+                                 source=autogen.GOLDEN_SOURCE)
+    for s in scenarios:
+        conversations_store.add_conversation({**s, "theme": theme})
+    return len(goldens), len(scenarios)
+
+
+@app.post("/api/targets/{target_id}/prepare-goldens")
+def api_prepare_goldens(target_id: int, body: PrepareGoldens):
+    """Prepares a newly added chatbot's golden dataset: its own theme, goldens and
+    scenarios learned from the chatbot and its help pages (the bot-agnostic starter
+    goldens only when nothing was learned), and Context goldens generated in the
+    background from its help / FAQ page and its instructions. With neither, the answer asks
+    for Context goldens instead of guessing the chatbot's knowledge."""
+    target = _target_or_404(target_id)
+    config = target["config"]
+    theme = _own_theme(target)
+    help_url = body.help_url.strip() or config.get("help_url", "")
+    updated = {**config, "theme": theme, **({"help_url": help_url} if help_url else {})}
+    if updated != config:
+        storage.update_target(_conn, target_id, target["name"], target["type"], updated)
+
+    instructions = config.get("instructions") or []
+    known = {d["filename"] for d in storage.list_documents(_conn, theme) if d["status"] != "error"}
+    learned = any(g.get("source") == autogen.GOLDEN_SOURCE for g in goldens_store.load_goldens(theme=theme))
+    # Sources not generated from yet: the chatbot itself (asked what it does),
+    # the help page (or a search for one), then the instructions.
+    pending = ([autogen.SOURCE_CHATBOT] if not learned else []) \
+        + ([help_url] if help_url and help_url not in known else []) \
+        + ([autogen.SOURCE_SEARCH] if not help_url and not updated.get("docs_searched") else []) \
+        + ([INSTRUCTIONS_SOURCE] if instructions and INSTRUCTIONS_SOURCE not in known else [])
+    documents, errors, pages = [], [], []
+    learned_counts = None
+    judge = None
+    if body.generate and pending:
+        try:
+            judge = build_judge(**_judge_overrides())
+        except RuntimeError as e:
+            errors.append(str(e))
+    if judge and help_url in pending:
+        try:
+            text, final_url = fetch_page_text(help_url)
+        except ValueError as e:
+            errors.append(f"Help page {help_url}: {e}")
+        else:
+            pages.append((final_url, text))
+            documents.append(_queue_text_document(theme, final_url, _host_stem(final_url), text, judge))
+    if judge and autogen.SOURCE_SEARCH in pending:
+        # No help page given: look for the chatbot's FAQ / help / docs pages on its site.
+        found = [(url, text) for url, text in find_help_pages(updated) if url not in known]
+        pages += found
+        for url, text in found:
+            documents.append(_queue_text_document(theme, url, _host_stem(url), text, judge))
+        updated = {**updated, "docs_searched": True, **({"help_url": found[0][0]} if found else {})}
+        storage.update_target(_conn, target_id, target["name"], target["type"], updated)
+        if not found:
+            errors.append("No FAQ / help pages found on the chatbot's website; add a Help / FAQ page URL "
+                          "if it has one.")
+    if judge and autogen.SOURCE_CHATBOT in pending:
+        learned_counts = _learn_chatbot(target, theme, judge, pages, updated.get("persona", ""), errors)
+    if judge and INSTRUCTIONS_SOURCE in pending:
+        text = "Rules and facts this chatbot follows:\n" + "\n".join(f"- {line}" for line in instructions)
+        documents.append(_queue_text_document(theme, INSTRUCTIONS_SOURCE, "instructions", text, judge))
+    can_generate = [] if body.generate else pending
+    # Nothing is written before the user says yes (they may enter their own).
+    # Then the bot-agnostic starters only fill a theme nothing was learned for:
+    # seed_starter adds nothing once the chatbot's own goldens are there.
+    seeded = goldens_store.seed_starter(theme) if body.generate else 0
+
+    has_context = any(g["context"] for g in goldens_store.load_goldens(theme=theme))
+    needs_context = not documents and not can_generate and not known and not has_context
+    learned_text = (f"Learned this chatbot: {learned_counts[0]} golden answers and {learned_counts[1]} "
+                    "conversation scenarios written for it. " if learned_counts else "")
+    if needs_context:
+        message = learned_text + NEEDS_CONTEXT_MESSAGE
+    elif can_generate:
+        message = (f"AI can build this chatbot's test data from {', '.join(can_generate)}: golden "
+                   "answers and conversation scenarios that fit it, plus Context goldens from any help "
+                   "pages (a few chatbot messages and judge calls). Generate them?")
+    elif documents:
+        message = (learned_text + "Generating Context goldens from "
+                   f"{len(documents)} page{'s' if len(documents) != 1 else ''} in the background; they "
+                   "appear under Golden answers when ready.")
+    else:
+        message = learned_text + "Golden dataset ready."
+    return {"theme": theme, "seeded": seeded, "documents": documents, "errors": errors,
+            "can_generate": can_generate, "needs_context": needs_context, "message": message}
 
 
 @app.get("/api/documents")
@@ -819,6 +1064,24 @@ def api_list_conversations(theme: str | None = None):
 @app.post("/api/conversations")
 def api_create_conversation(body: ConversationCreate):
     return conversations_store.add_conversation(_conversation_fields(body))
+
+
+class ConversationsFromGoldens(BaseModel):
+    theme: str = Field(min_length=1)
+    chatbot_role: str = Field(default="", max_length=500)
+    limit: int = Field(default=conversations_store.AUTO_SCENARIOS, ge=1, le=10)
+
+
+@app.post("/api/conversations/from-goldens")
+def api_conversations_from_goldens(body: ConversationsFromGoldens):
+    """Saves scenarios built from the theme's goldens (two questions, then the
+    first again), so they can be reviewed and edited like hand-written ones."""
+    goldens = [g for g in goldens_store.load_goldens(theme=body.theme) if g.get("status") != "draft"]
+    built = conversations_store.from_goldens(goldens, body.theme, body.chatbot_role, body.limit)
+    if not built:
+        raise HTTPException(status_code=400, detail=f"No goldens in theme {body.theme!r} to build "
+                                                    "scenarios from. Add golden answers first.")
+    return [conversations_store.add_conversation(row) for row in built]
 
 
 @app.put("/api/conversations/{conversation_id}")
@@ -954,7 +1217,8 @@ def api_usage_reset(_body: UsageReset):
 @app.post("/api/goldens")
 def api_create_golden(body: GoldenCreate):
     return goldens_store.add_golden(
-        body.theme, body.question, body.expected_answer, body.context, body.categories
+        body.theme, body.question, body.expected_answer, body.context, body.categories,
+        extra={"expected_tools": body.tool_names()},
     )
 
 
@@ -967,6 +1231,7 @@ def api_update_golden(golden_id: str, body: GoldenCreate):
         body.expected_answer,
         body.context,
         body.categories,
+        expected_tools=body.tool_names(),
     )
     if updated is None:
         raise HTTPException(status_code=404, detail="golden not found")
@@ -987,32 +1252,53 @@ def _cases_available(spec, theme: str, persona: str, probe_set: str) -> int:
         return 0
 
 
+def _availability(config: dict | None):
+    """(theme, persona, probe_set, unavailable) for a chatbot config, or for no
+    chatbot (None): unavailable(spec) says why a metric cannot run for it."""
+    theme, persona, probe_set = DEFAULT_THEME, "", ""
+    # What the chatbot reports beside its reply; without a target, everything.
+    features = {"context_path": True, "tools_path": True}
+    fallback = ""  # where the app finds context itself (target sources_fallback)
+    if config is not None:
+        theme = config.get("theme") or DEFAULT_THEME
+        persona = config.get("persona", "")
+        probe_set = config.get("probe_set", "")
+        features = {"context_path": bool(config.get("context_path")), "tools_path": bool(config.get("tools_path"))}
+        fallback = config.get("sources_fallback") or ""
+
+    def features_for(s) -> dict:
+        # Same rule as runner.target_features: a fallback counts as context only
+        # for metrics that read retrieval_context and do not grade the retriever.
+        found = bool(fallback) and not s.grades_retriever and "retrieval_context" in s.scores_on
+        return {**features, "context_path": features["context_path"] or found}
+
+    def unavailable(s) -> str | None:
+        if s.needs_own_sources and not features_for(s)["context_path"]:
+            return NEEDS_OWN_SOURCES
+        if config is not None and s.needs_target:
+            missing = missing_target_fields(s, metric_options(s, None, config))
+            if missing:
+                return missing
+        applies = getattr(s, "applies", None)
+        if callable(applies):
+            try:
+                items = s.cases(theme=theme, persona=persona, probe_set=probe_set)
+            except Exception:  # noqa: BLE001 - a broken dataset shows as 0 cases elsewhere
+                items = []
+            return applies(features_for(s), items)
+        return None
+
+    return theme, persona, probe_set, unavailable
+
+
 @app.get("/api/metrics")
 def api_list_metrics(target_id: int | None = None):
     """The catalog as the UI shows it: grouped, with direction, default threshold,
     a threshold per environment (Local / PR / Staging / Production), the card
     copy, and how many cases each metric would run for the given target (its
     theme and persona)."""
-    theme, persona, probe_set, config = DEFAULT_THEME, "", "", {}
-    own_sources = True  # without a target, count every metric's cases
-    if target_id is not None:
-        config = _target_or_404(target_id)["config"]
-        theme = config.get("theme") or DEFAULT_THEME
-        persona = config.get("persona", "")
-        probe_set = config.get("probe_set", "")
-        own_sources = bool(config.get("context_path"))
-
-    target_config = config if target_id is not None else None
-
-    def unavailable(s) -> str | None:
-        if s.needs_own_sources and not own_sources:
-            return NEEDS_OWN_SOURCES
-        if target_config is not None and s.needs_target:
-            missing = missing_target_fields(s, metric_options(s, None, target_config))
-            if missing:
-                return missing
-        return None
-
+    config = _target_or_404(target_id)["config"] if target_id is not None else None
+    theme, persona, probe_set, unavailable = _availability(config)
     custom_ids = {row["key"]: row["id"] for row in custom_store.load_metrics()}
     return [
         {
@@ -1174,6 +1460,40 @@ def api_get_job(job_id: int):
 def api_list_jobs(target_id: int, active: int = 1):
     """Jobs still queued or running for a chatbot, so a reopened page can reattach."""
     return jobs.active(target_id)
+
+
+@app.get("/api/targets/{target_id}/scans")
+def api_list_scans(target_id: int):
+    """The chatbot's runs as numbered scans (v1, v2, ...), each with one overall result."""
+    _target_or_404(target_id)
+    return scan_history.list_scans(_conn, target_id)
+
+
+@app.get("/api/scans/{job_id}")
+def api_get_scan(job_id: int):
+    scan = scan_history.get_scan(_conn, job_id)
+    if scan is None:
+        raise HTTPException(status_code=404, detail="scan not found")
+    return scan
+
+
+@app.get("/api/scans/{job_id}/compare")
+def api_compare_scans(job_id: int, with_: int = Query(alias="with")):
+    """Metric by metric, this scan against another (better / worse / same / new / removed)."""
+    result = scan_history.compare_scans(_conn, job_id, with_)
+    if result is None:
+        raise HTTPException(status_code=404, detail="scan not found")
+    return result
+
+
+@app.get("/api/scans/{job_id}/cases")
+def api_compare_scan_cases(job_id: int, with_: int = Query(alias="with")):
+    """Test case by test case, this scan against another: every metric's verdict
+    on each case on both sides (improved / regressed / same / new / removed)."""
+    result = scan_history.compare_scan_cases(_conn, job_id, with_)
+    if result is None:
+        raise HTTPException(status_code=404, detail="scan not found")
+    return result
 
 
 @app.post("/api/jobs/{job_id}/cancel")

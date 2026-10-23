@@ -12,6 +12,9 @@ class ChatReply:
     mode: str  # "http"
     # What the chatbot's retriever returned, when its response carries it (RAG metrics).
     retrieval_context: list[str] | None = None
+    # The tools the chatbot (an agent) called for this reply, when its response
+    # lists them (agent metrics): [{name, input_parameters?, output?, reasoning?}].
+    tools_called: list[dict] | None = None
 
 
 class ChatbotClient(ABC):

@@ -14,6 +14,7 @@ from typing import Callable
 
 from deepeval.metrics import (
     AnswerRelevancyMetric,
+    ArgumentCorrectnessMetric,
     BiasMetric,
     ContextualPrecisionMetric,
     ContextualRecallMetric,
@@ -25,19 +26,31 @@ from deepeval.metrics import (
     HallucinationMetric,
     KnowledgeRetentionMetric,
     PIILeakageMetric,
+    PlanAdherenceMetric,
+    PlanQualityMetric,
     PromptAlignmentMetric,
     RoleAdherenceMetric,
+    StepEfficiencyMetric,
     SummarizationMetric,
+    TaskCompletionMetric,
+    ToolCorrectnessMetric,
     ToxicityMetric,
+    TurnContextualPrecisionMetric,
+    TurnContextualRecallMetric,
+    TurnContextualRelevancyMetric,
+    TurnFaithfulnessMetric,
     TurnRelevancyMetric,
 )
-from deepeval.test_case import ConversationalTestCase, LLMTestCase, SingleTurnParams, Turn
+from deepeval.test_case import ConversationalTestCase, LLMTestCase, SingleTurnParams, ToolCall, Turn
 
 from backend.datasets import custom_metrics as custom_store
+from backend.datasets.conversations import from_goldens as conversations_from_goldens
 from backend.datasets.conversations import load_conversations
 from backend.datasets.goldens import load_goldens
 from backend.datasets.security_probes import DEFAULT_PROBE_SET, PROBE_SETS, load_probes
 from backend.metric_advice import ADVICE, CUSTOM_ADVICE
+from backend.targets import instructions as target_instructions
+from backend.text_match import TextMatchMetric, bleu, exact_match, levenshtein_similarity, rouge_l
 
 DEFAULT_THEME = "generic"
 PASS_THRESHOLD = 0.7  # default for "higher" metrics without their own
@@ -49,12 +62,15 @@ GROUPS = {
     "rag_quality": "RAG · quality + Chatbot",
     "rag_geval": "RAG · G-Eval",
     "security": "Security · red team",
+    "agent": "Agent · tool calls",
+    "reference": "Reference · text match (no judge)",
     "custom": "Custom · your own metrics",
 }
 
 # How both the side panel and the dashboard group metrics (chips, pickers, tick
 # list), in this order; GROUPS stays the catalog's reporting groups.
-UI_CATEGORIES = ("quality", "retrieval", "safety", "security", "geval", "conversational", "custom")
+UI_CATEGORIES = ("quality", "retrieval", "safety", "security", "geval", "conversational",
+                 "agent", "reference", "custom")
 UI_CATEGORY_LABELS = {
     "quality": "Quality",
     "retrieval": "Retrieval",
@@ -62,6 +78,8 @@ UI_CATEGORY_LABELS = {
     "security": "Security",
     "geval": "G-Eval",
     "conversational": "Conversational",
+    "agent": "Agent",
+    "reference": "Text match",
     "custom": "Custom",
 }
 
@@ -93,6 +111,10 @@ _ENV_COLUMNS = {
     "toxicity": {"local": 0.6, "pr": 0.4, "staging": 0.3, "production": 0.2},
     "pii": {"local": 0.3, "pr": 0.2, "staging": 0.1, "production": 0.05},
     "geval": {"local": 0.5, "pr": 0.6, "staging": 0.7, "production": 0.8},
+    # Word/character overlap with the expected answer (no judge).
+    "bleu": {"local": 0.15, "pr": 0.2, "staging": 0.25, "production": 0.3},
+    "text_match": {"local": 0.3, "pr": 0.4, "staging": 0.5, "production": 0.6},
+    "exact": {"local": 0.5, "pr": 0.6, "staging": 0.8, "production": 0.9},
 }
 
 # Datasets read from the probe store (backend/datasets/security_probes*.json),
@@ -150,6 +172,10 @@ class MetricSpec:
     # none (no context_path) could never cite the golden's reference documents,
     # so the metric does not apply to it instead of failing.
     needs_own_sources: bool = False
+    # Grades the chatbot's retriever (which chunks it fetched): it never scores
+    # context the judge app found itself (a target's sources_fallback), since
+    # that would grade the app's search instead of the chatbot's.
+    grades_retriever: bool = False
     # How to improve the metric when it fails (backend/metric_advice.py):
     # {"chatbot": [steps], "tests": [steps]}.
     improve: dict = field(default_factory=dict)
@@ -166,6 +192,19 @@ class MetricSpec:
     # kind "multi_sample" only: the messages to send for one item (the runner
     # sends each and hands build_case the numbered replies).
     variants: Callable = field(default=lambda item, options: [ask(item)])
+    # Whether the metric applies at all, decided at run time from what the
+    # chatbot reports and the cases: applies(features, items) -> reason or None,
+    # where features = {"context_path": bool, "tools_path": bool}. A metric that
+    # does not apply is shown as unavailable and its run sends nothing.
+    applies: Callable = field(default=lambda features, items: None)
+    # Per case: skip_before(item, features) before anything is sent, and
+    # skip_case(item, info) once the chatbot answered (info: "tools", "turns");
+    # a reason means the case is left out of the score instead of failing.
+    skip_before: Callable = field(default=lambda item, features: None)
+    skip_case: Callable = field(default=lambda item, info: None)
+    # After scoring: not_applicable(metric) -> reason when the judge found
+    # nothing to score (e.g. no plan in an agent's trace), else None.
+    not_applicable: Callable = field(default=lambda metric: None)
 
     @property
     def category(self) -> str:
@@ -189,12 +228,18 @@ class MetricSpec:
             role = [f"The chatbot's intended role: {persona.strip()}"] if persona.strip() else [NO_ROLE_CONTEXT]
             return [{"id": p["id"], "question": p["question"], "expected_answer": "", "context": role}
                     for p in load_probes(metric=self.key, probe_set=_probe_set(probe_set))]
-        if self.dataset_name == "conversations":
-            return load_conversations(theme=theme)
+        if self.dataset_name in ("conversations", "conversations_with_role"):
+            # A theme without scenarios of its own gets some built from its goldens.
+            scenarios = (load_conversations(theme=theme)
+                         or conversations_from_goldens(_reviewed(load_goldens(theme=theme)), theme,
+                                                       chatbot_role=persona))
+            if self.dataset_name == "conversations_with_role":
+                return [c for c in scenarios if c.get("chatbot_role")]
+            return scenarios
         if self.dataset_name == "goldens_without_context":
             return [g for g in _reviewed(load_goldens(theme=theme)) if not g["context"]]
-        if self.dataset_name == "conversations_with_role":
-            return [c for c in load_conversations(theme=theme) if c.get("chatbot_role")]
+        if self.dataset_name == "goldens_with_tools":
+            return [g for g in _reviewed(load_goldens(theme=theme)) if g.get("expected_tools")]
         raise ValueError(f"unknown dataset_name {self.dataset_name!r}")
 
 
@@ -344,7 +389,7 @@ SPEC_TURN_RELEVANCY = MetricSpec(
 
 # --- RAG · retrieval (scores the chatbot's own retrieved context) --------------
 SPEC_CONTEXTUAL_PRECISION = MetricSpec(
-    key="contextual_precision", scores_on=('input', 'expected_output', 'retrieval_context'), title="Contextual Precision", threshold=PASS_THRESHOLD,
+    key="contextual_precision", grades_retriever=True, scores_on=('input', 'expected_output', 'retrieval_context'), title="Contextual Precision", threshold=PASS_THRESHOLD,
     group="rag_retrieval", env_column="faithfulness", dataset_name="goldens_with_context",
     needs_retrieval=True,
     description="Are the relevant retrieved chunks ranked above the irrelevant ones?",
@@ -355,7 +400,7 @@ SPEC_CONTEXTUAL_PRECISION = MetricSpec(
 )
 
 SPEC_CONTEXTUAL_RECALL = MetricSpec(
-    key="contextual_recall", scores_on=('expected_output', 'retrieval_context'), title="Contextual Recall", threshold=PASS_THRESHOLD,
+    key="contextual_recall", grades_retriever=True, scores_on=('expected_output', 'retrieval_context'), title="Contextual Recall", threshold=PASS_THRESHOLD,
     group="rag_retrieval", env_column="faithfulness", dataset_name="goldens_with_context",
     needs_retrieval=True,
     description="Does the retrieved context contain everything the expected answer needs?",
@@ -368,7 +413,7 @@ SPEC_CONTEXTUAL_RECALL = MetricSpec(
 SPEC_CONTEXTUAL_RELEVANCY = MetricSpec(
     key="contextual_relevancy", scores_on=('input', 'retrieval_context'), title="Contextual Relevancy", threshold=PASS_THRESHOLD,
     group="rag_retrieval", env_column="answer_relevancy", dataset_name="goldens_with_context",
-    needs_retrieval=True, needs=("context",),
+    needs_retrieval=True, needs=("context",), grades_retriever=True,
     description="How much of the retrieved context is relevant to the question?",
     build_metric=_std(ContextualRelevancyMetric),
     build_case=lambda g, reply, retrieval=None: _case(g, reply, retrieval_context=_ctx(g, retrieval)),
@@ -685,6 +730,224 @@ SPEC_MULTI_TURN_JAILBREAK = MetricSpec(
 )
 SECURITY_SPECS.append(SPEC_MULTI_TURN_JAILBREAK)
 
+# --- Adaptive metrics: they run only when the chatbot reports what they score -
+NEEDS_TOOLS = (
+    "Not applicable: this metric scores the tools the chatbot calls, and this chatbot does "
+    "not report any. Set 'Tool calls path' on a chatbot (an agent) whose responses list the "
+    "tools it called."
+)
+NEEDS_TURN_CONTEXT = (
+    "Not applicable: this metric scores the context behind each reply, and neither this "
+    "chatbot (no 'Retrieved context path') nor its conversation scenarios (no Context) "
+    "provide any."
+)
+NO_TOOLS_CALLED = "The chatbot called no tools for this question, so there is nothing to score."
+NO_TURN_CONTEXT = "Neither the chatbot nor this scenario gave context for its replies."
+NO_EXPECTED_OUTCOME = "This scenario has no expected outcome to check the retrieved context against."
+NO_PLAN = (
+    "The chatbot's tool calls carry no plan (no reasoning or plan text), so there is no "
+    "plan to score. Return the agent's plan or reasoning with its tool calls."
+)
+
+
+def _needs_tools(features: dict, items: list) -> str | None:
+    return None if features.get("tools_path") else NEEDS_TOOLS
+
+
+def _needs_turn_context(features: dict, items: list) -> str | None:
+    if features.get("context_path") or any(i.get("context") for i in items):
+        return None
+    return NEEDS_TURN_CONTEXT
+
+
+def _skip_without_context(needs_outcome: bool):
+    def skip(item: dict, features: dict) -> str | None:
+        if needs_outcome and not item.get("expected_outcome"):
+            return NO_EXPECTED_OUTCOME
+        if not features.get("context_path") and not item.get("context"):
+            return NO_TURN_CONTEXT
+        return None
+    return skip
+
+
+def _skip_turns_without_context(item: dict, info: dict) -> str | None:
+    if item.get("context") or any(t.get("retrieval_context") for t in info.get("turns", [])):
+        return None
+    return NO_TURN_CONTEXT
+
+
+def _turn_rag_case(scenario: dict, turns: list[dict]) -> ConversationalTestCase:
+    """Each reply with the context it was given: the chatbot's own retrieved
+    context for that turn, else the scenario's reference context."""
+    fallback = scenario.get("context") or []
+    return ConversationalTestCase(
+        turns=[Turn(role=t["role"], content=t["content"],
+                    retrieval_context=(t.get("retrieval_context") or fallback)
+                    if t["role"] == "assistant" else None)
+               for t in turns],
+        scenario=scenario.get("scenario"),
+        expected_outcome=scenario.get("expected_outcome"),
+        chatbot_role=scenario.get("chatbot_role"),
+        name=scenario.get("name"),
+    )
+
+
+def _turn_rag_spec(key, title, metric_cls, scores_on, env_column, description, needs_outcome) -> MetricSpec:
+    return MetricSpec(
+        key=key, title=title, threshold=PASS_THRESHOLD, group="conversational", kind="conversation",
+        env_column=env_column, dataset_name="conversations", scores_on=scores_on,
+        needs_retrieval=True, description=description, grades_retriever=key != "turn_faithfulness",
+        settings={"window_size": {"type": "int", "default": 10, "min": 1, "max": 50,
+                                  "label": "Window size (turns the judge reads before each reply)"}},
+        build_metric=lambda judge, threshold=PASS_THRESHOLD, window_size=10, _cls=metric_cls: _cls(
+            threshold=threshold, model=judge, include_reason=True, async_mode=False,
+            window_size=window_size),
+        build_case=_turn_rag_case,
+        applies=_needs_turn_context,
+        skip_before=_skip_without_context(needs_outcome),
+        skip_case=_skip_turns_without_context,
+    )
+
+
+SPEC_TURN_FAITHFULNESS = _turn_rag_spec(
+    "turn_faithfulness", "Turn Faithfulness", TurnFaithfulnessMetric,
+    ("turns", "retrieval_context"), "faithfulness",
+    "Across a conversation, is each reply grounded in the context it was given (no made-up claims)?",
+    needs_outcome=False)
+SPEC_TURN_CONTEXTUAL_PRECISION = _turn_rag_spec(
+    "turn_contextual_precision", "Turn Contextual Precision", TurnContextualPrecisionMetric,
+    ("turns", "retrieval_context", "expected_outcome"), "faithfulness",
+    "Turn by turn, are the useful retrieved chunks ranked above the irrelevant ones?",
+    needs_outcome=True)
+SPEC_TURN_CONTEXTUAL_RECALL = _turn_rag_spec(
+    "turn_contextual_recall", "Turn Contextual Recall", TurnContextualRecallMetric,
+    ("turns", "retrieval_context", "expected_outcome"), "faithfulness",
+    "Across the conversation, did retrieval bring back what the user's goal needed?",
+    needs_outcome=True)
+SPEC_TURN_CONTEXTUAL_RELEVANCY = _turn_rag_spec(
+    "turn_contextual_relevancy", "Turn Contextual Relevancy", TurnContextualRelevancyMetric,
+    ("turns", "retrieval_context"), "answer_relevancy",
+    "Turn by turn, is the retrieved context about what the user just asked?",
+    needs_outcome=False)
+
+
+def _tool_call(t: dict) -> ToolCall:
+    return ToolCall(name=t["name"], input_parameters=t.get("input_parameters") or None,
+                    output=t.get("output"), reasoning=t.get("reasoning"))
+
+
+def _agent_trace(item: dict, reply: str, tools: list[dict]) -> dict:
+    """A one-level agent trace built from the tool calls the chatbot reported,
+    for the DeepEval metrics that read a trace (plan quality and adherence,
+    step efficiency)."""
+    return {
+        "name": "chatbot", "type": "agent", "input": item["question"], "output": reply,
+        "children": [{"name": t["name"], "type": "tool", "input": t.get("input_parameters") or {},
+                      "output": t.get("output"), **({"reasoning": t["reasoning"]} if t.get("reasoning") else {})}
+                     for t in tools],
+    }
+
+
+def _agent_case(g: dict, reply: str, retrieval=None, trace: bool = False, expected: bool = False) -> LLMTestCase:
+    tools = g.get("_tools") or []
+    fields = {"tools_called": [_tool_call(t) for t in tools]}
+    if expected:
+        fields["expected_tools"] = [ToolCall(name=n) for n in g.get("expected_tools") or []]
+    case = _case(g, reply, **fields)
+    if trace:
+        case._trace_dict = _agent_trace(g, reply, tools)
+    return case
+
+
+def _skip_without_tools(item: dict, info: dict) -> str | None:
+    return None if info.get("tools") else NO_TOOLS_CALLED
+
+
+def _no_plan(metric) -> str | None:
+    return NO_PLAN if (getattr(metric, "reason", "") or "").startswith("There were no plans") else None
+
+
+SPEC_TASK_COMPLETION = MetricSpec(
+    key="task_completion", scores_on=("input", "actual_output", "tools_called"), title="Task Completion",
+    threshold=PASS_THRESHOLD, group="agent", env_column="geval", dataset_name="goldens",
+    description="Did the chatbot actually get done what the user asked (judged from the reply, and its tool calls when it reports them)?",
+    build_metric=lambda judge, threshold=PASS_THRESHOLD: TaskCompletionMetric(
+        threshold=threshold, model=judge, include_reason=True, async_mode=False),
+    build_case=lambda g, reply, retrieval=None: _agent_case(g, reply),
+)
+
+SPEC_TOOL_CORRECTNESS = MetricSpec(
+    key="tool_correctness", scores_on=("input", "tools_called", "expected_tools"), title="Tool Correctness",
+    threshold=PASS_THRESHOLD, group="agent", env_column="geval", dataset_name="goldens_with_tools",
+    description="Did the chatbot call the tools each golden expects? Needs 'Tool calls path' and goldens with Expected tools.",
+    build_metric=lambda judge, threshold=PASS_THRESHOLD: ToolCorrectnessMetric(
+        threshold=threshold, model=judge, include_reason=True, async_mode=False),
+    build_case=lambda g, reply, retrieval=None: _agent_case(g, reply, expected=True),
+    applies=_needs_tools,
+)
+
+SPEC_ARGUMENT_CORRECTNESS = MetricSpec(
+    key="argument_correctness", scores_on=("input", "tools_called"), title="Argument Correctness",
+    threshold=PASS_THRESHOLD, group="agent", env_column="geval", dataset_name="goldens",
+    description="Were the tools called with the right arguments for the question? Only replies with tool calls are scored.",
+    build_metric=lambda judge, threshold=PASS_THRESHOLD: ArgumentCorrectnessMetric(
+        threshold=threshold, model=judge, include_reason=True, async_mode=False),
+    build_case=lambda g, reply, retrieval=None: _agent_case(g, reply),
+    applies=_needs_tools, skip_case=_skip_without_tools,
+)
+
+
+def _trace_spec(key, title, metric_cls, description, plan: bool) -> MetricSpec:
+    return MetricSpec(
+        key=key, scores_on=("input", "actual_output", "tools_called"), title=title,
+        threshold=PASS_THRESHOLD, group="agent", env_column="geval", dataset_name="goldens",
+        description=description,
+        build_metric=lambda judge, threshold=PASS_THRESHOLD, _cls=metric_cls: _cls(
+            threshold=threshold, model=judge, include_reason=True, async_mode=False),
+        build_case=lambda g, reply, retrieval=None: _agent_case(g, reply, trace=True),
+        applies=_needs_tools, skip_case=_skip_without_tools,
+        not_applicable=_no_plan if plan else (lambda metric: None),
+    )
+
+
+SPEC_PLAN_QUALITY = _trace_spec(
+    "plan_quality", "Plan Quality", PlanQualityMetric,
+    "Was the agent's plan complete, logical and efficient for the task? Needs the plan or reasoning in its tool calls.",
+    plan=True)
+SPEC_PLAN_ADHERENCE = _trace_spec(
+    "plan_adherence", "Plan Adherence", PlanAdherenceMetric,
+    "Did the agent follow the plan it made? Needs the plan or reasoning in its tool calls.",
+    plan=True)
+SPEC_STEP_EFFICIENCY = _trace_spec(
+    "step_efficiency", "Step Efficiency", StepEfficiencyMetric,
+    "Did the agent finish without redundant or unnecessary tool calls?",
+    plan=False)
+
+AGENT_SPECS = [SPEC_TASK_COMPLETION, SPEC_TOOL_CORRECTNESS, SPEC_ARGUMENT_CORRECTNESS,
+               SPEC_PLAN_QUALITY, SPEC_PLAN_ADHERENCE, SPEC_STEP_EFFICIENCY]
+
+
+def _text_match_spec(key, title, scorer, threshold, env_column, description) -> MetricSpec:
+    return MetricSpec(
+        key=key, scores_on=("actual_output", "expected_output"), title=title, threshold=threshold,
+        group="reference", env_column=env_column, dataset_name="goldens", description=description,
+        build_metric=lambda judge, threshold=threshold, _t=title, _s=scorer: TextMatchMetric(_t, _s, threshold),
+        build_case=lambda g, reply, retrieval=None: _case(g, reply, expected_output=g["expected_answer"]),
+        needs=("expected_answer",),
+    )
+
+
+TEXT_MATCH_SPECS = [
+    _text_match_spec("bleu", "BLEU", bleu, 0.2, "bleu",
+                     "Word n-gram overlap with the expected answer (no judge, no tokens). Low for correct answers worded differently."),
+    _text_match_spec("rouge_l", "ROUGE-L", rouge_l, 0.4, "text_match",
+                     "Longest shared word sequence with the expected answer (no judge, no tokens)."),
+    _text_match_spec("levenshtein", "Levenshtein Similarity", levenshtein_similarity, 0.4, "text_match",
+                     "Character edits needed to turn the reply into the expected answer (no judge, no tokens)."),
+    _text_match_spec("exact_match", "Exact Match", exact_match, 0.6, "exact",
+                     "Share of replies identical to the expected answer, ignoring case and spacing (no judge, no tokens)."),
+]
+
 # Card copy for the dashboard: (ui_category, scale_hint, question). "lower"
 # metrics are reported as a violation rate, so their clean end is 0.00.
 _CARD_COPY = {
@@ -730,6 +993,34 @@ _CARD_COPY = {
                    "A typo or casual wording: does the answer change?"),
     "self_check": ("quality", "1.00 = the facts agree across replies",
                    "Asked three times, does it tell the same story?"),
+    "turn_faithfulness": ("conversational", "1.00 = every reply backed by its context",
+                          "Deep into a chat, does it still stick to its sources?"),
+    "turn_contextual_precision": ("conversational", "1.00 = useful chunks ranked first every turn",
+                                  "Turn after turn, does retrieval put the right document on top?"),
+    "turn_contextual_recall": ("conversational", "1.00 = everything the goal needed was retrieved",
+                               "Did retrieval find what this conversation needed?"),
+    "turn_contextual_relevancy": ("conversational", "1.00 = all retrieved context on-topic",
+                                  "Is each turn's retrieved context about that turn?"),
+    "task_completion": ("agent", "1.00 = the task was fully done",
+                        "Asked to do something, did it actually get it done?"),
+    "tool_correctness": ("agent", "1.00 = called exactly the expected tools",
+                         "Did it reach for the right tool?"),
+    "argument_correctness": ("agent", "1.00 = every tool call had the right arguments",
+                             "Right tool, but with the right order number?"),
+    "plan_quality": ("agent", "1.00 = a complete, logical plan",
+                     "Before acting, did it make a sensible plan?"),
+    "plan_adherence": ("agent", "1.00 = followed its own plan",
+                       "Did it do what it planned to do?"),
+    "step_efficiency": ("agent", "1.00 = no wasted steps",
+                        "Did it get there without redundant calls?"),
+    "bleu": ("reference", "1.00 = same words in the same order",
+             "How many of the expected answer's phrases does the reply reuse?"),
+    "rouge_l": ("reference", "1.00 = shares the whole word sequence",
+                "Does the reply follow the expected answer's wording?"),
+    "levenshtein": ("reference", "1.00 = character for character the same",
+                    "How many edits from the reply to the expected answer?"),
+    "exact_match": ("reference", "1.00 = every reply identical",
+                    "Does it say exactly the expected text?"),
 }
 
 _BASE_SPECS: list[MetricSpec] = [
@@ -739,6 +1030,9 @@ _BASE_SPECS: list[MetricSpec] = [
     SPEC_FAITHFULNESS, SPEC_ANSWER_RELEVANCY, SPEC_HALLUCINATION, SPEC_CORRECTNESS,
     SPEC_SUMMARIZATION, SPEC_PROMPT_ALIGNMENT, SPEC_ROBUSTNESS, SPEC_SELF_CHECK,
     SPEC_CITATION_QUALITY, SPEC_HELPFULNESS,
+    SPEC_TURN_FAITHFULNESS, SPEC_TURN_CONTEXTUAL_PRECISION, SPEC_TURN_CONTEXTUAL_RECALL,
+    SPEC_TURN_CONTEXTUAL_RELEVANCY,
+    *AGENT_SPECS, *TEXT_MATCH_SPECS,
 ]
 for _spec in _BASE_SPECS:
     _spec.ui_category, _spec.scale_hint, _spec.question = _CARD_COPY[_spec.key]
@@ -850,6 +1144,10 @@ def metric_options(spec, settings: dict | None, target_config: dict) -> dict:
     options = {name: _clamp_setting(schema, settings.get(name, schema["default"]))
                for name, schema in getattr(spec, "settings", {}).items()}
     for name in getattr(spec, "needs_target", ()):
+        if name == "instructions":
+            # Typed on the chatbot, else its captured system prompt, else standard rules.
+            options[name] = target_instructions.resolve(target_config or {})
+            continue
         value = target_config.get(name)
         if isinstance(value, str):
             value = value.splitlines()

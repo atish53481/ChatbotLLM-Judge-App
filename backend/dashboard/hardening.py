@@ -4,12 +4,16 @@ security headers, a JSON error for unexpected failures, and a health check.
 Settings (environment / .env):
 - JUDGE_LOG_LEVEL: DEBUG, INFO (default), WARNING, ERROR.
 - JUDGE_MAX_BODY_MB: largest request body accepted, in MB (default 25).
+- JUDGE_TRAFFIC_FILE: where the llm_judge logs (chatbot/judge traffic, errors)
+  are also written, however the backend was started; watch-traffic.bat reads it.
+  Default logs/traffic-YYYY-MM-DD.log; empty turns the file off.
 """
 from __future__ import annotations
 
 import logging
 import os
 import time
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -36,6 +40,27 @@ def configure_logging() -> None:
     if not root.handlers:
         logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logger.setLevel(level)
+    _add_traffic_file()
+
+
+def _add_traffic_file() -> None:
+    default = f"logs/traffic-{time.strftime('%Y-%m-%d')}.log"
+    name = os.getenv("JUDGE_TRAFFIC_FILE", default).strip()
+    if not name:
+        return
+    path = Path(name)
+    if not path.is_absolute():
+        path = Path(__file__).resolve().parents[2] / path
+    if any(getattr(h, "baseFilename", None) == str(path) for h in logger.handlers):
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(path, encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Traffic log file %s not writable: %s", path, exc)
+        return
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logger.addHandler(handler)
 
 
 def max_body_bytes() -> int:
@@ -65,6 +90,10 @@ def install(app: FastAPI) -> None:
         for name, value in _SECURITY_HEADERS.items():
             response.headers.setdefault(name, value)
         path = request.url.path
+        if path.startswith("/app"):
+            # The web app's own files: revalidate on every load (a 304 when
+            # unchanged), so an updated script is never shadowed by a cached one.
+            response.headers.setdefault("Cache-Control", "no-cache")
         if path.startswith("/api/"):
             # API answers carry chatbot replies and settings: never cache them.
             response.headers.setdefault("Cache-Control", "no-store")

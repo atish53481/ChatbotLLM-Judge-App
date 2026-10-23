@@ -283,8 +283,24 @@ function renderCounts(rows) {
   $("status-pass").textContent = pass;
   $("status-fail").textContent = fail;
   $("status-pending").textContent = shown.length - pass - fail;
+  const pct = (n) => (shown.length ? Math.round((n / shown.length) * 100) : 0);
+  $("status-donut").style.setProperty("--pass", pct(pass));
+  $("status-donut").style.setProperty("--fail", pct(fail));
+  // Hover a pill to see which metrics it counts, with score against threshold.
+  const line = (m) => {
+    const row = byKey.get(m.key);
+    const bound = `${comparator(m.direction)} ${formatScore(thresholdFor(m, state.thresholds))}`;
+    return row ? `• ${m.title}: ${formatScore(row.score)} (needs ${bound})` : `• ${m.title} (needs ${bound})`;
+  };
+  const pillTitle = (label, metrics) => metrics.length
+    ? `${label} (${metrics.length}):\n${metrics.map(line).join("\n")}`
+    : `${label}: none`;
+  $("status-pass").title = pillTitle("Passed", shown.filter((m) => byKey.has(m.key) && Boolean(byKey.get(m.key).passed)));
+  $("status-fail").title = pillTitle("Failed", shown.filter((m) => byKey.has(m.key) && !byKey.get(m.key).passed));
+  $("status-pending").title = pillTitle("Not run yet", shown.filter((m) => !byKey.has(m.key)));
   const avg = averageScore(shown, byKey);
   $("tile-average").textContent = avg ? formatScore(avg.value) : "–";
+  $("tile-average").style.setProperty("--pct", avg ? Math.round(Math.max(0, Math.min(1, avg.value)) * 100) : 0);
   $("tile-average-note").textContent = avg
     ? `${avg.count} of ${shown.length} ticked cards run · lower-is-better as 1 − score`
     : "no runs yet for the ticked cards";
@@ -387,9 +403,14 @@ function caseDetailPanel(metric, details) {
               { className: `case-score status-${row.passed ? "pass" : "fail"}` },
               `${row.passed ? "✓ pass" : "✕ fail"} · ${formatScore(row.score)} ${comparator(direction)} ${formatScore(threshold)}`,
             ),
-            copyCaseButton(metric, row, direction, threshold),
+            el("span", { className: "case-row-actions" },
+              expandCaseButton(metric, row, direction, threshold),
+              copyCaseButton(metric, row, direction, threshold)),
           ),
-          el("dl", { className: "case-fields" }, ...caseFields(metric, row)),
+          el("dl", {
+            className: "case-fields", title: "Double-click to read this case full size",
+            ondblclick: () => openCaseViewer(metric, row, direction, threshold),
+          }, ...caseFields(metric, row)),
         )),
       )
       : el("p", { className: "case-detail-empty muted" }, "No failed cases in the last run."),
@@ -431,6 +452,51 @@ function recentRuns(metric) {
   );
 }
 
+function expandCaseButton(metric, row, direction, threshold) {
+  return el("button", {
+    type: "button", className: "small-button", title: "Read this case full size",
+    "aria-label": "Expand this case", onclick: () => openCaseViewer(metric, row, direction, threshold),
+  }, "⤢ Expand");
+}
+
+// One case at a readable size over the whole dashboard: Esc, the backdrop or
+// Close shut it; Full screen uses the whole monitor.
+function openCaseViewer(metric, row, direction, threshold) {
+  document.querySelector(".case-viewer")?.remove();
+  const opener = document.activeElement;
+  const close = () => {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    viewer.remove();
+    document.removeEventListener("keydown", onKey);
+    opener?.focus?.();
+  };
+  const onKey = (event) => { if (event.key === "Escape") close(); };
+  const closeButton = el("button", { type: "button", onclick: close }, "Close ✕");
+  const panel = el(
+    "div",
+    { className: "case-viewer-panel", role: "dialog", "aria-modal": "true", "aria-label": `${metric.title} case` },
+    el(
+      "div",
+      { className: "case-viewer-head" },
+      el("div", {},
+        el("h2", {}, metric.title),
+        el("p", { className: `case-score status-${row.passed ? "pass" : "fail"}` },
+          `${row.passed ? "✓ pass" : "✕ fail"} · ${formatScore(row.score)} ${comparator(direction)} ${formatScore(threshold)}`)),
+      el("div", { className: "case-viewer-actions" },
+        document.fullscreenEnabled
+          ? el("button", { type: "button", onclick: () => viewer.requestFullscreen().catch(() => {}) }, "⛶ Full screen")
+          : null,
+        copyCaseButton(metric, row, direction, threshold),
+        closeButton),
+    ),
+    el("dl", { className: "case-fields" }, ...caseFields(metric, row)),
+  );
+  const viewer = el("div", { className: "case-viewer", onclick: (e) => { if (e.target === viewer) close(); } }, panel);
+  document.addEventListener("keydown", onKey);
+  document.body.append(viewer);
+  closeButton.focus();
+}
+
 function copyCaseButton(metric, row, direction, threshold) {
   const button = el("button", { type: "button", className: "small-button", title: "Copy this case as text" }, "Copy");
   button.addEventListener("click", async () => {
@@ -470,6 +536,9 @@ function caseFields(metric, row) {
     add("User turns", row.input);
     add("Conversation (actual result)", row.actual_output);
     add("Expected outcome", row.expected_output);
+    if (row.context && row.context.length) {
+      add(contextLabel(metric, row), el("ul", {}, ...row.context.map((line) => el("li", {}, line))));
+    }
   } else {
     add("Question", row.input && row.input !== row.question ? row.input : row.question);
     if (row.scores && row.scores.length === 2) {
@@ -481,14 +550,25 @@ function caseFields(metric, row) {
     if (row.context && row.context.length) {
       add(contextLabel(metric, row), el("ul", {}, ...row.context.map((line) => el("li", {}, line))));
     }
+    if (row.tools_called && row.tools_called.length) {
+      add("Tools called", el("ul", {}, ...row.tools_called.map((t) => el("li", {},
+        t.input_parameters ? `${t.name}(${JSON.stringify(t.input_parameters)})` : t.name))));
+    }
   }
   if (typeof row.latency_s === "number") add("Chatbot latency", `${row.latency_s.toFixed(2)} s`);
   add("Why", row.reason || "No reason given.");
   return pairs;
 }
 
+// Context the judge app found itself (target sources_fallback), not the chatbot's.
+const FOUND_CONTEXT = {
+  knowledge_base: "your documents",
+  cited_pages: "pages the reply links to",
+};
+
 function contextLabel(metric, row) {
   if (row.context_source === "chatbot") return "Retrieved context (from the chatbot)";
+  if (FOUND_CONTEXT[row.context_source]) return `Context (found in ${FOUND_CONTEXT[row.context_source]}, not the chatbot's retrieval)`;
   const retrieval = metric && (metric.scores_on || []).includes("retrieval_context");
   return retrieval ? "Retrieved context (golden reference)" : "Context (golden reference)";
 }
@@ -518,11 +598,26 @@ async function toggleCardDetails(key) {
   renderMetricGrid();
 }
 
+// Why a card cannot run, as a readable callout instead of a grey footnote:
+// "not applicable" (the chatbot lacks what the metric scores) or "no cases".
+function cardNotice(notApplicable, reason) {
+  const text = (reason || "").replace(/^Not applicable:\s*/i, "");
+  return el(
+    "div",
+    { className: `card-notice ${notApplicable ? "card-notice-na" : "card-notice-empty"}`, role: "note" },
+    el("strong", {}, notApplicable ? "Not applicable to this chatbot" : "No cases yet"),
+    el("span", {}, notApplicable ? text : text || "Add golden answers for this chatbot's theme to run it."),
+  );
+}
+
 function metricCard(metric, row) {
   const isRunning = state.runningKeys.has(metric.key);
   const hasRun = Boolean(row);
-  const statusClass = isRunning ? "running" : !hasRun ? "not-run" : row.passed ? "pass" : "fail";
-  const statusLabel = isRunning ? "RUNNING" : !hasRun ? "NOT RUN" : row.passed ? "PASS" : "FAIL";
+  // Not applicable: this chatbot does not report what the metric scores (no
+  // tool calls, no retrieved context...). Shown apart, with how to turn it on.
+  const notApplicable = Boolean(metric.unavailable) && !isRunning;
+  const statusClass = isRunning ? "running" : notApplicable ? "na" : !hasRun ? "not-run" : row.passed ? "pass" : "fail";
+  const statusLabel = isRunning ? "RUNNING" : notApplicable ? "N/A" : !hasRun ? "NOT RUN" : row.passed ? "PASS" : "FAIL";
   const threshold = thresholdFor(metric, state.thresholds);
   const score = hasRun ? row.score : null;
   const cases = metric.cases_available ?? 0;
@@ -548,7 +643,16 @@ function metricCard(metric, row) {
         "div",
         { className: "score-row" },
         el("span", { className: `status-pill status-${statusClass}` }, statusLabel),
-        el("span", { className: "score-cell" }, el("b", {}, hasRun ? formatScore(score) : "–"), el("small", {}, "SCORE")),
+        el(
+          "span",
+          {
+            className: `ring${hasRun ? (row.passed ? " ring-pass" : " ring-fail") : ""}`,
+            style: `--pct:${barWidth}`,
+            role: "img",
+            "aria-label": `Score ${hasRun ? formatScore(score) : "not run"}`,
+          },
+          hasRun ? formatScore(score) : "–",
+        ),
         el("span", { className: "score-cell" }, el("b", {}, bound), el("small", {}, "THRESHOLD")),
       ),
       isRunning
@@ -561,13 +665,13 @@ function metricCard(metric, row) {
           ),
       el("p", { className: "scale-hint" }, metric.scale_hint || ""),
       el("p", { className: "card-question" }, metric.question || ""),
-      el(
-        "p",
-        { className: "card-meta" },
-        cases
-          ? `${cases} case${cases === 1 ? "" : "s"} available · ${metric.dataset}${metric.probe_set ? ` (${metric.probe_set})` : ""}`
-          : metric.unavailable || "no cases for this chatbot's golden set",
-      ),
+      notApplicable || !cases
+        ? cardNotice(notApplicable, metric.unavailable)
+        : el(
+          "p",
+          { className: "card-meta" },
+          `${cases} case${cases === 1 ? "" : "s"} available · ${metric.dataset}${metric.probe_set ? ` (${metric.probe_set})` : ""}`,
+        ),
       el("p", { className: "card-meta" }, hasRun ? formatRunTime(row.ts) : "–"),
     ),
     el(
@@ -581,7 +685,7 @@ function metricCard(metric, row) {
           disabled: !state.judgeUp || !currentTarget() || state.running || cases === 0,
           onclick: () => runKeys([metric.key]),
         },
-        isRunning ? "▶ Running…" : "▶ Run",
+        isRunning ? "▶ Running…" : notApplicable ? "Not applicable" : "▶ Run",
       ),
       el(
         "button",
@@ -739,7 +843,9 @@ function renderMetricGrid() {
   const shown = visibleMetrics();
   const byKey = new Map(latestRowsCache.map((r) => [r.metric_key, r]));
   $("metric-grid-empty").classList.toggle("hidden", state.metrics.length > 0);
-  $("metric-grid").replaceChildren(...shown.map((m) => metricCard(m, byKey.get(m.key))));
+  // Metrics that cannot run for this chatbot go last, so the runnable ones lead.
+  const ordered = [...shown.filter((m) => !m.unavailable), ...shown.filter((m) => m.unavailable)];
+  $("metric-grid").replaceChildren(...ordered.map((m) => metricCard(m, byKey.get(m.key))));
 }
 
 async function renderLatest() {
@@ -846,41 +952,92 @@ async function renderTrend() {
   }
 }
 
-// Full run log for the current chatbot: every recorded run, all metrics,
-// newest first. "Latest score per metric" only ever shows the most recent
-// point per metric, so this is the only place the full record lives.
+// The chatbot's history as scans: each Run is one numbered cycle (1, 2, ...)
+// with one overall result; Open shows its metrics, Compare the change since the
+// scan before. Scores, trend and cases start fresh each panel load; this keeps all.
+const SCAN_RESULT = {
+  passed: ["Passed", "status-pass"], failed: ["Failed", "status-fail"],
+  incomplete: ["Incomplete", "status-error"], running: ["Running", ""], queued: ["Queued", ""],
+};
+const scanTime = (iso) => (iso ? formatRunTime(iso) : "–");
+const metricTitle = (key) => state.metrics.find((m) => m.key === key)?.title ?? key;
+
 async function renderHistory() {
   const target = currentTarget();
-  if (!target || state.metrics.length === 0) return;
-  const choice = $("metric-select").value;
-  const metrics = metricsFor(choice, state.metrics);
-  const byKey = new Map(state.metrics.map((m) => [m.key, m]));
+  if (!target) return;
   const table = $("history-table");
   const empty = $("history-empty");
   table.classList.add("hidden");
+  $("scan-detail").classList.add("hidden");
   try {
-    const histories = await Promise.all(
-      metrics.map((m) => api(`/api/history?target_id=${target.id}&metric_key=${encodeURIComponent(m.key)}`)),
-    );
-    const rows = histories.flat().sort((a, b) => (a.ts < b.ts ? 1 : -1));
-    $("history-count").textContent = rows.length ? `(${rows.length} run${rows.length > 1 ? "s" : ""})` : "";
-    empty.classList.toggle("hidden", rows.length > 0);
-    table.classList.toggle("hidden", rows.length === 0);
-    table.tBodies[0].replaceChildren(
-      ...rows.map((r) =>
-        el(
-          "tr",
-          {},
-          el("td", {}, formatRunTime(r.ts)),
-          el("td", {}, byKey.get(r.metric_key)?.title ?? r.metric_key),
-          el("td", { className: "num" }, formatScore(r.score)),
-          el("td", { className: "num" }, byKey.get(r.metric_key)
-            ? `${comparator(byKey.get(r.metric_key).direction)} ${formatScore(thresholdFor(byKey.get(r.metric_key), state.thresholds))}`
-            : "–"),
-          el("td", { className: r.passed ? "status-pass" : "status-fail" }, resultLabel(r.passed)),
-          el("td", {}, confirmButton("Delete", "Delete this run from the history", () => deleteRuns(`/api/runs/${r.id}`))),
-        ),
-      ),
+    const scans = await api(`/api/targets/${target.id}/scans`);
+    $("history-count").textContent = scans.length ? `(${scans.length} scan${scans.length > 1 ? "s" : ""})` : "";
+    empty.classList.toggle("hidden", scans.length > 0);
+    table.classList.toggle("hidden", scans.length === 0);
+    table.tBodies[0].replaceChildren(...scans.map((scan, i) => {
+      const [label, css] = SCAN_RESULT[scan.result] || [scan.result, ""];
+      const previous = scans[i + 1];
+      return el(
+        "tr",
+        {},
+        el("td", {}, el("strong", {}, String(scan.version))),
+        el("td", {}, scanTime(scan.started_at)),
+        el("td", { className: css }, `${label} · ${scan.passed} of ${scan.metrics}`,
+          // Paths found in the chatbot's replies, or a scan started for them.
+          scan.note ? el("span", { className: "small", title: scan.note, "aria-label": scan.note }, " ⓘ") : ""),
+        el("td", { className: "num" }, String(scan.passed)),
+        el("td", { className: "num" }, String(scan.failed)),
+        el("td", { className: "num" }, String(scan.errors)),
+        el("td", { className: "num" }, formatScore(scan.average)),
+        el("td", { className: "small" }, scan.judge_model || "–"),
+        el("td", {},
+          // Opens the scan's full report in its own tab (scan/scan.html).
+          el("a", { className: "button-link", href: `../scan/scan.html?job=${scan.job_id}`,
+            target: "_blank", rel: "noopener" }, "Open"),
+          // Overview / Test Cases view of this run (runs/runs.html).
+          el("a", { className: "button-link", href: `../runs/runs.html?target=${target.id}&job=${scan.job_id}#overview`,
+            target: "_blank", rel: "noopener" }, "Overview"),
+          previous
+            ? el("button", { type: "button", onclick: () => compareScan(scan, previous) }, `Compare with ${previous.version}`)
+            : "",
+          // Case by case, side by side (regressions/regressions.html).
+          previous
+            ? el("a", { className: "button-link", href: `../regressions/regressions.html?job=${scan.job_id}&with=${previous.job_id}`,
+              target: "_blank", rel: "noopener" }, "Regressions")
+            : ""),
+      );
+    }));
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
+function showScanTable(heading, columns, rows) {
+  $("scan-detail-heading").textContent = heading;
+  const table = $("scan-detail-table");
+  table.tHead.rows[0].replaceChildren(...columns.map(([text, css]) => el("th", { className: css || "" }, text)));
+  table.tBodies[0].replaceChildren(...rows);
+  $("scan-detail").classList.remove("hidden");
+  $("scan-detail").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function compareScan(scan, previous) {
+  try {
+    const diff = await api(`/api/scans/${scan.job_id}/compare?with=${previous.job_id}`);
+    const label = { better: "Better", worse: "Worse", same: "Same", new: "New", removed: "Removed", changed: "Changed" };
+    const cell = (side) => (side ? `${formatScore(side.score)} (${side.status})` : "–");
+    showScanTable(
+      `Scan ${scan.version} compared with scan ${previous.version}`,
+      [["Metric"], [`Scan ${previous.version}`, "num"], [`Scan ${scan.version}`, "num"], ["Change"]],
+      diff.metrics.map((m) => el(
+        "tr",
+        {},
+        el("td", {}, metricTitle(m.key)),
+        el("td", { className: "num" }, cell(m.before)),
+        el("td", { className: "num" }, cell(m.now)),
+        el("td", { className: m.change === "better" ? "status-pass" : m.change === "worse" ? "status-fail" : "" },
+          label[m.change] || m.change),
+      )),
     );
   } catch (error) {
     setStatus(error.message, true);
@@ -945,7 +1102,7 @@ function renderCases(lastRun) {
         el("td", {}, row.actual_output),
         el("td", {}, row.expected_output || "–"),
         el("td", { className: "cases-context" }, row.context && row.context.length
-          ? `${row.context_source === "chatbot" ? "(chatbot) " : "(golden) "}${row.context.map((line) => `• ${line}`).join("\n")}`
+          ? `${row.context_source === "chatbot" ? "(chatbot) " : FOUND_CONTEXT[row.context_source] ? `(${FOUND_CONTEXT[row.context_source]}) ` : "(golden) "}${row.context.map((line) => `• ${line}`).join("\n")}`
           : "–"),
         el("td", { className: "num" }, formatScore(row.score)),
         el("td", { className: row.passed ? "status-pass" : "status-fail" }, resultLabel(row.passed)),
@@ -984,6 +1141,11 @@ $("chat-form").addEventListener("submit", async (event) => {
 });
 
 $("advanced-button").addEventListener("click", openAdvanced);
+// Opens Regressions on the selected chatbot (its two newest scans), in a new tab.
+$("regressions-link").addEventListener("click", (event) => {
+  const target = currentTarget();
+  event.currentTarget.href = `../regressions/regressions.html${target ? `?target=${target.id}` : ""}`;
+});
 $("report-button").addEventListener("click", () => {
   const target = currentTarget();
   if (!target) {

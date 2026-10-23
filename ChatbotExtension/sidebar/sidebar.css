@@ -23,6 +23,13 @@ h3 {
   margin-bottom: 10px;
 }
 
+.panel-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .panel-header p {
   margin: 4px 0 0;
 }
@@ -392,4 +399,130 @@ summary {
 
 .run-bar .run-bar-fill {
   transition: width 0.4s ease;
+}
+
+/* ---- Look: the dashboard's palette (warm paper, terracotta accent) so the
+   panel and dashboard read as one app. Only colours, surfaces and states
+   change here; the layout rules above stay as they are. */
+:root {
+  --page: #f7f3ec;
+  --surface-1: #fffdf9;
+  --surface-raised: #f3ede3;
+  --text-primary: #231f1b;
+  --text-secondary: #5b534b;
+  --text-muted: #8f867c;
+  --grid: #e7dfd3;
+  --border: rgba(35, 31, 27, 0.12);
+  --accent: #c0654a;
+  --button-primary: #c0654a;
+  --series-1: #c0654a;
+  --warn: #b7791f;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+
+/* Dark look: lib/theme-mode.js sets data-theme (dark by default). */
+:root[data-theme="dark"] {
+  --page: #1b1816;
+  --surface-1: #24201d;
+  --surface-raised: #2d2825;
+  --text-primary: #f3ede3;
+  --text-secondary: #cfc6ba;
+  --text-muted: #9a9086;
+  --grid: #3a332d;
+  --border: rgba(243, 237, 227, 0.12);
+  --accent: #d9785b;
+  --button-primary: #c0654a;
+  --series-1: #d9785b;
+  --warn: #e0a24a;
+}
+
+
+.panel-header h1 { font-size: 17px; letter-spacing: 0.01em; }
+.panel-header h1::before {
+  content: "";
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 8px;
+  border-radius: 3px;
+  background: var(--accent);
+  vertical-align: 1px;
+}
+
+.card {
+  border-radius: 10px;
+  padding: 12px 14px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+.card h2 { font-size: 13px; letter-spacing: 0.01em; }
+.card > h2:first-child,
+.card-heading h2 { border-left: 3px solid var(--accent); padding-left: 8px; }
+
+button {
+  border-radius: 6px;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+button:not(:disabled):hover { border-color: var(--accent); }
+button:not(:disabled):active { transform: translateY(1px); }
+button.primary:not(:disabled):hover { filter: brightness(1.08); }
+
+input,
+select,
+textarea { transition: border-color 0.15s ease, box-shadow 0.15s ease; }
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+/* Disclosures ("Add a chatbot", "Judge settings"...): a chevron that turns. */
+summary { list-style: none; font-weight: 600; }
+summary::-webkit-details-marker { display: none; }
+summary::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 8px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+  vertical-align: 2px;
+}
+details[open] > summary::before { transform: rotate(45deg); }
+summary:hover { color: var(--accent); }
+
+/* Lists: rows light up on hover; their buttons stay quiet until then. */
+.golden-list li,
+.document-row { transition: background-color 0.15s ease; border-radius: 6px; }
+.golden-list li:hover,
+.document-row:hover { background: var(--surface-raised); }
+.golden-list li { padding: 7px 6px; }
+.golden-list li button { opacity: 0.55; }
+.golden-list li:hover button,
+.golden-list li button:focus-visible { opacity: 1; }
+
+/* Notices: amber edge for "add this to run more metrics", not an error red. */
+.golden-missing {
+  border-radius: 6px;
+  border-left-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+
+.run-banner { border-radius: 8px; }
+.run-bar { height: 7px; border-radius: 4px; }
+.run-bar-fill { background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 70%, #fff)); }
+.run-row-chip { font-family: var(--mono); }
+
+@media (prefers-reduced-motion: reduce) {
+  button,
+  input,
+  select,
+  textarea,
+  summary::before,
+  .golden-list li { transition: none; }
 }

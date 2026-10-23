@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LLM Judge</title>
   <link rel="icon" href="icons/icon-48.png">
+  <script src="lib/theme-mode.js"></script>
   <!-- The web app: the side panel and the dashboard side by side, the same
        pages the extension shows in its side panel and its dashboard tab. -->
   <style>
@@ -13,10 +14,8 @@
     iframe { border: 0; height: 100%; display: block; }
     #panel { width: 420px; flex: none; border-right: 1px solid #d0d4da; background: #fff; }
     #dashboard { flex: 1; min-width: 0; }
-    @media (prefers-color-scheme: dark) {
-      body { background: #15171a; }
-      #panel { border-right-color: #33373d; background: #1d1f23; }
-    }
+    :root[data-theme="dark"] body { background: #111318; }
+    :root[data-theme="dark"] #panel { border-right-color: rgba(255, 255, 255, 0.08); background: #111318; box-shadow: 4px 0 24px rgba(0, 0, 0, 0.5); position: relative; z-index: 1; }
     @media (max-width: 900px) {
       body { flex-direction: column; height: auto; }
       #panel { width: 100%; height: 100vh; border-right: 0; border-bottom: 1px solid #d0d4da; }
@@ -26,6 +25,6 @@
 </head>
 <body>
   <iframe id="panel" src="sidebar/sidebar.html" title="LLM Judge side panel"></iframe>
-  <iframe id="dashboard" src="dashboard/dashboard.html" title="LLM Judge dashboard"></iframe>
+  <iframe id="dashboard" src="dashboard/dashboard.html" title="LLM Judge dashboard" allow="fullscreen"></iframe>
 </body>
 </html>

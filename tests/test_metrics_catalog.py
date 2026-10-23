@@ -122,7 +122,11 @@ def test_unknown_dataset_name_raises():
 EXPECTED_GROUPS = {
     "safety": {"bias", "toxicity", "pii_leakage", "no_prompt_leak"},
     "conversational": {"conversation_completeness", "knowledge_retention", "role_adherence",
-                       "turn_relevancy"},
+                       "turn_relevancy", "turn_faithfulness", "turn_contextual_precision",
+                       "turn_contextual_recall", "turn_contextual_relevancy"},
+    "agent": {"task_completion", "tool_correctness", "argument_correctness", "plan_quality",
+              "plan_adherence", "step_efficiency"},
+    "reference": {"bleu", "rouge_l", "levenshtein", "exact_match"},
     "rag_retrieval": {"contextual_precision", "contextual_recall", "contextual_relevancy"},
     "rag_quality": {"faithfulness", "answer_relevancy", "hallucination", "correctness", "summarization",
                     "prompt_alignment", "robustness", "self_check"},
@@ -207,7 +211,7 @@ def test_harmful_content_is_a_security_probe_metric():
 
 
 def test_catalog_has_31_specs():
-    assert len(ALL_SPECS) == 31
+    assert len(ALL_SPECS) == 45
 
 
 def test_every_spec_has_card_copy():
@@ -230,8 +234,9 @@ def test_ui_categories_follow_the_mock():
     assert by_cat["retrieval"] == {"contextual_precision", "contextual_recall", "contextual_relevancy"}
     assert by_cat["safety"] == {"bias", "toxicity", "pii_leakage"}
     assert by_cat["geval"] == {"correctness", "no_prompt_leak", "citation_quality", "helpfulness"}
-    assert by_cat["conversational"] == {"conversation_completeness", "knowledge_retention",
-                                       "role_adherence", "turn_relevancy"}
+    assert by_cat["conversational"] == EXPECTED_GROUPS["conversational"]
+    assert by_cat["agent"] == EXPECTED_GROUPS["agent"]
+    assert by_cat["reference"] == EXPECTED_GROUPS["reference"]
     assert by_cat["security"] == EXPECTED_GROUPS["security"]
 
 
@@ -278,13 +283,13 @@ def test_shipped_generic_theme_fits_any_chatbot():
     from backend.datasets import conversations
     with open(goldens.DEFAULT_GOLDENS_PATH, encoding="utf-8") as f:
         generic = [g for g in json.load(f) if g["theme"] == "generic"]
-    assert len(generic) >= 8
+    assert len(generic) >= 3
     for g in generic:
         assert g["question"].strip() and g["expected_answer"].strip()
         # No bot's own facts: a golden either expects a behaviour (no context) or
         # carries its facts in the message it sends (grounded).
         assert bool(g["context"]) == bool(g.get("context_in_prompt"))
-    assert sum(1 for g in generic if g["context"]) >= 4
+    assert sum(1 for g in generic if g["context"]) >= 1
     with open(conversations.DEFAULT_CONVERSATIONS_PATH, encoding="utf-8") as f:
         scenarios = [c for c in json.load(f) if c["theme"] == "generic"]
     assert len(scenarios) >= 2

@@ -6,10 +6,15 @@
   <title>LLM Judge</title>
   <link rel="stylesheet" href="../lib/theme.css">
   <link rel="stylesheet" href="sidebar.css">
+  <link rel="stylesheet" href="../lib/skin.css">
+  <script src="../lib/theme-mode.js"></script>
 </head>
-<body>
+<body class="panel">
   <header class="panel-header">
-    <h1>LLM Judge</h1>
+    <div class="panel-title-row">
+      <h1>LLM Judge</h1>
+      <button type="button" class="theme-toggle small-button"></button>
+    </div>
     <p id="status" class="secondary" role="status">Checking backend…</p>
   </header>
   <div id="run-banner" class="run-banner hidden">
@@ -28,6 +33,7 @@
           <option value="groq" data-base-url="https://api.groq.com/openai/v1" data-model="openai/gpt-oss-120b">Groq</option>
           <option value="commandcode" data-base-url="https://api.commandcode.ai/provider/v1" data-model="deepseek/deepseek-v4-flash">Command Code</option>
           <option value="openai" data-base-url="https://api.openai.com/v1" data-model="gpt-4o-mini">OpenAI</option>
+          <option value="nvidia" data-base-url="https://integrate.api.nvidia.com/v1" data-model="openai/gpt-oss-20b">NVIDIA</option>
           <option value="custom">Other OpenAI-compatible API</option>
         </select>
       </label>
@@ -62,6 +68,10 @@
       <summary id="target-form-summary">Add a chatbot</summary>
       <form id="target-form" class="stack">
         <label>Name <input id="target-name" required maxlength="80"></label>
+        <div id="target-existing" class="row hidden" role="status">
+          <span id="target-existing-text" class="small"></span>
+          <button type="button" id="target-save-as-new" class="small-button">Save as new instead</button>
+        </div>
         <details id="curl-import" open>
           <summary>Fill from a real request (cURL)</summary>
           <div class="stack">
@@ -115,17 +125,38 @@
         <label>Reply path
           <input id="target-response-path" placeholder="e.g. reply or choices.0.message.content" title="Dotted path to the reply text in the JSON response (for a stream: in each event). Empty = the whole response text.">
         </label>
-        <label>Retrieved context path (optional, for RAG metrics)
-          <input id="target-context-path" spellcheck="false" placeholder="e.g. sources or data.documents" title="Where the chatbot's response lists the documents it retrieved. Filled in automatically when the response has them. Needed for Contextual Precision / Recall / Relevancy.">
-        </label>
-        <label>Security probes
-          <select id="target-probe-set" title="Which red-team probes the Security metrics send: E-commerce ones mention orders, refunds and customers; Generic ones fit any assistant.">
-            <option value="generic">Generic (any assistant)</option>
-            <option value="ecommerce">E-commerce (orders, refunds, customers)</option>
-          </select>
-        </label>
-        <label>Chatbot role (optional, for Security metrics)
+        <label>Chatbot role (recommended, for Security metrics)
           <input id="target-persona" maxlength="300" placeholder="e.g. ShopEasy e-commerce support bot" title="What the chatbot is meant to be. Domain Misuse, Non-Advice and Role Violation are judged against it; empty = the role the bot claims for itself.">
+        </label>
+        <p class="muted small">One line on what the bot is for. Without it, off-role answers are judged against the role the bot claims for itself.</p>
+        <details id="target-advanced" class="target-limits">
+          <summary>Advanced (optional) <span id="target-advanced-summary" class="muted small"></span></summary>
+          <p class="muted small">All of these work automatically when left empty. Set them only to override.</p>
+          <label>Retrieved context path (RAG metrics)
+            <input id="target-context-path" spellcheck="false" placeholder="auto: found in the replies (e.g. sources)" title="Where the chatbot's response lists the documents it retrieved. Filled in automatically when a reply has them (pasted cURL or any scan). Needed for Contextual Precision / Recall / Relevancy and the Turn RAG metrics.">
+          </label>
+          <label>Sources when the reply lists none
+            <select id="target-sources-fallback" title="For a chatbot whose response does not list its sources. The judge app finds context itself, and Faithfulness, Citation Quality and Turn Faithfulness score the answers against it. This is not the chatbot's own retrieval, so Contextual Precision / Recall / Relevancy never use it.">
+              <option value="">None (score only what the chatbot returns)</option>
+              <option value="knowledge_base">My uploaded documents (this theme's knowledge base)</option>
+              <option value="cited_links">Pages the reply links to</option>
+            </select>
+          </label>
+          <label>Tool calls path (agent metrics)
+            <input id="target-tools-path" spellcheck="false" placeholder="auto: found in the replies (e.g. tool_calls)" title="Where the chatbot's response lists the tools it called (an agent). Filled in automatically when a reply has them (pasted cURL or any scan). Turns on Tool Correctness, Argument Correctness, Plan Quality / Adherence and Step Efficiency.">
+          </label>
+          <label>Security probes
+            <select id="target-probe-set" title="Which red-team probes the Security metrics send: E-commerce ones mention orders, refunds and customers; Generic ones fit any assistant.">
+              <option value="generic">Generic (any assistant)</option>
+              <option value="ecommerce">E-commerce (orders, refunds, customers)</option>
+            </select>
+          </label>
+          <label>Chatbot instructions (one rule per line, Prompt Alignment)
+            <textarea id="target-instructions" rows="3" placeholder="auto: the pasted request's system prompt, else standard production rules" title="The rules this chatbot is told to follow (its system prompt). Prompt Alignment checks every reply against them. Empty = the system prompt in the pasted request if it has one, else standard production rules fitted to the chatbot (RAG rules when it returns retrieved context, agent rules when it reports tool calls, a role rule when it has a Chatbot role)."></textarea>
+          </label>
+        </details>
+        <label>Help / FAQ page URL (optional, for golden answers with Context)
+          <input id="target-help-url" type="url" spellcheck="false" placeholder="https://example.com/help" title="A page with what this chatbot should know (FAQ, policies, help centre). When a new chatbot is saved, golden answers with Context are generated from it, which Faithfulness, Hallucination, Summarization and the Contextual metrics need.">
         </label>
         <details class="target-limits">
           <summary>Limits and reply checks</summary>
@@ -163,14 +194,20 @@
       <button id="reset-goldens" type="button" class="small-button" title="Discard edits and deletes, and bring back the default golden answers">Reset to defaults</button>
     </div>
     <p id="golden-missing" class="golden-missing small hidden" role="status"></p>
+    <p id="golden-prompt" class="golden-missing small hidden" role="status"></p>
+    <div id="golden-generate" class="row hidden">
+      <button type="button" id="golden-generate-yes" class="primary small-button">Generate with AI</button>
+      <button type="button" id="golden-generate-no" class="small-button">No, I'll enter my own</button>
+    </div>
     <ul id="golden-list" class="golden-list"></ul>
     <details id="add-golden">
       <summary id="golden-form-summary">Add a golden answer</summary>
       <form id="golden-form" class="stack">
         <label>Question <textarea id="golden-question" rows="2" required></textarea></label>
         <label>Expected answer <textarea id="golden-answer" rows="3" required></textarea></label>
-        <label>Context (one fact per line, optional) <textarea id="golden-context" rows="3"></textarea></label>
+        <label>Context (one fact per line; needed by Faithfulness, Hallucination, Summarization and the Contextual metrics) <textarea id="golden-context" rows="3"></textarea></label>
         <label>Categories (comma separated, optional) <input id="golden-categories"></label>
+        <label>Expected tools (comma separated, optional; for Tool Correctness) <input id="golden-tools" spellcheck="false" placeholder="e.g. lookup_order, send_email"></label>
         <div class="row">
           <button type="submit" id="golden-submit" class="primary">Add golden answer</button>
           <button type="button" id="golden-cancel" class="hidden">Cancel</button>
@@ -183,12 +220,15 @@
   <section class="card" aria-labelledby="conversations-heading">
     <div class="card-heading">
       <h2 id="conversations-heading">Conversation scenarios <span id="conversation-count" class="muted"></span></h2>
+      <button id="generate-conversations" type="button" class="small-button" title="Build scenarios from this chatbot's golden answers (two questions, then the first again) and save them here to review and edit">Generate from goldens</button>
       <button id="reset-conversations" type="button" class="small-button" title="Discard edits and deletes, and bring back the default scenarios">Reset to defaults</button>
     </div>
     <p class="muted small">
-      Multi-turn tests for Conversation Completeness and Knowledge Retention. The user
-      turns are sent one by one, each with the conversation so far.
+      Multi-turn tests for Conversation Completeness, Knowledge Retention, Role Adherence and
+      Turn Relevancy. The user turns are sent one by one, each with the conversation so far.
+      With no scenarios here, a run builds them from the golden answers.
     </p>
+    <p id="conversation-status" class="small" role="status"></p>
     <ul id="conversation-list" class="golden-list"></ul>
     <details id="add-conversation">
       <summary id="conversation-form-summary">Add a scenario</summary>

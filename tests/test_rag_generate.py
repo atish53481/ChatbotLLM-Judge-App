@@ -76,3 +76,33 @@ def test_generate_goldens_passes_judge_as_critic_model(tmp_path, monkeypatch):
 
     _, kwargs = MockConfig.call_args
     assert kwargs["critic_model"] is judge
+
+
+def test_generate_goldens_makes_two_by_default_and_honours_max_goldens(tmp_path, monkeypatch):
+    """A document gives 2 goldens unless asked for more (DeepEval alone makes up
+    to 3 contexts x 2), and never more than asked."""
+    from backend.datasets import goldens as goldens_store
+
+    goldens_path = tmp_path / "goldens.json"
+    goldens_path.write_text("[]")
+    monkeypatch.setattr(goldens_store, "GOLDENS_PATH", str(goldens_path))
+
+    from backend.rag import generate
+
+    def golden(n):
+        return MagicMock(input=f"Q{n}?", expected_output=f"A{n}.", context=[f"fact {n}"],
+                         additional_metadata={})
+
+    for options, contexts, per_context, saved in (({}, 1, 2, 2), ({"max_goldens": 1}, 1, 1, 1),
+                                                   ({"max_goldens": 5}, 3, 2, 5)):
+        goldens_path.write_text("[]")
+        with patch("backend.rag.generate.Synthesizer") as MockSynthesizer, \
+             patch("backend.rag.generate.LocalSentenceEmbedder"), \
+             patch("backend.rag.generate.ContextConstructionConfig") as MockConfig:
+            MockSynthesizer.return_value.generate_goldens_from_docs.return_value = [golden(n) for n in range(6)]
+            created = generate.generate_goldens_from_document("doc.txt", "t", "doc.txt", judge=MagicMock(),
+                                                              options=options)
+        assert MockConfig.call_args.kwargs["max_contexts_per_document"] == contexts
+        call = MockSynthesizer.return_value.generate_goldens_from_docs.call_args
+        assert call.kwargs["max_goldens_per_context"] == per_context
+        assert created == saved == len(goldens_store.load_goldens(theme="t"))

@@ -1,0 +1,213 @@
+/* Dark look, loaded after each page's own stylesheet. Only active while
+   lib/theme-mode.js has set data-theme="dark" (the default), so the light look
+   keeps the page's own styles. Flat surfaces and solid colours; two characters:
+   slate surfaces and a terracotta accent on every page; the side panel
+   (body.panel) differs by layout only: icon headings, row tiles, group bands. */
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #111318;
+  --surface-1: #181b22;
+  --surface-raised: #20242d;
+  --text-primary: #e7e9ee;
+  --text-secondary: #a6acb8;
+  --text-muted: #757c89;
+  --grid: #2a2f3a;
+  --axis: #383e4b;
+  --border: rgba(255, 255, 255, 0.08);
+  --accent: #e07a5a;
+  --button-primary: #c96a4c;
+  --series-1: #6c9eea;
+  --series-1-hover: #8db4f0;
+  --series-2: #e07a5a;
+  --series-3: #3fb68b;
+  --series-4: #d9a63c;
+  --series-5: #c97aa6;
+  --series-6: #5aa469;
+  --series-7: #8f86d6;
+  --status-good: #3fb68b;
+  --status-critical: #e5585f;
+  --success-text: #5cc99d;
+  --warn: #d9a63c;
+  --pass-bg: rgba(63, 182, 139, 0.14);
+  --fail-bg: rgba(229, 88, 95, 0.14);
+  --pending-bg: rgba(255, 255, 255, 0.06);
+  --header-bg: #0c0e12;
+  --header-text: #e7e9ee;
+}
+
+:root[data-theme="dark"] body { background: var(--page); }
+
+/* ---------- shared controls ---------- */
+:root[data-theme="dark"] button.primary,
+:root[data-theme="dark"] .metric-card-actions .primary,
+:root[data-theme="dark"] .header-controls .primary {
+  background: var(--button-primary);
+  border-color: transparent;
+  color: #fff;
+}
+:root[data-theme="dark"] button.primary:not(:disabled):hover { filter: brightness(1.08); }
+:root[data-theme="dark"] input,
+:root[data-theme="dark"] select,
+:root[data-theme="dark"] textarea {
+  background: #0d0f13;
+  color: var(--text-primary);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+:root[data-theme="dark"] option { background: var(--surface-1); color: var(--text-primary); }
+:root[data-theme="dark"] input:focus,
+:root[data-theme="dark"] select:focus,
+:root[data-theme="dark"] textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+:root[data-theme="dark"] .card { background: var(--surface-1); border-color: var(--border); }
+:root[data-theme="dark"] ::-webkit-scrollbar { width: 10px; height: 10px; }
+:root[data-theme="dark"] ::-webkit-scrollbar-thumb { background: #2c313c; border-radius: 10px; border: 2px solid transparent; background-clip: padding-box; }
+:root[data-theme="dark"] ::-webkit-scrollbar-track { background: transparent; }
+
+.theme-toggle { white-space: nowrap; }
+
+/* ---------- side panel: same colours as the dashboard, its own layout ---------- */
+:root[data-theme="dark"] body.panel .panel-header {
+  margin: -12px -12px 12px;
+  padding: 14px 14px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--header-bg);
+}
+:root[data-theme="dark"] body.panel .card { box-shadow: none; }
+:root[data-theme="dark"] body.panel { accent-color: var(--accent); }
+:root[data-theme="dark"] body.panel .card { margin-bottom: 12px; padding: 14px; border-radius: 10px; }
+:root[data-theme="dark"] body.panel .card > h2:first-child,
+:root[data-theme="dark"] body.panel .card-heading h2 {
+  display: flex; align-items: center; gap: 8px;
+  border-left: 0; padding-left: 0;
+  font-size: 13px; color: var(--text-primary);
+}
+/* A small icon tile per section, so each block is easy to find by eye. */
+:root[data-theme="dark"] body.panel h2::before {
+  display: inline-grid; place-items: center; flex: none;
+  width: 22px; height: 22px; border-radius: 6px;
+  background: rgba(224, 122, 90, 0.14); color: var(--accent);
+  font-size: 12px; font-weight: 700;
+}
+:root[data-theme="dark"] body.panel #chatbot-heading::before { content: "◉"; }
+:root[data-theme="dark"] body.panel #goldens-heading::before { content: "★"; }
+:root[data-theme="dark"] body.panel #conversations-heading::before { content: "⇄"; }
+:root[data-theme="dark"] body.panel #documents-heading::before { content: "▤"; }
+:root[data-theme="dark"] body.panel #judge-heading::before { content: "✓"; }
+:root[data-theme="dark"] body.panel h2 .muted {
+  padding: 1px 7px; border-radius: 999px;
+  background: var(--surface-raised); font-size: 11px; font-weight: 600;
+}
+
+/* "Add a …" disclosures read as actions. */
+:root[data-theme="dark"] body.panel .card > details > summary { color: var(--accent); font-size: 13px; padding: 4px 0; }
+:root[data-theme="dark"] body.panel #judge-settings > summary { color: var(--text-primary); }
+
+/* Golden answers, scenarios, documents: each row a quiet tile. */
+:root[data-theme="dark"] body.panel .golden-list li,
+:root[data-theme="dark"] body.panel .document-row {
+  margin: 0 0 6px; padding: 8px 10px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border); border-radius: 8px;
+}
+:root[data-theme="dark"] body.panel .golden-list li:hover,
+:root[data-theme="dark"] body.panel .document-row:hover { border-color: rgba(224, 122, 90, 0.4); background: var(--surface-raised); }
+
+/* Metrics to run: group headers as bands, rows with hover. */
+:root[data-theme="dark"] body.panel .threshold-group {
+  margin: 10px 0 4px; padding: 6px 8px;
+  background: var(--surface-raised); border-radius: 6px;
+  color: var(--text-primary); font-size: 12px;
+}
+:root[data-theme="dark"] body.panel .threshold-row { padding: 3px 8px; border-radius: 6px; }
+:root[data-theme="dark"] body.panel .threshold-row:hover { background: rgba(255, 255, 255, 0.04); }
+:root[data-theme="dark"] body.panel .threshold-row .direction { color: var(--accent); }
+:root[data-theme="dark"] body.panel .threshold-row input[type="number"] { padding: 3px 6px; text-align: right; }
+
+/* ---------- dashboard: slate, terracotta accent ---------- */
+:root[data-theme="dark"] body.dash {
+  --page: #111318;
+  --surface-1: #181b22;
+  --surface-raised: #20242d;
+  --text-primary: #e7e9ee;
+  --text-secondary: #a6acb8;
+  --text-muted: #757c89;
+  --border: rgba(255, 255, 255, 0.08);
+  --accent: #e07a5a;
+  --button-primary: #c96a4c;
+  --header-bg: #0c0e12;
+  --pass-bg: rgba(63, 182, 139, 0.14);
+  --fail-bg: rgba(229, 88, 95, 0.14);
+  --pending-bg: rgba(255, 255, 255, 0.06);
+}
+:root[data-theme="dark"] .topbar { border-bottom: 1px solid var(--border); }
+:root[data-theme="dark"] .header-controls .ghost {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: var(--text-primary);
+}
+:root[data-theme="dark"] .header-controls .ghost:hover { background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.28); }
+:root[data-theme="dark"] .header-controls .view-switch button { background: transparent; color: var(--text-primary); border-color: rgba(255, 255, 255, 0.14); }
+:root[data-theme="dark"] .header-controls .view-switch button[aria-pressed="true"],
+:root[data-theme="dark"] .chip-toggle[aria-pressed="true"] { background: var(--accent); color: #fff; border-color: transparent; }
+:root[data-theme="dark"] .chip-toggle { background: transparent; border-color: rgba(255, 255, 255, 0.14); }
+
+:root[data-theme="dark"] .tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; }
+
+:root[data-theme="dark"] .metric-card {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  transition: border-color 0.15s ease;
+}
+:root[data-theme="dark"] .metric-card:hover { border-color: rgba(255, 255, 255, 0.2); }
+:root[data-theme="dark"] .metric-card.status-na { background: transparent; }
+:root[data-theme="dark"] .card-inset { background: var(--surface-raised); border-radius: 8px; }
+:root[data-theme="dark"] .score-bar { background: rgba(255, 255, 255, 0.1); }
+:root[data-theme="dark"] .metric-card.status-pass .score-bar-fill { background: var(--status-good); }
+:root[data-theme="dark"] .metric-card.status-fail .score-bar-fill { background: var(--status-critical); }
+
+/* Category badges: muted tints, one hue each. */
+:root[data-theme="dark"] .badge-quality { background: rgba(108, 158, 234, 0.14); color: #9dbdf2; }
+:root[data-theme="dark"] .badge-retrieval { background: rgba(63, 182, 139, 0.14); color: #82d2b2; }
+:root[data-theme="dark"] .badge-safety { background: rgba(224, 122, 90, 0.14); color: #eba68f; }
+:root[data-theme="dark"] .badge-security { background: rgba(229, 88, 95, 0.14); color: #ef9a9e; }
+:root[data-theme="dark"] .badge-geval { background: rgba(143, 134, 214, 0.14); color: #b8b2e6; }
+:root[data-theme="dark"] .badge-conversational { background: rgba(90, 164, 105, 0.14); color: #98cba3; }
+:root[data-theme="dark"] .badge-agent { background: rgba(217, 166, 60, 0.14); color: #e5c27c; }
+:root[data-theme="dark"] .badge-reference { background: rgba(201, 122, 166, 0.14); color: #dca7c4; }
+
+/* ---------- graphics: score rings and the pass/fail donut ---------- */
+.ring {
+  --pct: 0;
+  --ring-color: var(--text-muted);
+  flex: none;
+  display: grid; place-items: center;
+  width: 52px; height: 52px; border-radius: 50%;
+  background:
+    radial-gradient(closest-side, var(--ring-hole, var(--surface-raised)) 80%, transparent 82% 100%),
+    conic-gradient(var(--ring-color) calc(var(--pct) * 1%), var(--pending-bg, rgba(0, 0, 0, 0.08)) 0);
+  font: 700 13px var(--mono, ui-monospace, monospace);
+}
+.ring.ring-pass { --ring-color: var(--status-good); }
+.ring.ring-fail { --ring-color: var(--status-critical); }
+.ring.ring-big { --ring-color: var(--accent); width: 80px; height: 80px; font-size: 18px; --ring-hole: var(--surface-1); }
+
+.donut {
+  --pass: 0; --fail: 0;
+  flex: none; width: 60px; height: 60px; border-radius: 50%;
+  background:
+    radial-gradient(closest-side, var(--surface-1) 70%, transparent 72% 100%),
+    conic-gradient(
+      var(--status-good) 0 calc(var(--pass) * 1%),
+      var(--status-critical) 0 calc((var(--pass) + var(--fail)) * 1%),
+      var(--pending-bg, rgba(0, 0, 0, 0.08)) 0);
+}
+.tile-counts.has-donut { flex-direction: row; align-items: center; gap: 14px; }
+.tile-counts.has-donut .tile-counts-text { display: flex; flex-direction: column; gap: 8px; }
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-theme="dark"] .metric-card { transition: none; }
+}

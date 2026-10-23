@@ -113,6 +113,10 @@ def init_db(path: str) -> sqlite3.Connection:
             )
             """
         )
+        # Paths a scan found in the chatbot's replies (JSON {"tools_path": ...}).
+        job_columns = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}
+        if "discovered" not in job_columns:
+            conn.execute("ALTER TABLE jobs ADD COLUMN discovered TEXT")
         # A job lives in the backend process: one still queued or running when
         # the backend stopped will never finish.
         conn.execute(
@@ -281,6 +285,9 @@ def clear_runs(conn: sqlite3.Connection, target_id: int) -> int:
     """
     with _LOCK:
         cur = conn.execute("DELETE FROM runs WHERE target_id = ?", (target_id,))
+        # Its finished jobs are the scan history (scans.py); queued/running ones stay.
+        conn.execute("DELETE FROM jobs WHERE target_id = ? AND status NOT IN ('queued', 'running')",
+                     (target_id,))
         conn.commit()
         return cur.rowcount
 
@@ -434,7 +441,7 @@ def delete_run(conn: sqlite3.Connection, run_id: int) -> bool:
 
 # Background runs (backend/dashboard/jobs.py): one row per batch of metrics.
 JOB_INTERRUPTED = "the backend stopped before this run finished; run it again"
-_JOB_JSON = {"metric_keys": [], "options": {}, "results": [], "current": None}
+_JOB_JSON = {"metric_keys": [], "options": {}, "results": [], "current": None, "discovered": {}}
 
 
 def _job(row) -> dict:
@@ -467,6 +474,13 @@ def update_job(conn: sqlite3.Connection, job_id: int, **fields) -> None:
     with _LOCK:
         conn.execute(f"UPDATE jobs SET {assignments} WHERE id = ?", (*encoded.values(), job_id))
         conn.commit()
+
+
+def target_jobs(conn: sqlite3.Connection, target_id: int) -> list[dict]:
+    """Every job of one chatbot, oldest first (scans number them in this order)."""
+    with _LOCK:
+        rows = conn.execute("SELECT * FROM jobs WHERE target_id = ? ORDER BY id", (target_id,)).fetchall()
+    return [_job(r) for r in rows]
 
 
 def active_jobs(conn: sqlite3.Connection, target_id: int) -> list[dict]:

@@ -21,12 +21,28 @@ import requests
 
 from backend import traffic, usage
 from backend.targets.base import ChatbotClient, ChatReply
-from backend.targets.curl import MESSAGE_PLACEHOLDER, context_texts, find_history_path
+from backend.targets.curl import (
+    MESSAGE_PLACEHOLDER,
+    context_texts,
+    find_context_path,
+    find_history_path,
+    find_tools_path,
+    tool_calls,
+)
 from backend.targets.reply_check import ChatbotUnavailable, service_message
 
 TIMEOUT = 60
 METHODS = ("GET", "POST", "PUT", "PATCH")
-_TEXT_KEYS = ("url", "method", "body_template", "response_path", "context_path", "history_path")
+_TEXT_KEYS = ("url", "method", "body_template", "response_path", "context_path", "history_path",
+              "tools_path", "sources_fallback")
+# Where the judge app finds context itself when a response lists none
+# (backend/rag/derived_sources.py): "" = nowhere.
+SOURCES_FALLBACKS = ("", "cited_links", "knowledge_base")
+# What a reply may list beside its answer: (config field, how to find it, how to read it).
+_REPLY_EXTRAS = (
+    ("tools_path", find_tools_path, tool_calls),
+    ("context_path", find_context_path, context_texts),
+)
 # Headers from the captured request that would be wrong for a new body.
 _DROPPED_HEADERS = ("content-length", "host", "accept-encoding")
 _PREVIEW_CHARS = 400
@@ -155,6 +171,9 @@ class HttpTargetClient(ChatbotClient):
         check_replies = config.get("check_replies", True)
         if not isinstance(check_replies, bool):
             raise ValueError("check_replies must be true or false")
+        sources_fallback = config.get("sources_fallback", "")
+        if sources_fallback not in SOURCES_FALLBACKS:
+            raise ValueError("sources_fallback must be one of: cited_links, knowledge_base (or empty)")
 
         self.url = url
         self.method = method
@@ -163,6 +182,10 @@ class HttpTargetClient(ChatbotClient):
         self.response_path = config.get("response_path", "")
         # Where the response lists the retrieved documents (RAG metrics); "" = none.
         self.context_path = config.get("context_path", "")
+        # Where the response lists the tools an agent called (agent metrics); "" = none.
+        self.tools_path = config.get("tools_path", "")
+        # Where to find context when a response lists none (see SOURCES_FALLBACKS).
+        self.sources_fallback = sources_fallback
         # Where the body carries earlier turns (multi-turn metrics). Older configs
         # have none saved, so it is read from the body ("history": [], "messages").
         self.history_path = config.get("history_path") or find_history_path(body_template)
@@ -173,6 +196,10 @@ class HttpTargetClient(ChatbotClient):
         # Treat service messages ("limit reached", "please log in") as errors.
         self.check_replies = check_replies
         self._pace = _pace_for(self.url) if self.send_delay else None
+        # Paths replies showed that this config has none saved for ({"tools_path": ...});
+        # the job runner saves them and runs the metrics they switch on.
+        self.discovered: dict[str, str] = {}
+        self._discover_lock = threading.Lock()
 
     def _encode_for_body(self, message: str) -> str:
         content_type = next(
@@ -283,7 +310,12 @@ class HttpTargetClient(ChatbotClient):
     def read_reply(self, r: requests.Response) -> ChatReply:
         text = r.text
         if is_stream(r):
-            return ChatReply(reply=self._reply_from_stream(text), model="unknown", mode="http")
+            events = [e for e in sse_events(text) if isinstance(e, (dict, list))]
+            for event in events:
+                self._notice_paths(event)
+            return ChatReply(reply=self._reply_from_stream(text), model="unknown", mode="http",
+                             retrieval_context=self._read_extra(events, "context_path"),
+                             tools_called=self._read_extra(events, "tools_path"))
         if not self.response_path:
             return ChatReply(reply=text, model="unknown", mode="http")
         try:
@@ -296,14 +328,36 @@ class HttpTargetClient(ChatbotClient):
             raise ValueError(f"{e}. Response was: {_preview(text)}") from e
         # Some APIs answer with a JSON list, which carries no model name.
         model = data.get("model", "unknown") if isinstance(data, dict) else "unknown"
-        retrieval = None
-        if self.context_path:
-            try:
-                retrieval = context_texts(_get_path(data, self.context_path)) or None
-            except ValueError:
-                retrieval = None  # this answer came without sources
+        self._notice_paths(data)
         return ChatReply(reply=str(reply_text), model=str(model), mode="http",
-                         retrieval_context=retrieval)
+                         retrieval_context=self._read_extra([data], "context_path"),
+                         tools_called=self._read_extra([data], "tools_path"))
+
+    def _read_extra(self, sources: list[Any], field: str) -> list | None:
+        """The sources or tool calls at the saved path, from the first response or
+        stream event that has some; None when the path is unset or nothing has any."""
+        path = getattr(self, field)
+        if not path:
+            return None
+        read = next(r for f, _, r in _REPLY_EXTRAS if f == field)
+        for source in sources:
+            try:
+                found = read(_get_path(source, path))
+            except ValueError:
+                continue  # this answer came without sources / called no tools
+            if found:
+                return found
+        return None
+
+    def _notice_paths(self, data: Any) -> None:
+        """Remembers where a reply lists tool calls or sources when no path is saved for them."""
+        for field, find, read in _REPLY_EXTRAS:
+            if getattr(self, field) or field in self.discovered:
+                continue
+            path = find(data)
+            if path and read(_get_path(data, path)):
+                with self._discover_lock:
+                    self.discovered.setdefault(field, path)
 
     def _reply_from_stream(self, text: str) -> str:
         events = sse_events(text)

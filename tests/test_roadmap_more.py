@@ -447,6 +447,11 @@ def test_api_responses_carry_security_headers_and_no_cache(client):
     assert r.headers["cache-control"] == "no-store"
 
 
+def test_web_app_files_are_revalidated_so_updates_show(client):
+    r = client.get("/app/sidebar/sidebar.js")
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-cache"
+
+
 def test_oversized_bodies_are_refused(client):
     from backend.dashboard import hardening
 

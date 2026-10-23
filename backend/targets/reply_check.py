@@ -21,7 +21,9 @@ _PATTERNS = [
     r"\bquota\b.{0,40}\b(exceeded|reached|used up)\b",
     r"\b(exceeded|reached)\b.{0,40}\bquota\b",
     r"\btoo many requests\b",
-    r"\b(please|you need to|you must|you have to)\s+(log|sign)\s*in\b",
+    # A login wall ("Please log in.", "...sign in to continue", "...sign in first"),
+    # not advice inside an answer ("please sign in and check My Orders").
+    r"\b(please|you need to|you must|you have to)\s+(log|sign)\s*in\b(?=\s*(to\b|first\b|[.!]|$))",
     r"\b(log|sign)\s*in\s+to\s+continue\b",
     r"\bsession\s+(has\s+)?(expired|timed out)\b",
     r"\bsomething went wrong\b",

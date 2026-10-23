@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Test runs</title>
+  <link rel="stylesheet" href="../lib/theme.css">
+  <link rel="stylesheet" href="runs.css">
+  <link rel="stylesheet" href="../lib/skin.css">
+  <script src="../lib/theme-mode.js"></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="nav" aria-label="Test runs">
+      <div class="nav-brand"><span class="nav-logo" aria-hidden="true">LJ</span> LLM Judge</div>
+      <label class="nav-target">Chatbot <select id="target"></select></label>
+      <nav>
+        <a href="#home" data-view="home">⌂ Home</a>
+        <p class="nav-group">Test run</p>
+        <a href="#overview" data-view="overview">▦ Overview</a>
+        <a href="#cases" data-view="cases">⚗ Test Cases</a>
+        <p class="nav-group">Compare</p>
+        <a id="nav-regressions" href="../regressions/regressions.html">⇄ Regressions</a>
+        <p class="nav-group">App</p>
+        <a href="../index.html">← Side panel &amp; dashboard</a>
+      </nav>
+      <label class="nav-scan">Test run <select id="scan"></select></label>
+    </aside>
+    <main id="view" class="view" aria-live="polite">
+      <p class="muted">Loading…</p>
+    </main>
+  </div>
+  <script src="../lib/api.js"></script>
+  <script src="../lib/announce.js"></script>
+  <script src="../lib/ui.js"></script>
+  <script src="runs.js"></script>
+</body>
+</html>

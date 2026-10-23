@@ -321,6 +321,110 @@ ADVICE: dict[str, dict[str, list[str]]] = {
             "Drop instructions a single golden cannot show (e.g. 'greet returning users').",
         ],
     },
+    # --- Multi-turn RAG -------------------------------------------------------
+    "turn_faithfulness": {
+        "chatbot": [
+            "Tell the bot to answer each turn only from the sources retrieved for that turn, not from memory of earlier turns.",
+            "Re-retrieve on follow-up questions instead of reusing the first turn's documents.",
+        ],
+        "tests": [
+            "When the scenario's Context is scored (not the chatbot's), check it covers every turn's question.",
+            "Set the chatbot's Retrieved context path so each turn's own sources are scored.",
+        ],
+    },
+    "turn_contextual_precision": {
+        "chatbot": [
+            "Rewrite follow-up questions into stand-alone queries (with the conversation's subject) before retrieving.",
+            "Add a reranker so the chunk that answers the turn comes first.",
+        ],
+        "tests": [
+            "Make the scenario's expected outcome name the facts the conversation should reach.",
+        ],
+    },
+    "turn_contextual_recall": {
+        "chatbot": [
+            "Retrieve more chunks per turn, or search again when the first results miss the user's goal.",
+            "Check the knowledge base holds every fact the scenario's goal needs.",
+        ],
+        "tests": [
+            "Keep the expected outcome to what the documents can actually support.",
+        ],
+    },
+    "turn_contextual_relevancy": {
+        "chatbot": [
+            "Use the latest user message (made stand-alone) as the search query, not the whole transcript.",
+            "Raise the similarity cut-off so off-topic chunks are dropped.",
+        ],
+        "tests": [
+            "Scenario turns that drift off-topic on purpose will lower this; score those with Turn Relevancy instead.",
+        ],
+    },
+    # --- Agent ------------------------------------------------------------------
+    "task_completion": {
+        "chatbot": [
+            "Have the agent confirm what it did (order looked up, ticket opened) instead of describing what it could do.",
+            "Give it the tools the task needs; an agent without a booking tool can only explain how to book.",
+        ],
+        "tests": [
+            "Phrase goldens as tasks with a clear end state ('cancel order 48213'), not open questions.",
+            "Set 'Tool calls path' so the judge sees the actions taken, not only the reply.",
+        ],
+    },
+    "tool_correctness": {
+        "chatbot": [
+            "Describe each tool's purpose precisely in its definition so the model picks the right one.",
+            "Remove overlapping tools, or say in the prompt when to prefer each.",
+        ],
+        "tests": [
+            "List under Expected tools only the tools the golden truly requires; optional ones lower the score.",
+        ],
+    },
+    "argument_correctness": {
+        "chatbot": [
+            "Tighten tool parameter schemas (types, enums, required fields) so wrong arguments fail early.",
+            "Tell the agent to copy identifiers (order numbers, emails) from the user's message exactly.",
+        ],
+        "tests": [
+            "Put the values the arguments need (ids, dates) in the golden question itself.",
+        ],
+    },
+    "plan_quality": {
+        "chatbot": [
+            "Ask the agent to write a short plan before calling tools, and return it with the tool calls.",
+            "Include the task's constraints (budget, dates) in the planning step.",
+        ],
+        "tests": [
+            "Only agents that report their plan or reasoning can be scored; other replies are left out.",
+        ],
+    },
+    "plan_adherence": {
+        "chatbot": [
+            "Have the agent re-check its plan after each tool result and say when it changes course.",
+        ],
+        "tests": [
+            "Only agents that report their plan or reasoning can be scored; other replies are left out.",
+        ],
+    },
+    "step_efficiency": {
+        "chatbot": [
+            "Cache tool results within a turn so the agent does not repeat the same lookup.",
+            "Tell the agent to stop once it has what the task needs.",
+        ],
+        "tests": [
+            "Goldens that genuinely need several lookups will use several steps; read the reasons before tightening.",
+        ],
+    },
+    # --- Reference text match ---------------------------------------------------
+    **{key: {
+        "chatbot": [
+            "If replies must be near-verbatim (policy text, codes), put that exact text in the bot's instructions or knowledge base.",
+        ],
+        "tests": [
+            "These scores count shared words or characters, not meaning: a correct answer in other words scores low. "
+            "Use Correctness (G-Eval) for free-form answers.",
+            "Write expected answers in the wording the bot is supposed to use.",
+        ],
+    } for key in ("bleu", "rouge_l", "levenshtein", "exact_match")},
 }
 
 # Your own G-Eval / DAG metrics: the rubric is yours, so the advice is general.

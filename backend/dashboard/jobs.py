@@ -38,9 +38,11 @@ class JobFailed(Exception):
 
 
 class JobQueue:
-    def __init__(self, conn: sqlite3.Connection, run_metric):
+    def __init__(self, conn: sqlite3.Connection, run_metric, after_job=None):
         self._conn = conn
         self._run_metric = run_metric
+        # Called with each finished job's id (the app queues follow-up scans there).
+        self._after_job = after_job
         self._lock = threading.Lock()
         self._wake = threading.Event()
         self._cancelled: set[int] = set()
@@ -140,6 +142,11 @@ class JobQueue:
             self._cancelled.discard(job_id)
         storage.update_job(self._conn, job_id, status=status, error=outcome["error"], results=ordered,
                            current=None, finished_at=_now_iso())
+        if self._after_job is not None:
+            try:
+                self._after_job(job_id)
+            except Exception:  # noqa: BLE001 - the job itself has finished either way
+                logger.exception("LLM Judge: follow-up of job %s failed", job_id)
         return True
 
     def start(self) -> None:

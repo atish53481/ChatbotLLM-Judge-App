@@ -60,6 +60,10 @@ def synthesizer_configs(options: dict | None, judge) -> dict:
     return configs
 
 
+DEFAULT_MAX_GOLDENS = 2
+MAX_GOLDENS_LIMIT = 20
+
+
 def _evolutions_of(golden) -> list[str]:
     meta = getattr(golden, "additional_metadata", None)
     value = meta.get("evolutions") if isinstance(meta, dict) else None
@@ -86,11 +90,17 @@ def generate_goldens_from_document(
     # chance to backfill a None with its own model — an unset critic_model
     # otherwise silently tries to build a default OpenAI model and needs
     # OPENAI_API_KEY, defeating the "reuse the judge, no second key" goal.
-    config = ContextConstructionConfig(embedder=LocalSentenceEmbedder(), critic_model=judge)
+    # A couple of goldens per document unless asked for more: DeepEval alone makes
+    # up to 3 contexts x 2 goldens, each costing several judge calls.
+    wanted = max(1, min(MAX_GOLDENS_LIMIT, int(options.get("max_goldens") or DEFAULT_MAX_GOLDENS)))
+    per_context = min(2, wanted)
+    config = ContextConstructionConfig(embedder=LocalSentenceEmbedder(), critic_model=judge,
+                                       max_contexts_per_document=-(-wanted // per_context))
     generated = synthesizer.generate_goldens_from_docs(
         document_paths=[path],
         context_construction_config=config,
-    )
+        max_goldens_per_context=per_context,
+    )[:wanted]
     for golden in generated:
         goldens_store.add_golden(
             theme=theme,

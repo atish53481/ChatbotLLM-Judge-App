@@ -6,6 +6,8 @@
   <title>LLM Judge Dashboard</title>
   <link rel="stylesheet" href="../lib/theme.css">
   <link rel="stylesheet" href="dashboard.css">
+  <link rel="stylesheet" href="../lib/skin.css">
+  <script src="../lib/theme-mode.js"></script>
 </head>
 <body class="dash">
   <header class="topbar">
@@ -33,7 +35,9 @@
       </div>
       <button id="refresh-status" type="button" class="ghost">Refresh status</button>
       <button id="advanced-button" type="button" class="ghost" title="Custom metrics, A/B tests, run comparison, red-team coverage, simulation, calibration and CI export">Advanced tools</button>
+      <a id="regressions-link" class="ghost button-link" href="../regressions/regressions.html" target="_blank" rel="noopener" title="Compare this chatbot's two newest scans test case by test case: what broke and what got better since the last change">⇄ Regressions</a>
       <button id="report-button" type="button" class="ghost" title="Open a printable report of every metric's latest run for this chatbot, pick what to include, then Save as PDF">Download report (PDF)</button>
+      <button type="button" class="theme-toggle ghost"></button>
       <button id="run-all-button" type="button" class="primary">▶ Run all visible</button>
       <button id="stop-button" type="button" class="danger hidden" title="Stop the batch (the judge call in progress finishes first)">■ Stop</button>
     </div>
@@ -62,15 +66,20 @@
     </div>
     <div class="tile">
       <p class="tile-title"><span class="dot dot-good"></span>Average score</p>
-      <p id="tile-average" class="tile-big">–</p>
-      <p id="tile-average-note" class="tile-mono">latest run of each visible card</p>
+      <div class="tile-ring-row">
+        <span id="tile-average" class="ring ring-big" role="img" aria-label="Average score">–</span>
+        <p id="tile-average-note" class="tile-mono">latest run of each visible card</p>
+      </div>
     </div>
-    <div class="tile tile-counts">
-      <p id="tile-counts-label" class="tile-mono">pass · fail · pending</p>
-      <div class="count-pills">
-        <span id="status-pass" class="pill pill-pass">0</span>
-        <span id="status-fail" class="pill pill-fail">0</span>
-        <span id="status-pending" class="pill pill-pending">0</span>
+    <div class="tile tile-counts has-donut">
+      <span id="status-donut" class="donut" aria-hidden="true"></span>
+      <div class="tile-counts-text">
+        <p id="tile-counts-label" class="tile-mono">pass · fail · pending</p>
+        <div class="count-pills">
+          <span id="status-pass" class="pill pill-pass">0</span>
+          <span id="status-fail" class="pill pill-fail">0</span>
+          <span id="status-pending" class="pill pill-pending">0</span>
+        </div>
       </div>
     </div>
   </section>
@@ -137,19 +146,28 @@
 
   <section id="history-view" class="card hidden" aria-labelledby="history-heading">
     <div class="card-head">
-      <h2 id="history-heading">Run history</h2>
+      <h2 id="history-heading">Scan history</h2>
       <p id="history-count" class="muted small"></p>
-      <button type="button" id="history-clear" aria-label="Delete every stored run of this chatbot">Delete all</button>
+      <button type="button" id="history-clear" aria-label="Delete every stored scan of this chatbot">Delete all</button>
     </div>
-    <p class="muted small">Every run is stored. Scores, trend and cases start fresh each time the panel loads; this list keeps them all.</p>
-    <p id="history-empty" class="muted">No runs yet for this chatbot.</p>
+    <p class="muted small">Each Run is one scan of this chatbot, numbered 1, 2, 3, … with one overall result. Open a scan for every metric's score, or compare it with the scan before.</p>
+    <p id="history-empty" class="muted">No scans yet for this chatbot.</p>
     <div class="table-scroll">
       <table id="history-table" class="hidden">
         <thead>
-          <tr><th>Run time</th><th>Metric</th><th class="num">Score</th><th class="num">Minimum</th><th>Result</th><th></th></tr>
+          <tr><th>Scan</th><th>Started</th><th>Result</th><th class="num">Passed</th><th class="num">Failed</th><th class="num">Errors</th><th class="num">Average</th><th>Judge</th><th></th></tr>
         </thead>
         <tbody></tbody>
       </table>
+    </div>
+    <div id="scan-detail" class="hidden">
+      <h3 id="scan-detail-heading"></h3>
+      <div class="table-scroll">
+        <table id="scan-detail-table">
+          <thead><tr></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
   </section>
 

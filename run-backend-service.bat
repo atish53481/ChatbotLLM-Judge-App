@@ -11,6 +11,8 @@ if not exist logs mkdir logs
 set DEEPEVAL_TELEMETRY_OPT_OUT=1
 set PYTHONUNBUFFERED=1
 set PYTHONUTF8=1
+rem Newest allowed package versions, once per service start (not per restart).
+call "%~dp0update-packages.bat" >> logs\backend.log 2>&1
 
 :loop
 rem Keep one previous log; start a fresh one past about 5 MB.

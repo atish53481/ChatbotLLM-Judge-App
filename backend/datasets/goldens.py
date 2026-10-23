@@ -118,6 +118,28 @@ def reset_to_defaults() -> int:
     return len(defaults)
 
 
+STARTER_THEME = "generic"
+
+
+def seed_starter(theme: str) -> int:
+    """Gives a new chatbot's empty theme the shipped bot-agnostic goldens
+    (greeting, "are you a bot", off-topic...). Only those without Context:
+    Context goldens must come from this chatbot's own knowledge. Returns how
+    many were added (0 when the theme already has goldens)."""
+    with open(DEFAULT_GOLDENS_PATH, "r", encoding="utf-8") as f:
+        starters = [row for row in json.load(f)
+                    if row["theme"] == STARTER_THEME and not row.get("context")]
+    with _LOCK:
+        rows = _read_all()
+        if any(row["theme"] == theme for row in rows):
+            return 0
+        rows += [{**{k: v for k, v in row.items() if k != "id"},
+                  "id": f"g_{uuid.uuid4().hex[:8]}", "theme": theme, "source": "starter"}
+                 for row in starters]
+        _write_all(rows)
+    return len(starters)
+
+
 def load_goldens(theme: str | None = None) -> list[dict]:
     with _LOCK:
         rows = _read_all()
@@ -188,8 +210,10 @@ def update_golden(
     expected_answer: str,
     context: list[str] | None = None,
     categories: list[str] | None = None,
+    expected_tools: list[str] | None = None,
 ) -> dict | None:
-    """Replaces one row's fields in place, keeping its id. None when unknown."""
+    """Replaces one row's fields in place, keeping its id. None when unknown.
+    expected_tools (Tool Correctness): None keeps the row's, [] removes them."""
     with _LOCK:
         rows = _read_all()
         for row in rows:
@@ -201,6 +225,11 @@ def update_golden(
                     "context": context or [],
                     "categories": categories or [],
                 })
+                if expected_tools is not None:
+                    if expected_tools:
+                        row["expected_tools"] = expected_tools
+                    else:
+                        row.pop("expected_tools", None)
                 _write_all(rows)
                 return dict(row)
         return None

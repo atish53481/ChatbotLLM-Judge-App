@@ -225,12 +225,13 @@ def test_api_lists_and_edits_custom_metrics(client):
     assert client.delete(f"/api/custom-metrics/{row['id']}").status_code == 404
 
 
-def test_api_prompt_alignment_unavailable_without_instructions(client):
+def test_api_prompt_alignment_runs_without_typed_instructions(client):
     from tests.test_app import _create_target
 
+    # No instructions typed: the standard production rules apply, so it can still run.
     bare = _create_target(client)
     rows = {m["key"]: m for m in client.get(f"/api/metrics?target_id={bare['id']}").json()}
-    assert "instructions" in rows["prompt_alignment"]["unavailable"]
+    assert rows["prompt_alignment"]["unavailable"] is None
     told = _create_target(client, config={"instructions": ["Reply in English"]})
     rows = {m["key"]: m for m in client.get(f"/api/metrics?target_id={told['id']}").json()}
     assert rows["prompt_alignment"]["unavailable"] is None

@@ -12,6 +12,12 @@ const state = {
   editingGolden: null,
   editingTarget: null,
   editingConversation: null,
+  // The chatbot whose golden-preparation status is showing (prepareGoldens),
+  // and the one waiting for "Generate with AI".
+  preparedFor: null,
+  generateFor: null,
+  // Chatbots learnChatbot already ran for in this panel load.
+  learned: new Set(),
   // Metric keys ticked to run (saved as "checkedMetrics"; all by default).
   checked: new Set(),
   runControl: null,
@@ -97,6 +103,12 @@ async function onTargetChanged() {
   resetConversationForm();
   await Promise.all([loadMetrics(), loadGoldens(), loadConversations(), renderLatest(), loadDocuments()]);
   await followActiveJob(target);
+  // A chatbot still on the shared generic set (added before this ran on save)
+  // gets its own set and the question whether to generate its goldens, once.
+  if (target && themeOf(target) === DEFAULT_THEME && !state.learned.has(target.id)) {
+    state.learned.add(target.id);
+    await askToLearn(target);
+  }
 }
 
 // A run started elsewhere (here before the panel closed, or from the dashboard)
@@ -110,6 +122,26 @@ async function followActiveJob(target) {
   }
 }
 
+// The Advanced section's summary names the overrides set, so a closed section
+// still shows them; editing a chatbot with any set opens it.
+const ADVANCED_FIELDS = [
+  ["target-context-path", "context path"],
+  ["target-sources-fallback", "sources"],
+  ["target-tools-path", "tool calls path"],
+  ["target-probe-set", "probes", "generic"],
+  ["target-instructions", "instructions"],
+];
+
+function showAdvancedSummary() {
+  const set = ADVANCED_FIELDS.filter(([id, , fallback = ""]) => $(id).value.trim() !== fallback).map(([, name]) => name);
+  $("target-advanced-summary").textContent = set.length ? `· set: ${set.join(", ")}` : "· all automatic";
+  return set.length > 0;
+}
+
+$("target-advanced").addEventListener("input", showAdvancedSummary);
+$("target-advanced").addEventListener("change", showAdvancedSummary);
+showAdvancedSummary();
+
 // The target form doubles as the editor; resetTargetForm returns it to "add".
 function resetTargetForm() {
   state.editingTarget = null;
@@ -118,16 +150,36 @@ function resetTargetForm() {
   $("target-cancel").classList.add("hidden");
   $("target-form-summary").textContent = "Add a chatbot";
   $("target-headers-hint").classList.add("hidden");
+  $("target-existing").classList.add("hidden");
   $("curl-import").open = true;
   $("curl-status").textContent = "";
   $("llm-status").textContent = "";
   $("target-test-result").textContent = "";
+  $("target-advanced").open = false;
+  showAdvancedSummary();
+}
+
+// Everything about a chatbot except the request itself (url, headers, body,
+// paths), which a freshly pasted cURL replaces.
+function fillTargetSettings(target) {
+  const config = target.config;
+  $("target-name").value = target.name;
+  $("target-persona").value = config.persona || "";
+  $("target-probe-set").value = config.probe_set || "generic";
+  $("target-sources-fallback").value = config.sources_fallback || "";
+  $("target-max-length").value = config.max_message_length ?? "";
+  $("target-send-delay").value = config.send_delay || "";
+  $("target-check-replies").checked = config.check_replies !== false;
+  $("target-theme-input").value = themeOf(target);
+  const instructions = config.instructions;
+  $("target-instructions").value = Array.isArray(instructions) ? instructions.join("\n") : (instructions || "");
+  $("target-help-url").value = config.help_url || "";
 }
 
 function startEditTarget(target) {
   const config = target.config;
   state.editingTarget = target.id;
-  $("target-name").value = target.name;
+  fillTargetSettings(target);
   $("target-method").value = config.method || "POST";
   $("target-url").value = config.url || "";
   // Header values are masked by the backend; empty keeps the stored ones.
@@ -136,13 +188,9 @@ function startEditTarget(target) {
   $("target-body").value = config.body_template || "";
   $("target-response-path").value = config.response_path || "";
   $("target-context-path").value = config.context_path || "";
-  $("target-persona").value = config.persona || "";
-  $("target-probe-set").value = config.probe_set || "generic";
+  $("target-tools-path").value = config.tools_path || "";
   $("target-history-path").value = config.history_path || "";
-  $("target-max-length").value = config.max_message_length ?? "";
-  $("target-send-delay").value = config.send_delay || "";
-  $("target-check-replies").checked = config.check_replies !== false;
-  $("target-theme-input").value = themeOf(target);
+  $("target-existing").classList.add("hidden");
   $("curl-import").open = false;
   $("curl-status").textContent = "";
   $("llm-import").open = false;
@@ -151,6 +199,7 @@ function startEditTarget(target) {
   $("target-cancel").classList.remove("hidden");
   $("target-form-summary").textContent = "Edit chatbot";
   $("target-form-error").textContent = "";
+  $("target-advanced").open = showAdvancedSummary();
   $("add-target").open = true;
   $("target-name").focus();
 }
@@ -176,6 +225,7 @@ function startEditGolden(golden, row) {
   $("golden-answer").value = golden.expected_answer;
   $("golden-context").value = (golden.context || []).join("\n");
   $("golden-categories").value = (golden.categories || []).join(", ");
+  $("golden-tools").value = (golden.expected_tools || []).join(", ");
   $("golden-submit").textContent = "Save changes";
   $("golden-cancel").classList.remove("hidden");
   $("golden-form-error").textContent = "";
@@ -301,6 +351,21 @@ async function loadGoldens() {
     $("golden-form-error").textContent = error.message;
   }
   $("golden-count").textContent = `(${goldens.length})`;
+  // Six metrics need goldens with Context; say what to add rather than skip them silently.
+  // Right after a new chatbot is saved, its preparation status shows here instead.
+  const prompt = $("golden-prompt");
+  $("golden-generate").classList.toggle("hidden", !state.generateFor || state.generateFor.id !== target.id);
+  const hasContext = goldens.some((g) => (g.context || []).length);
+  if (hasContext) {
+    state.preparedFor = null;
+    prompt.classList.add("hidden");
+    prompt.textContent = "";
+  } else if (state.preparedFor !== target.id) {
+    prompt.textContent = "No golden answers with Context for this chatbot yet: add some with Question, "
+      + "Expected answer and Context (or set its Help / FAQ page URL, or generate from a document below) "
+      + "to run Faithfulness, Hallucination, Summarization and the Contextual metrics.";
+    prompt.classList.remove("hidden");
+  }
   if (goldens.length === 0) {
     list.replaceChildren(
       el("li", { className: "muted" }, "No golden answers in this set yet. Add at least one; the judge scores against them."),
@@ -382,6 +447,8 @@ function buildTargetConfig() {
     body_template: $("target-body").value.trim(),
     response_path: value("target-response-path"),
     context_path: value("target-context-path"),
+    sources_fallback: $("target-sources-fallback").value,
+    tools_path: value("target-tools-path"),
     persona: value("target-persona"),
     probe_set: $("target-probe-set").value,
     history_path: value("target-history-path"),
@@ -389,6 +456,8 @@ function buildTargetConfig() {
     max_message_length: value("target-max-length") ? Number(value("target-max-length")) : null,
     send_delay: value("target-send-delay") ? Number(value("target-send-delay")) : 0,
     check_replies: $("target-check-replies").checked,
+    instructions: $("target-instructions").value.split("\n").map((l) => l.trim()).filter(Boolean),
+    help_url: value("target-help-url"),
   };
   if (config.max_message_length !== null
       && (!Number.isInteger(config.max_message_length) || config.max_message_length < 1)) {
@@ -417,10 +486,123 @@ $("target-form").addEventListener("submit", async (event) => {
       : await api("/api/targets", { method: "POST", body });
     resetTargetForm();
     $("add-target").open = false;
-    await loadTargets(saved.id);
+    if (editingId) {
+      await loadTargets(saved.id);
+    } else {
+      state.learned.add(saved.id);
+      await askToLearn(saved);
+    }
   } catch (error) {
     $("target-form-error").textContent = error.message;
   }
+});
+
+// A newly added chatbot gets its golden dataset prepared: its own theme, golden
+// answers and scenarios learned from it (starter goldens only when nothing was
+// learned), and Context goldens generated from its help page and instructions
+// (shown under Generate from a document while they run). Only learnChatbot
+// (the user's "Generate with AI") passes generate = true; without it nothing is
+// written and nothing spends judge tokens.
+async function prepareGoldens(saved, generate = false) {
+  const prompt = $("golden-prompt");
+  $("golden-generate").classList.add("hidden");
+  try {
+    const out = await api(`/api/targets/${saved.id}/prepare-goldens`, {
+      method: "POST", body: { help_url: saved.config.help_url || "", generate },
+    });
+    const errors = (out.errors || []).join(" ");
+    const seeded = out.seeded ? `${out.seeded} starter answers added. ` : "";
+    state.preparedFor = saved.id;
+    prompt.textContent = `Golden set '${out.theme}': ${seeded}${out.message}${errors ? ` ${errors}` : ""}`;
+    prompt.classList.remove("hidden");
+    if (out.can_generate.length) {
+      state.generateFor = saved;
+      $("golden-generate").classList.remove("hidden");
+    }
+    if (out.needs_context) $("add-golden").open = true;
+  } catch (error) {
+    prompt.textContent = `Could not prepare golden answers: ${error.message}`;
+    prompt.classList.remove("hidden");
+  }
+}
+
+// A chatbot just added: give it its own golden set and ask whether AI should
+// write its goldens (Generate with AI) or the user enters them (No).
+async function askToLearn(target) {
+  await prepareGoldens(target, false);
+  // Its theme changed to its own set: reload so its goldens and scenarios show.
+  await loadTargets(target.id);
+}
+
+// After the user said yes: asks the chatbot what it does, reads its help / FAQ
+// pages (given, or found on its site) and writes golden answers and
+// conversation scenarios for it in its own golden set.
+async function learnChatbot(target) {
+  const prompt = $("golden-prompt");
+  prompt.textContent = "Learning this chatbot: asking it what it does, looking for its FAQ / help pages "
+    + "and writing golden answers and conversation scenarios for it (this can take a minute)…";
+  prompt.classList.remove("hidden");
+  $("golden-generate").classList.add("hidden");
+  await prepareGoldens(target, true);
+  // Its theme changed to its own set: reload so goldens and scenarios show from there.
+  // Context goldens follow from the pages in the background.
+  await loadTargets(target.id);
+}
+
+$("golden-generate-yes").addEventListener("click", async () => {
+  if (!state.generateFor) return;
+  await learnChatbot(state.generateFor);
+});
+
+// No: the user enters this chatbot's golden answers by hand.
+$("golden-generate-no").addEventListener("click", async () => {
+  state.generateFor = null;
+  state.preparedFor = null;
+  $("golden-generate").classList.add("hidden");
+  await loadGoldens();
+  $("add-golden").open = true;
+  $("golden-question").focus();
+});
+
+// The chatbot's website, from the pasted request, as a first guess at its help page.
+function siteOf(headers) {
+  const entry = Object.entries(headers || {}).find(([k]) => /^(origin|referer)$/i.test(k));
+  try {
+    const url = new URL(entry[1]);
+    return /^(localhost|127\.|\[::1\])/.test(url.hostname) ? "" : url.origin;
+  } catch {
+    return "";
+  }
+}
+
+// A pasted request for a chatbot that is already saved updates that chatbot
+// (fresh cookies/headers) instead of adding a duplicate: its name, settings,
+// instructions and score history stay. "Save as new instead" undoes the switch.
+function offerUpdate(parsed) {
+  const saved = parsed.existing && state.targets.find((t) => t.id === parsed.existing.id);
+  if (!saved || (state.editingTarget && state.editingTarget !== saved.id)) return;
+  state.editingTarget = saved.id;
+  fillTargetSettings(saved);
+  if (!$("target-instructions").value.trim()) parsedInstructions(parsed);
+  $("target-existing-text").textContent =
+    `Already saved as "${saved.name}". Save updates it with this request; its settings, instructions and scores stay.`;
+  $("target-existing").classList.remove("hidden");
+  $("target-submit").textContent = "Update chatbot";
+  $("target-cancel").classList.remove("hidden");
+}
+
+// A system prompt in the pasted request becomes the instructions, unless typed already.
+function parsedInstructions(parsed) {
+  if (!$("target-instructions").value.trim() && (parsed.instructions || []).length) {
+    $("target-instructions").value = parsed.instructions.join("\n");
+  }
+}
+
+$("target-save-as-new").addEventListener("click", () => {
+  state.editingTarget = null;
+  $("target-existing").classList.add("hidden");
+  $("target-submit").textContent = "Save chatbot";
+  $("target-cancel").classList.add("hidden");
 });
 
 // Fills every field from the pasted cURL: the backend finds the question
@@ -446,8 +628,13 @@ async function fillFromCurl() {
     $("curl-sample-message").value = parsed.sample_message;
     $("target-response-path").value = parsed.response_path;
     $("target-context-path").value = parsed.context_path || "";
+    $("target-tools-path").value = parsed.tools_path || "";
     $("target-history-path").value = parsed.history_path || "";
     if (!$("target-name").value.trim()) $("target-name").value = new URL(parsed.url).host;
+    if (!$("target-help-url").value.trim()) $("target-help-url").value = siteOf(parsed.headers);
+    parsedInstructions(parsed);
+    showAdvancedSummary();
+    offerUpdate(parsed);
 
     if (!parsed.message_marked) {
       status.className = "small status-error";
@@ -501,10 +688,14 @@ async function fillFromLlm() {
     $("target-body").value = filled.body_template;
     $("target-response-path").value = filled.response_path;
     $("target-context-path").value = filled.context_path || "";
+    $("target-tools-path").value = filled.tools_path || "";
     $("target-history-path").value = filled.history_path || "";
     if (!$("target-name").value.trim()) {
       $("target-name").value = `${$("llm-model").value.trim()} (LLM)`.slice(0, 80);
     }
+    parsedInstructions(filled);
+    showAdvancedSummary();
+    offerUpdate(filled);
     status.className = "small status-pass";
     status.textContent = "Filled. Check the fields below, then Test and Save chatbot.";
   } catch (error) {
@@ -551,6 +742,7 @@ $("golden-form").addEventListener("submit", async (event) => {
   if (!target) return;
   const context = $("golden-context").value.split("\n").map((s) => s.trim()).filter(Boolean);
   const categories = $("golden-categories").value.split(",").map((s) => s.trim()).filter(Boolean);
+  const expectedTools = $("golden-tools").value.split(",").map((s) => s.trim()).filter(Boolean);
   const editing = state.editingGolden;
   const body = {
     theme: themeOf(target),
@@ -558,6 +750,7 @@ $("golden-form").addEventListener("submit", async (event) => {
     expected_answer: $("golden-answer").value.trim(),
     context,
     categories,
+    expected_tools: expectedTools,
   };
   try {
     if (editing) {
@@ -735,6 +928,29 @@ $("conversation-form").addEventListener("submit", async (event) => {
 $("conversation-cancel").addEventListener("click", () => {
   resetConversationForm();
   $("add-conversation").open = false;
+});
+
+// Builds scenarios from this chatbot's goldens and saves them, so they can be
+// reviewed and edited (a run builds the same ones on the fly when there are none).
+$("generate-conversations").addEventListener("click", async () => {
+  const target = currentTarget();
+  if (!target) return;
+  const status = $("conversation-status");
+  $("conversation-form-error").textContent = "";
+  status.className = "small";
+  status.textContent = "Building scenarios from the golden answers…";
+  try {
+    const saved = await api("/api/conversations/from-goldens", {
+      method: "POST",
+      body: { theme: themeOf(target), chatbot_role: target.config.persona || "" },
+    });
+    status.className = "small status-pass";
+    status.textContent = `Added ${saved.length} scenario${saved.length === 1 ? "" : "s"} from the golden answers. Edit them to fit real user journeys.`;
+    await loadConversations();
+  } catch (error) {
+    status.className = "small status-error";
+    status.textContent = error.message;
+  }
 });
 
 armConfirm($("reset-conversations"), async () => {

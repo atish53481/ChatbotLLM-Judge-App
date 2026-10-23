@@ -413,6 +413,62 @@ def find_context_path(data: Any) -> str:
     return best[2] if best else ""
 
 
+_TOOLS_KEYS = ("toolcalls", "toolscalled", "toolsused", "functioncalls", "intermediatesteps")
+_TOOL_NAME_KEYS = ("name", "tool", "toolname")
+_TOOL_ARG_KEYS = ("arguments", "args", "input", "inputparameters", "parameters", "toolinput")
+_TOOL_OUTPUT_KEYS = ("output", "result", "response", "observation")
+_TOOL_REASON_KEYS = ("reasoning", "thought", "reason", "rationale")
+
+
+def find_tools_path(data: Any) -> str:
+    """Dotted path of the tool calls in a JSON response (agent metrics), "" when there are none."""
+    best = None
+    for path, key, value in _nodes(data):
+        norm = _norm(key)
+        if norm in _TOOLS_KEYS and isinstance(value, list) and value:
+            rank = (path.count("."), _TOOLS_KEYS.index(norm), path)
+            if best is None or rank < best:
+                best = rank
+    return best[2] if best else ""
+
+
+def _first(item: dict, keys: tuple[str, ...]) -> Any:
+    return next((item[k] for k in item if _norm(k) in keys and item[k] not in (None, "")), None)
+
+
+def tool_calls(value: Any) -> list[dict]:
+    """Turns a response's tool calls into {name, input_parameters?, output?, reasoning?}.
+    Reads the OpenAI shape ({"function": {"name", "arguments": "<json>"}}) and
+    plain ones ({"name", "args"|"input", "output"|"result"}); a bare string is a tool name."""
+    items = value if isinstance(value, list) else [value]
+    calls = []
+    for item in items:
+        if isinstance(item, str) and item.strip():
+            calls.append({"name": item.strip()})
+            continue
+        if not isinstance(item, dict):
+            continue
+        source = item["function"] if isinstance(item.get("function"), dict) else item
+        name = _first(source, _TOOL_NAME_KEYS)
+        if not isinstance(name, str) or not name.strip():
+            continue
+        call: dict = {"name": name.strip()}
+        args = _first(source, _TOOL_ARG_KEYS)
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except ValueError:
+                args = {"input": args}
+        if isinstance(args, dict) and args:
+            call["input_parameters"] = args
+        for field, keys in (("output", _TOOL_OUTPUT_KEYS), ("reasoning", _TOOL_REASON_KEYS)):
+            found = _first(item, keys)
+            if found is not None:
+                call[field] = found if isinstance(found, str) else json.dumps(found, ensure_ascii=False)
+        calls.append(call)
+    return calls
+
+
 def context_texts(value: Any) -> list[str]:
     """Turns a retrieved-documents value (strings or objects) into plain strings."""
     items = value if isinstance(value, list) else [value]

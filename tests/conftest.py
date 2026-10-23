@@ -7,6 +7,8 @@ import pytest
 
 # A local tool should not send DeepEval usage telemetry from test runs.
 os.environ.setdefault("DEEPEVAL_TELEMETRY_OPT_OUT", "1")
+# Tests must not append to the real logs/traffic-*.log.
+os.environ["JUDGE_TRAFFIC_FILE"] = ""
 
 FIXTURE_GOLDENS = Path(__file__).parent / "data" / "goldens.json"
 

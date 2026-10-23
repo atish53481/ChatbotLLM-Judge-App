@@ -11,8 +11,11 @@ runs, and a chat window for the chatbot being judged.
    defaults; for a Command Code key also set
    `JUDGE_BASE_URL=https://api.commandcode.ai/provider/v1`).
 2. Double-click `run-backend.bat`. The first start creates `.venv` and installs the
-   packages (a few minutes); later starts take seconds. The backend listens on
-   `http://127.0.0.1:8765`.
+   packages (a few minutes). Every start then upgrades them (DeepEval, FastAPI, the
+   OpenAI client, ...) to the newest versions `requirements.txt` allows, runs the
+   smoke tests and restores the previous versions if anything breaks
+   (`update-packages.bat`; `JUDGE_AUTO_UPDATE=0` in `.env` turns it off). The
+   backend listens on `http://127.0.0.1:8765`.
 3. Open **http://127.0.0.1:8765/** (or double-click `start-llm-judge.bat`, which does
    steps 2–3). See [ChatbotExtension/README.md](ChatbotExtension/README.md).
 
