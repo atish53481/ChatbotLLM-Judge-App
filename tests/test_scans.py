@@ -63,3 +63,26 @@ def test_scan_endpoints(app_module, client):
     # "Delete all" in History removes the finished scans too, not only the runs.
     client.delete(f"/api/targets/{bot['id']}/runs")
     assert client.get(f"/api/targets/{bot['id']}/scans").json() == []
+
+
+def test_scan_counts_test_cases_the_deepeval_way(tmp_path):
+    """A test case passes only when every metric that scored it passes."""
+    conn = storage.init_db(str(tmp_path / "s.db"))
+    bot = storage.add_target(conn, "bot", "http", {})
+    row = lambda gid, passed: {"golden_id": gid, "input": gid, "score": 0.9 if passed else 0.1, "passed": passed}  # noqa: E731
+    _scan(conn, bot, [
+        {**_result("faithfulness", "fail", 0.5), "rows": [row("g1", True), row("g2", False)]},
+        {**_result("toxicity", "pass", 0.0, "lower"), "rows": [row("g1", True), row("g2", True)]},
+    ])
+    scan = scans.list_scans(conn, bot)[0]
+    assert (scan["test_cases"], scan["test_cases_passed"]) == (2, 1)
+    assert scan["skipped"] == []
+
+
+def test_scan_lists_the_metrics_it_did_not_run(tmp_path):
+    conn = storage.init_db(str(tmp_path / "s.db"))
+    bot = storage.add_target(conn, "bot", "http", {})
+    skipped = [{"key": "tool_correctness", "title": "Tool Correctness", "reason": "Not applicable: no tools"}]
+    job_id = storage.add_job(conn, bot, ["faithfulness"], {"skipped": skipped})
+    storage.update_job(conn, job_id, status="done", results=[_result("faithfulness", "pass", 0.9)])
+    assert scans.get_scan(conn, job_id)["skipped"] == skipped

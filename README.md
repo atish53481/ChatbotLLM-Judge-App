@@ -121,8 +121,9 @@ In the side panel, **Metrics to run** lists every metric with a tick box (a grou
 selects the whole group) and its threshold; **Run judge** runs the ticked ones. Every
 metric's threshold is set there too: **Thresholds for** picks a preset
 (Local Development / PR / Staging / Production, from the threshold strategy) and
-**Thresholds per metric** edits any one of them (Custom). A run passes when its average
-score meets the threshold (≥ or ≤); each case still shows its own pass/fail.
+**Thresholds per metric** edits any one of them (Custom). As in DeepEval, a case passes
+when its score meets the threshold (≥ or ≤) and a run passes only when every case passes; the
+run's average score is shown for trends.
 
 - **Multi-turn** metrics play the **Conversation scenarios** (side panel: add, edit, delete,
   reset; shipped ones in `backend/datasets/conversations.default.json`) turn by turn, sending the conversation so far where the chatbot's request carries it

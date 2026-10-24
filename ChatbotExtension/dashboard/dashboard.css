@@ -150,6 +150,9 @@ body.dash {
 .badge-agent { background: #fdecc8; color: #8a5a00; }
 .badge-reference { background: #e4eef6; color: #2d5f86; }
 .badge-target { text-transform: none; font-weight: 400; }
+/* Where the card's questions come from: the golden set, or a set of the metric's own. */
+.badge-source { text-transform: none; font-weight: 600; background: transparent; border: 1px solid var(--text-muted); color: var(--text-secondary); padding: 2px 5px; }
+.badge-source-own, .badge-source-mixed { border-color: var(--accent); color: var(--accent); }
 .badge-unticked { text-transform: none; font-weight: 400; background: var(--pending-bg); color: var(--text-muted); }
 /* Not ticked in the side panel: still runnable on its own, but out of the totals. */
 .metric-card.unticked { opacity: 0.55; }
@@ -636,6 +639,18 @@ body.dash {
   padding: 6px 10px;
   color: inherit;
   text-decoration: none;
+}
+
+/* Scan history: pick the scan to compare with, then Compare / Regressions. */
+.compare-group {
+  display: inline-flex; align-items: stretch; margin-left: 6px;
+  border: 1px solid var(--border); border-radius: 6px; overflow: hidden; vertical-align: middle;
+}
+.compare-group > * { border: 0; border-radius: 0; margin: 0; }
+.compare-group > * + * { border-left: 1px solid var(--border); }
+.compare-pick {
+  padding: 6px 8px; font: inherit; font-weight: 600; cursor: pointer;
+  background: var(--surface-1); color: var(--text-primary);
 }
 
 /* ---- Metric cards: the score and its verdict read first. Overrides the

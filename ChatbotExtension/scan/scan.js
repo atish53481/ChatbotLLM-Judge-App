@@ -30,7 +30,7 @@ function header(scan, chatbot, scans) {
   const link = (other, text) => el("a", { href: `scan.html?job=${other.job_id}` }, text);
   return el("div", { className: "scan-head" },
     el("h1", {}, `${chatbot} · Scan ${scan.version}`),
-    el("span", { className: `badge ${css}` }, `${label} · ${scan.passed} of ${scan.metrics} passed`),
+    el("span", { className: `badge ${css}` }, `${label} · ${scanTally(scan)}`),
     el("nav", { className: "scan-nav", "aria-label": "Other scans" },
       older ? link(older, `← Scan ${older.version}`) : "",
       newer ? link(newer, `Scan ${newer.version} →`) : ""),
@@ -42,8 +42,10 @@ function facts(scan) {
   return el("dl", { className: "facts" },
     fact("Started", scan.started_at ? formatRunTime(scan.started_at) : "–"),
     fact("Duration", duration(scan.started_at, scan.finished_at)),
-    fact("Passed", String(scan.passed)),
-    fact("Failed", String(scan.failed)),
+    fact("Test cases passed", scan.test_cases ? `${scan.test_cases_passed} of ${scan.test_cases}` : "–"),
+    fact("Metrics passed", String(scan.passed)),
+    fact("Metrics failed", String(scan.failed)),
+    fact("Not run", String((scan.skipped || []).length)),
     fact("Not scored", String(scan.errors)),
     fact("Average score", formatScore(scan.average)),
     fact("Judge", scan.judge_model || "–"),
@@ -60,8 +62,28 @@ function summary(results, title) {
       el("td", { className: "num" }, formatScore(r.score)),
       el("td", { className: "num" }, minimum(r)),
       statusCell(r.status),
-      el("td", { className: "num" }, r.cases_total ? `${r.cases_run ?? 0} of ${r.cases_total}` : "–"),
+      el("td", { className: "num" }, casesCell(r)),
     )))));
+}
+
+// Cases that passed of those scored (DeepEval: the metric passes only when all do).
+function casesCell(r) {
+  if (!r.cases_run) return "–";
+  const passed = r.cases_passed ?? (r.rows || []).filter((row) => row.passed).length;
+  return `${passed} of ${r.cases_run} passed`;
+}
+
+// Metrics this scan left out, each with why: the justification for the gap.
+function notRun(skipped, title) {
+  return [
+    el("h2", {}, "Not run"),
+    el("p", { className: "muted" }, "These metrics were ticked but not sent: nothing was scored and no judge tokens were spent."),
+    el("div", { className: "table-scroll" }, el("table", {},
+      el("thead", {}, el("tr", {}, el("th", {}, "Metric"), el("th", {}, "Why it was not run"))),
+      el("tbody", {}, skipped.map((s) => el("tr", {},
+        el("td", {}, s.title || title(s.key)),
+        el("td", { className: "text" }, s.reason)))))),
+  ];
 }
 
 function cases(rows) {
@@ -87,7 +109,7 @@ function metricSection(r, title) {
       el("span", { className: (STATUS_LABEL[r.status] || ["", "status-error"])[1] },
         (STATUS_LABEL[r.status] || ["Not scored"])[0]),
       el("span", {}, `Score ${formatScore(r.score)} (needs ${minimum(r)})`),
-      el("span", { className: "muted" }, r.cases_total ? `${r.cases_run ?? 0} of ${r.cases_total} cases` : "")),
+      el("span", { className: "muted" }, r.cases_run ? casesCell(r) + " cases" : "")),
     el("div", { className: "body" },
       r.error ? el("p", { className: "reason status-error" }, r.error) : "",
       r.reason ? el("p", { className: "reason" }, r.reason) : "",
@@ -119,6 +141,7 @@ async function loadScan() {
       scan.note ? el("p", { className: "note" }, scan.note) : "",
       el("h2", {}, "Metrics"),
       summary(scan.results, title),
+      ...(scan.skipped && scan.skipped.length ? notRun(scan.skipped, title) : []),
       el("h2", {}, "Details"),
       el("p", { className: "muted" }, "Failed and unscored metrics are open; click any metric to show or hide its cases."),
       ...scan.results.map((r) => metricSection(r, title)),

@@ -164,8 +164,54 @@ def init_db(path: str) -> sqlite3.Connection:
             """
         )
         _migrate_targets(conn)
+        _migrate_deepeval_scale(conn)
         conn.commit()
     return conn
+
+
+# Metrics once shown as violation rates (1 - DeepEval's score, threshold a
+# maximum) and now shown on DeepEval's own scale (1 = clean, threshold a minimum).
+DEEPEVAL_SCALE_KEYS = ("hallucination", "bias", "toxicity", "pii_leakage")
+
+
+def _flip(value):
+    return round(1 - value, 6) if isinstance(value, (int, float)) and not isinstance(value, bool) else value
+
+
+def _flip_result(result):
+    """One stored metric result moved to DeepEval's scale (no change if already there)."""
+    if not isinstance(result, dict) or result.get("direction") != "lower":
+        return result
+    rows = [{**r, "score": _flip(r.get("score"))} if isinstance(r, dict) else r for r in result.get("rows") or []]
+    return {**result, "direction": "higher", "score": _flip(result.get("score")),
+            "threshold": _flip(result.get("threshold")), "rows": rows}
+
+
+def _migrate_deepeval_scale(conn: sqlite3.Connection) -> None:
+    """Once per database: stored runs, scans and human labels of the four metrics
+    move to DeepEval's scale, so their trend lines carry on without a jump."""
+    if conn.execute("SELECT 1 FROM meta WHERE key = 'deepeval_scale'").fetchone():
+        return
+    marks = ",".join("?" * len(DEEPEVAL_SCALE_KEYS))
+    for row in conn.execute(f"SELECT id, score, result_json FROM runs WHERE metric_key IN ({marks})",
+                            DEEPEVAL_SCALE_KEYS).fetchall():
+        result = json.loads(row["result_json"]) if row["result_json"] else None
+        if result is not None and result.get("direction") != "lower":
+            continue  # already on DeepEval's scale
+        conn.execute("UPDATE runs SET score = ?, result_json = ? WHERE id = ?",
+                     (_flip(row["score"]), json.dumps(_flip_result(result)) if result is not None else None,
+                      row["id"]))
+    conn.execute(
+        f"UPDATE human_labels SET judge_score = 1 - judge_score, threshold = 1 - threshold, "
+        f"human_score = 1 - human_score, direction = 'higher' "
+        f"WHERE direction = 'lower' AND metric_key IN ({marks})", DEEPEVAL_SCALE_KEYS)
+    for job in conn.execute("SELECT id, results FROM jobs").fetchall():
+        results = json.loads(job["results"] or "[]")
+        moved = [_flip_result(r) if isinstance(r, dict) and r.get("key") in DEEPEVAL_SCALE_KEYS else r
+                 for r in results]
+        if moved != results:
+            conn.execute("UPDATE jobs SET results = ? WHERE id = ?", (json.dumps(moved), job["id"]))
+    conn.execute("INSERT INTO meta (key, value) VALUES ('deepeval_scale', '1')")
 
 
 def get_meta(conn: sqlite3.Connection, key: str) -> str | None:

@@ -1,6 +1,7 @@
 import dataclasses
 import json
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -143,24 +144,27 @@ def test_catalog_has_every_requested_metric_in_its_group():
     assert actual == EXPECTED_GROUPS
 
 
-def test_inverted_metrics_are_lower_is_better():
-    lower = {s.key for s in ALL_SPECS if s.direction == "lower"}
-    assert lower == {"hallucination", "bias", "toxicity", "pii_leakage"}
+def test_every_shipped_metric_uses_deepevals_own_scale():
+    # DeepEval 4 scores Hallucination / Bias / Toxicity / PII Leakage with 1 = clean.
+    assert {s.key for s in ALL_SPECS if s.direction == "lower"} == set()
 
 
 @pytest.mark.parametrize("key, threshold", [
     ("answer_relevancy", 0.7), ("faithfulness", 0.8), ("summarization", 0.6),
     ("contextual_precision", 0.7), ("contextual_recall", 0.7),
-    ("hallucination", 0.5), ("toxicity", 0.5), ("bias", 0.5), ("pii_leakage", 0.1),
+    ("hallucination", 0.5), ("toxicity", 0.5), ("bias", 0.5), ("pii_leakage", 0.9),
 ])
 def test_default_thresholds_follow_the_strategy_table(key, threshold):
     assert SPECS_BY_KEY[key].threshold == threshold
 
 
 def test_lower_metrics_flip_score_and_threshold_for_deepeval():
-    spec = SPECS_BY_KEY["hallucination"]
-    assert deepeval_threshold(spec, 0.3) == 0.7   # at most 30% hallucinated = at least 0.7 clean
-    assert reported_score(spec, 0.9) == 0.1       # DeepEval 0.9 clean -> 0.1 hallucination rate
+    # Only a user-made "lower" metric is shown as a violation rate.
+    spec = SimpleNamespace(direction="lower")
+    assert deepeval_threshold(spec, 0.3) == 0.7   # at most 30% violations = at least 0.7 clean
+    assert reported_score(spec, 0.9) == 0.1       # DeepEval 0.9 clean -> 0.1 violation rate
+    hallucination = SPECS_BY_KEY["hallucination"]
+    assert deepeval_threshold(hallucination, 0.7) == 0.7 and reported_score(hallucination, 0.9) == 0.9
     ar = SPECS_BY_KEY["answer_relevancy"]
     assert deepeval_threshold(ar, 0.7) == 0.7 and reported_score(ar, 0.9) == 0.9
 
@@ -170,7 +174,7 @@ def test_every_metric_has_a_preset_per_environment():
         assert set(spec.presets()) == set(ENVIRONMENTS)
     assert SPECS_BY_KEY["answer_relevancy"].presets() == {
         "local": 0.5, "pr": 0.7, "staging": 0.8, "production": 0.85}
-    assert SPECS_BY_KEY["hallucination"].presets()["production"] == 0.2
+    assert SPECS_BY_KEY["hallucination"].presets()["production"] == 0.8
 
 
 def test_conversation_and_probe_datasets_load():

@@ -168,7 +168,8 @@ class HttpTargetClient(ChatbotClient):
             0 <= send_delay <= MAX_SEND_DELAY
         ):
             raise ValueError(f"send_delay must be between 0 and {MAX_SEND_DELAY} seconds")
-        check_replies = config.get("check_replies", True)
+        # Off unless asked for: like DeepEval, every reply is scored as it is.
+        check_replies = config.get("check_replies", False)
         if not isinstance(check_replies, bool):
             raise ValueError("check_replies must be true or false")
         sources_fallback = config.get("sources_fallback", "")

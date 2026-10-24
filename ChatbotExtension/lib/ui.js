@@ -259,6 +259,24 @@ const settings = {
   },
 };
 
+// Once per browser: thresholds saved for these four metrics when they were shown
+// as violation rates (a maximum) move to DeepEval's own scale (1 = clean, a minimum).
+(function migrateThresholdScale() {
+  try {
+    if (webRead("thresholdScale") === "deepeval") return;
+    const saved = webRead("thresholds");
+    if (saved && typeof saved === "object") {
+      for (const key of ["hallucination", "bias", "toxicity", "pii_leakage"]) {
+        if (typeof saved[key] === "number") saved[key] = Math.round((1 - saved[key]) * 1e6) / 1e6;
+      }
+      webWrite("thresholds", saved);
+    }
+    webWrite("thresholdScale", "deepeval");
+  } catch {
+    // No storage (private window, blocked site data): nothing saved to move.
+  }
+})();
+
 // Each fresh load of the panel starts a session (POST /api/session/start):
 // scores, trend and cases show only runs with an id above this, while every
 // run stays in SQLite and the dashboard's History view lists them all.
@@ -400,7 +418,18 @@ async function runOptionsBody(metricKeys) {
   }
   if (typeof options.maxLatencyS === "number" && options.maxLatencyS > 0) body.max_latency_s = options.maxLatencyS;
   if (options.useCalibration) body.use_calibration = true;
+  if (options.deepeval) body.deepeval = options.deepeval;
   return body;
+}
+
+// A scan's tally the DeepEval way: test cases passed (a case passes only when
+// every metric passes it), then metrics passed, then metrics left out.
+function scanTally(scan) {
+  const parts = [];
+  if (scan.test_cases) parts.push(`${scan.test_cases_passed} of ${scan.test_cases} test cases passed`);
+  parts.push(`${scan.passed} of ${scan.metrics} metrics passed`);
+  if (scan.skipped && scan.skipped.length) parts.push(`${scan.skipped.length} not run`);
+  return parts.join(" · ");
 }
 
 function openAdvanced() {
@@ -529,8 +558,11 @@ function runVerdict(details) {
   if (typeof details.score !== "number") return "";
   const lower = details.direction === "lower";
   const passed = details.status === "pass";
-  const sign = lower ? (passed ? "≤" : ">") : (passed ? "≥" : "<");
-  return `Average ${formatScore(details.score)} ${sign} ${formatScore(details.threshold)} → ${passed ? "pass" : "fail"}`;
+  const rows = details.rows || [];
+  const ok = rows.filter((r) => r.passed).length;
+  // DeepEval's rule: the run passes only when every case passes; the average is shown alongside.
+  const cases = rows.length ? `${ok} of ${rows.length} cases passed (each needs ${lower ? "≤" : "≥"} ${formatScore(details.threshold)})` : "";
+  return [cases, `average ${formatScore(details.score)}`].filter(Boolean).join(" · ") + ` → ${passed ? "pass" : "fail"}`;
 }
 
 // Label / text pairs describing how a run was judged (missing fields left out).
@@ -580,7 +612,7 @@ function metricMeaning(metric) {
     pairs.push(["The judge reads", metric.scores_on.map(fieldLabel).join(", ")]);
   }
   if (metric.criteria) pairs.push(["Rubric", metric.criteria]);
-  pairs.push(["Run score", "The average of the case scores; the run passes when that average meets the threshold."]);
+  pairs.push(["Run result", "As in DeepEval: each case passes when its score meets the threshold, and the run passes only when every case passes. The score shown is the average of the case scores."]);
   return pairs;
 }
 

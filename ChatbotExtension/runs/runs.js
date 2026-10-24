@@ -140,7 +140,7 @@ function homeView() {
       el("div", { className: "card" }, el("p", { className: "card-title" }, "Overall LLM performance"),
         el("p", { className: "big" }, el("span", { className: "dot", style: `background:${healthy ? "var(--pass)" : "var(--fail)"}` }),
           healthy ? "Healthy" : scan.result === "failed" ? "Needs attention" : "Incomplete"),
-        el("p", { className: "muted small" }, `${scan.passed} of ${scan.metrics} metrics passed · ${cases.length} test cases`)),
+        el("p", { className: "muted small" }, scanTally(scan))),
       el("div", { className: "card" }, el("p", { className: "card-title" }, "Average score"),
         el("p", { className: "big" }, formatScore(scan.average)),
         el("p", { className: `small ${delta == null ? "muted" : delta >= 0 ? "up" : "down"}` },

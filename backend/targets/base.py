@@ -15,6 +15,8 @@ class ChatReply:
     # The tools the chatbot (an agent) called for this reply, when its response
     # lists them (agent metrics): [{name, input_parameters?, output?, reasoning?}].
     tools_called: list[dict] | None = None
+    # Seconds the chatbot took, when a wrapper timed it (shared.SharedReplies).
+    latency_s: float | None = None
 
 
 class ChatbotClient(ABC):

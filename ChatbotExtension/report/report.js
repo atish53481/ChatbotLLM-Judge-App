@@ -38,6 +38,13 @@ function successRate(cases) {
   return { passed, total: cases.length, rate: cases.length ? passed / cases.length : null };
 }
 
+// DeepEval's test-case verdict: a test case passes only when every metric that scored it passes.
+function testCasesPassed(cases) {
+  const byId = new Map();
+  for (const c of cases) byId.set(c.id, (byId.get(c.id) ?? true) && Boolean(c.row.passed));
+  return { passed: [...byId.values()].filter(Boolean).length, total: byId.size };
+}
+
 function formatPercent(rate) {
   return rate === null ? "–" : `${Math.round(rate * 100)}%`;
 }
@@ -48,6 +55,7 @@ function cover(target, judge, metrics, latestByKey, cases) {
   const average = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
   const passed = run.filter((m) => latestByKey[m.key].passed).length;
   const success = successRate(cases);
+  const testCases = testCasesPassed(cases);
   return el(
     "section",
     { className: "cover" },
@@ -64,6 +72,8 @@ function cover(target, judge, metrics, latestByKey, cases) {
       { className: "headline" },
       el("div", {}, el("b", {}, formatPercent(success.rate)),
         el("small", {}, `overall success rate (${success.passed} of ${success.total} checks)`)),
+      el("div", {}, el("b", {}, testCases.total ? `${testCases.passed}/${testCases.total}` : "–"),
+        el("small", {}, "test cases passed (every metric passed)")),
       el("div", {}, el("b", {}, average === null ? "–" : formatScore(average)), el("small", {}, "average score")),
       el("div", {}, el("b", { className: "pass" }, String(passed)), el("small", {}, "metrics passed")),
       el("div", {}, el("b", { className: "fail" }, String(run.length - passed)), el("small", {}, "metrics failed")),
@@ -381,6 +391,31 @@ function metricSection(metric, run, details, thresholds, caseIds, options = DEFA
   return el("section", { className: "metric" }, ...parts);
 }
 
+// Metrics with no run in this session, each with why: the backend's skip_reason
+// (not applicable to this chatbot, or no test case in its golden set), else not picked.
+function notRunSection(metrics, latestByKey) {
+  const missing = metrics.filter((m) => !latestByKey[m.key]);
+  if (!missing.length) return null;
+  return el(
+    "section",
+    {},
+    el("h2", {}, "Metrics not run"),
+    el("p", { className: "muted small" }, "Nothing was scored for these metrics, so they count neither as passed nor as failed."),
+    el(
+      "table",
+      { className: "summary" },
+      el("thead", {}, el("tr", {}, el("th", {}, "Metric"), el("th", {}, "Category"), el("th", {}, "Why it was not run"))),
+      el("tbody", {}, ...missing.map((m) => el(
+        "tr",
+        {},
+        el("td", {}, m.title),
+        el("td", {}, m.ui_category_label || m.ui_category || ""),
+        el("td", {}, m.skip_reason || "Not selected in this session's runs: tick it and run to include it."),
+      ))),
+    ),
+  );
+}
+
 function appendix(metrics) {
   const lower = metrics.filter((m) => m.direction === "lower").map((m) => m.title);
   const lowerText = lower.length
@@ -394,10 +429,11 @@ function appendix(metrics) {
       "ul",
       {},
       el("li", {}, "Each metric sends the golden questions to the chatbot and has the judge model score every reply from 0 to 1."),
-      el("li", {}, "A run's score is the average of its case scores; the run passes when the average meets the threshold."),
+      el("li", {}, "As in DeepEval, a case passes when its score meets the metric's threshold, and a run passes only when every one of its cases passes. A run's score is the average of its case scores, shown for trends; it does not decide the result."),
       el("li", {}, "Test case results: a test case (TC-01, …) is one golden question. Each metric that asked it is one check: PASSED when that case's score meets the metric's threshold. A test case's success rate is the share of its checks that passed; the overall success rate is the share of all checks."),
       el("li", {}, `Higher is better (≥) for most metrics. ${lowerText}`),
       el("li", {}, "In single-turn cases (when bold differences are on), bold words in the actual result are missing from the expected result, and bold words in the expected result are missing from the actual one (case and punctuation ignored). Different wording is not always wrong: the judge scores meaning."),
+      el("li", {}, "A test case passes only when every metric that scored it passes (DeepEval's test-run rule)."),
       el("li", {}, "Skipped cases were longer than the chatbot's max message length and were not sent."),
       el("li", {}, "With the judge-consistency check on, every reply is scored twice; a run whose two scorings of one case differ by more than 0.15 is marked judge unstable."),
       el("li", {}, "Replies such as \"limit reached\" or \"please log in\" stop a run as an error; such runs are not scored or listed."),
@@ -410,6 +446,7 @@ function appendix(metrics) {
 // same way from the catalog's data, so new metrics need no change here.
 const SECTION_OPTIONS = [
   ["summary", "Summary table"],
+  ["notrun", "Metrics not run (with why)"],
   ["cases", "Test case results"],
   ["improve", "How to improve the score"],
   ["details", "Metric details (case cards)"],
@@ -452,6 +489,10 @@ function renderReport(data, options) {
     parts.push(el("p", { className: "note" }, "No metric is selected: tick at least one under \"Metrics\" above."));
   }
   if (options.summary) parts.push(summaryTable(shown, latestByKey, thresholds));
+  if (options.notrun && !options.metrics) {
+    const section = notRunSection(metrics, latestByKey);
+    if (section) parts.push(section);
+  }
   if (options.cases && ran.length) parts.push(testCaseTable(cases, ran, latestByKey, details, options));
   if (options.improve && ran.length) parts.push(actionPlan(ran, latestByKey, details, thresholds, caseIds));
   if (options.details && ran.length) {

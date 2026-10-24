@@ -230,19 +230,92 @@ function latestChartConfig(rows, catalog, kind) {
   };
 }
 
+// Runs started within this long of each other are one run of the chatbot:
+// the metrics of one Run finish seconds apart, and should share an x position.
+const RUN_BATCH_GAP_MS = 15 * 60 * 1000;
+// More lines than this are unreadable: the chart then shows one per category.
+const MAX_TREND_LINES = 8;
+// Colors for categories past the seven series colors.
+const EXTRA_COLORS = ["#2bb3c0", "#a3785a", "#9aa0a6"];
+
+// Groups run timestamps into batches; returns the batch start labels and a
+// lookup from each timestamp to its batch index.
+function runBatches(times) {
+  const sorted = [...new Set(times)].sort();
+  const starts = [];
+  const indexOf = new Map();
+  let last = null;
+  for (const ts of sorted) {
+    const t = new Date(ts).getTime();
+    if (last === null || t - last > RUN_BATCH_GAP_MS) starts.push(ts);
+    indexOf.set(ts, starts.length - 1);
+    last = t;
+  }
+  return { starts, indexOf };
+}
+
+// A metric's latest score in each batch (null where it did not run).
+function scoresByBatch(history, batches) {
+  const out = batches.starts.map(() => null);
+  for (const r of [...history].sort((a, b) => (a.ts < b.ts ? -1 : 1))) out[batches.indexOf.get(r.ts)] = r.score;
+  return out;
+}
+
+function lineStyle(color, ink, fillArea) {
+  return {
+    borderColor: color,
+    backgroundColor: fillArea ? withAlpha(color, 0.1) : color,
+    fill: fillArea ? "origin" : false,
+    clip: 6, // keeps markers at a score of 1.0 whole at the top edge
+    borderWidth: 2,
+    borderCapStyle: "round",
+    borderJoinStyle: "round",
+    spanGaps: true,
+    pointRadius: 4,
+    pointHoverRadius: 6,
+    pointHitRadius: 12,
+    pointBackgroundColor: color,
+    pointBorderColor: ink.surface,
+    pointBorderWidth: 2,
+  };
+}
+
+// One line per category: the average score of its metrics in each run, with
+// lower-is-better metrics counted as 1 − score so every line reads "up is good".
+function categoryDatasets(shown, historyByMetric, batches, ink) {
+  const groups = new Map();
+  for (const m of shown) {
+    const key = m.ui_category || m.group || "other";
+    if (!groups.has(key)) groups.set(key, { label: m.ui_category_label || key, metrics: [] });
+    groups.get(key).metrics.push(m);
+  }
+  return [...groups.values()].map((g, i) => {
+    const series = g.metrics.map((m) => scoresByBatch(historyByMetric[m.key], batches)
+      .map((s) => (s == null ? null : m.direction === "lower" ? 1 - s : s)));
+    const data = batches.starts.map((_, b) => {
+      const values = series.map((s) => s[b]).filter((v) => v != null);
+      return values.length ? values.reduce((a, v) => a + v, 0) / values.length : null;
+    });
+    const color = i < 7 ? cssVar(`--series-${i + 1}`) : EXTRA_COLORS[(i - 7) % EXTRA_COLORS.length];
+    return { label: `${g.label} (${g.metrics.length})`, data, metricTitles: g.metrics.map((m) => m.title),
+      ...lineStyle(color, ink, false) };
+  });
+}
+
 // historyByMetric: { metricKey: /api/history rows } for the metrics to show;
 // catalog: /api/metrics (for stable colors and thresholds).
 function trendChartConfig(historyByMetric, catalog) {
   const ink = chartInk();
   const shown = catalog.filter((m) => (historyByMetric[m.key] || []).length > 0);
-  const times = [...new Set(shown.flatMap((m) => historyByMetric[m.key].map((r) => r.ts)))].sort();
+  const batches = runBatches(shown.flatMap((m) => historyByMetric[m.key].map((r) => r.ts)));
+  const times = batches.starts;
+  const byCategory = shown.length > MAX_TREND_LINES;
   const single = shown.length === 1;
-  const datasets = shown.map((m) => {
+  const datasets = byCategory ? categoryDatasets(shown, historyByMetric, batches, ink) : shown.map((m) => {
     const color = metricColor(m.key, catalog);
-    const scoreAt = new Map(historyByMetric[m.key].map((r) => [r.ts, r.score]));
     return {
       label: m.title,
-      data: times.map((ts) => (scoreAt.has(ts) ? scoreAt.get(ts) : null)),
+      data: scoresByBatch(historyByMetric[m.key], batches),
       borderColor: color,
       backgroundColor: single ? withAlpha(color, 0.1) : color,
       fill: single ? "origin" : false,
@@ -271,10 +344,22 @@ function trendChartConfig(historyByMetric, catalog) {
       fill: false,
     });
   }
+  if (times.length === 1 && datasets.length > 1) return oneRunBars(datasets, times[0], ink, byCategory);
   const options = sharedOptions(ink, 2);
   options.interaction = { mode: "index", intersect: false };
   options.plugins.tooltip.callbacks = {
+    title: (items) => (items.length ? `Run of ${items[0].label}` : ""),
     label: (item) => ` ${formatScore(item.raw)}  ${item.dataset.label}`,
+    // Category lines name the metrics they average.
+    afterBody: (items) => (byCategory && items.length === 1 && items[0].dataset.metricTitles
+      ? [`Average of: ${items[0].dataset.metricTitles.join(", ")}`] : []),
+  };
+  options.plugins.legend.labels.usePointStyle = true;
+  options.plugins.legend.labels.pointStyle = "line";
+  options.plugins.subtitle = {
+    display: byCategory,
+    text: "One line per category: average score of its metrics in each run (lower-is-better counted as 1 − score). Pick one metric for its own line.",
+    color: ink.muted, align: "start", padding: { bottom: 6 }, font: { size: 11 },
   };
   options.plugins.crosshair = { color: ink.axis };
   options.scales = {
@@ -296,6 +381,45 @@ function trendChartConfig(historyByMetric, catalog) {
     data: { labels: times.map(formatRunTime), datasets },
     options,
     plugins: [crosshair],
+  };
+}
+
+// A trend needs two runs: with one, each line's single score is a bar instead
+// of a column of dots at the chart's edge.
+function oneRunBars(datasets, ts, ink, byCategory) {
+  const lines = datasets.filter((d) => d.label !== "Threshold" && d.data[0] != null);
+  const options = sharedOptions(ink, 8);
+  options.plugins.legend.display = false;
+  options.plugins.subtitle = {
+    display: true, color: ink.muted, align: "start", padding: { bottom: 8 }, font: { size: 11 },
+    text: `One run so far (${formatRunTime(ts)}): run again to see the trend.`
+      + (byCategory ? " Bars average each category's metrics (lower-is-better counted as 1 − score)." : ""),
+  };
+  options.plugins.tooltip.callbacks = {
+    label: (item) => ` ${formatScore(item.raw)}`,
+    afterBody: (items) => {
+      const titles = items.length ? lines[items[0].dataIndex].metricTitles : null;
+      return titles ? [`Average of: ${titles.join(", ")}`] : [];
+    },
+  };
+  options.scales = {
+    x: { ticks: { color: ink.secondary, maxRotation: 0, autoSkip: false }, grid: { display: false }, border: { color: ink.axis } },
+    y: { min: 0, max: 1, ticks: { stepSize: 0.2, color: ink.muted }, grid: { color: ink.grid }, border: { color: ink.axis } },
+  };
+  return {
+    type: "bar",
+    data: {
+      labels: lines.map((d) => d.label),
+      datasets: [{
+        label: "Score",
+        data: lines.map((d) => d.data[0]),
+        backgroundColor: lines.map((d) => d.borderColor),
+        maxBarThickness: 40,
+        borderRadius: { topLeft: 4, topRight: 4, bottomLeft: 0, bottomRight: 0 },
+        borderSkipped: false,
+      }],
+    },
+    options,
   };
 }
 

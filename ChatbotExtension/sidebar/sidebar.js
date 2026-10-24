@@ -169,7 +169,7 @@ function fillTargetSettings(target) {
   $("target-sources-fallback").value = config.sources_fallback || "";
   $("target-max-length").value = config.max_message_length ?? "";
   $("target-send-delay").value = config.send_delay || "";
-  $("target-check-replies").checked = config.check_replies !== false;
+  $("target-check-replies").checked = config.check_replies === true;
   $("target-theme-input").value = themeOf(target);
   const instructions = config.instructions;
   $("target-instructions").value = Array.isArray(instructions) ? instructions.join("\n") : (instructions || "");
@@ -1003,13 +1003,37 @@ armConfirm($("reset-target-runs"), async () => {
   }
 });
 
-function renderSkippedRow(line, title, theme, reason) {
+// A ticked metric the run leaves out, with why (the backend's skip_reason; the
+// job records the same reason, so the scan and the report show it too).
+function renderSkippedRow(line, title, theme, reason, metric) {
   line.className = "run-row skipped";
   line.replaceChildren(
     el("span", { className: "run-row-title" }, title),
-    el("span", { className: "run-row-chip muted", title: reason || "" },
-      reason ? "skipped: not applicable to this chatbot" : `skipped: no cases in '${theme}'`),
+    el("span", { className: "run-row-chip muted" }, "not run"),
+    el("span", { className: "run-row-detail muted" }, reason || `No test case for it in the golden set '${theme}'.`),
+    metric && metric.dataset === "goldens_without_context" && !metric.unavailable ? scratchButton() : "",
   );
+}
+
+// Fills the gap a reference-free metric reports: DeepEval writes goldens without context.
+function scratchButton() {
+  const button = el("button", { type: "button", className: "small" }, "Add 5 with DeepEval");
+  button.addEventListener("click", async () => {
+    const target = currentTarget();
+    if (!target) return;
+    button.disabled = true;
+    button.textContent = "Generating…";
+    try {
+      const data = await api("/api/goldens/generate-scratch", { method: "POST", body: { target_id: target.id, count: 5 } });
+      button.textContent = `Added ${data.created}: run again`;
+      await loadMetrics();
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "Add 5 with DeepEval";
+      $("status").textContent = error.message;
+    }
+  });
+  return button;
 }
 
 // One score-bar row per metric: bar fill mirrors the dashboard's chart bars,
@@ -1073,10 +1097,13 @@ $("run-button").addEventListener("click", async () => {
     lines.set(key, el("li"));
     $("run-results").append(lines.get(key));
     const metric = state.metrics.find((m) => m.key === key);
-    renderSkippedRow(lines.get(key), titles.get(key) || key, themeOf(target), metric && metric.unavailable);
+    renderSkippedRow(lines.get(key), titles.get(key) || key, themeOf(target),
+      metric && (metric.skip_reason || metric.unavailable), metric);
   }
   const runnable = keys.filter((k) => !empty.has(k));
-  await watchRun(target, lines, titles, (onProgress, control) => runMetrics(target, runnable, onProgress, control),
+  // Every ticked metric goes to the backend: it leaves out the same ones and
+  // keeps them, with why, in the job (its scan and the report list them).
+  await watchRun(target, lines, titles, (onProgress, control) => runMetrics(target, keys, onProgress, control),
     runnable.length);
 });
 

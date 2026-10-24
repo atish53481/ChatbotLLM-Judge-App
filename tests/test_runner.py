@@ -85,23 +85,37 @@ def test_run_spec_records_average_of_all_cases_as_one_row(tmp_path):
     assert history[0]["passed"] == 0
 
 
-def test_run_passes_on_its_average_even_if_one_case_fails(tmp_path):
+def test_run_fails_when_any_case_fails_like_deepeval(tmp_path):
     conn, target_id = _db(tmp_path)
     spec = _fake_spec([_case("q1"), _case("q2")], _fake_metric([0.9, 0.5], [True, False]))
     result = run_spec(spec, judge=object(), target=CannedChatbot(), target_id=target_id, conn=conn)
 
-    assert result["status"] == "pass"  # average 0.7 meets >= 0.7
+    # The average 0.7 meets >= 0.7, but DeepEval fails a run when any case fails.
+    assert result["status"] == "fail"
+    assert result["score"] == pytest.approx(0.7)
     assert [r["passed"] for r in result["rows"]] == [True, False]
+    assert (result["cases_passed"], result["pass_rate"]) == (1, 0.5)
+    assert "1 of 2 cases failed" in result["note"]
 
 
-def test_lower_metric_passes_when_average_is_at_or_below(tmp_path):
+def test_run_passes_when_every_case_passes(tmp_path):
+    conn, target_id = _db(tmp_path)
+    spec = _fake_spec([_case("q1"), _case("q2")], _fake_metric([0.9, 0.7], [True, True]))
+    result = run_spec(spec, judge=object(), target=CannedChatbot(), target_id=target_id, conn=conn)
+
+    assert result["status"] == "pass"
+    assert (result["cases_passed"], result["pass_rate"]) == (2, 1.0)
+
+
+def test_lower_metric_follows_each_case_verdict(tmp_path):
     conn, target_id = _db(tmp_path)
     spec = _fake_spec([_case("q1"), _case("q2")], _fake_metric([1.0, 0.6], [True, False]))
     spec.direction = "lower"
     result = run_spec(spec, judge=object(), target=CannedChatbot(), target_id=target_id,
                       conn=conn, threshold=0.2)
     assert result["score"] == pytest.approx(0.2)  # violation rates 0.0 and 0.4
-    assert result["status"] == "pass"
+    # The average is at the maximum, but the second case failed: the run fails.
+    assert result["status"] == "fail"
 
 
 def test_run_spec_passes_theme_to_dataset(tmp_path):

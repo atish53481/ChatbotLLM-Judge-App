@@ -119,6 +119,10 @@ loaders["run-options"] = async () => {
 
   $("max-latency").value = typeof options.maxLatencyS === "number" ? options.maxLatencyS : "";
   $("use-calibration").checked = Boolean(options.useCalibration);
+  const deepeval = options.deepeval || {};
+  $("de-strict").checked = Boolean(deepeval.strict_mode);
+  $("de-reason").checked = deepeval.include_reason !== false;
+  $("de-async").checked = Boolean(deepeval.async_mode);
   const price = await api("/api/judge/price");
   $("judge-price").value = price.price_per_mtok ?? "";
 };
@@ -136,6 +140,7 @@ $("save-run-options").addEventListener("click", () => guarded(async () => {
     enhancementOptions: { many_shot: Number($("many-shot").value), language: $("language").value },
     maxLatencyS: maxLatency && maxLatency > 0 ? maxLatency : null,
     useCalibration: $("use-calibration").checked,
+    deepeval: { strict_mode: $("de-strict").checked, include_reason: $("de-reason").checked, async_mode: $("de-async").checked },
   });
   await api("/api/judge/price", { method: "PUT", body: { price_per_mtok: numberOrNull($("judge-price")) } });
   setStatus("Run options saved. They apply to the next run you start.");
@@ -533,6 +538,24 @@ $("gen-form").addEventListener("submit", (event) => {
     $("gen-progress").textContent = "";
     if (doc.status === "error") throw new Error(doc.error || "Generation failed.");
     setStatus(`Created ${doc.goldens_created} golden(s)${generation.review ? ": review them below" : ""}.`);
+    await loadDrafts();
+  });
+});
+
+$("scratch-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  guarded(async () => {
+    const target = requireTarget();
+    const review = $("scratch-review").checked;
+    $("scratch-progress").textContent = "DeepEval is writing questions and answers…";
+    try {
+      const data = await api("/api/goldens/generate-scratch", {
+        method: "POST", body: { target_id: target.id, count: numberOrNull($("scratch-count")) || 5, review },
+      });
+      setStatus(`Added ${data.created} golden(s) without context to '${data.theme}'${review ? ": review them below" : ""}.`);
+    } finally {
+      $("scratch-progress").textContent = "";
+    }
     await loadDrafts();
   });
 });

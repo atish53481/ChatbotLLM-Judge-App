@@ -84,7 +84,8 @@ function matching() {
   const search = state.search.toLowerCase();
   return state.data.cases
     .map((c, i) => ({ ...c, index: i }))
-    .filter((c) => state.view === "all" || c.change === state.view)
+    .filter((c) => state.view === "all" || c.change === state.view
+      || (state.view === "added" && (c.change === "new" || c.change === "removed")))
     .filter((c) => !search || c.input.toLowerCase().includes(search))
     .filter((c) => !state.metric || [c.now, c.before].some((side) => side?.metrics.some((m) => m.key === state.metric)));
 }
@@ -93,6 +94,8 @@ function render() {
   const counts = state.data ? state.data.counts : {};
   $("count-all").textContent = state.data ? `· ${state.data.cases.length}` : "";
   for (const view of ["regressed", "improved", "same"]) $(`count-${view}`).textContent = state.data ? `· ${counts[view] || 0}` : "";
+  // Every case sits in exactly one tab, so the tab counts add up to All.
+  $("count-added").textContent = state.data ? `· ${(counts.new || 0) + (counts.removed || 0)}` : "";
   document.querySelectorAll(".reg-tabs button").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.view === state.view)));
 
   const rows = matching();
@@ -105,19 +108,46 @@ function render() {
     : "No test cases match.");
   $("reg-rows").replaceChildren(...(shown.length ? shown.map(caseRow)
     : [el("p", { className: "reg-empty" }, state.view === "regressed" ? "No regressions between these scans."
-      : state.view === "improved" ? "No improvements between these scans." : "Nothing to show for these filters.")]));
+      : state.view === "improved" ? "No improvements between these scans."
+        : state.view === "added" ? "Both scans have the same test cases." : "Nothing to show for these filters.")]));
   $("reg-page").textContent = `Page ${state.page + 1} of ${pages}`;
   $("reg-prev").disabled = state.page === 0;
   $("reg-next").disabled = state.page >= pages - 1;
 }
 
+// Moves of the average score this big are shown even when no verdict flipped.
+const SCORE_MOVE = 0.1;
+
+// The case's average score on one side (lower-is-better metrics as 1 − score).
+function sideScore(side) {
+  const scores = (side?.metrics || []).filter((m) => m.score != null)
+    .map((m) => (m.direction === "lower" ? 1 - m.score : m.score));
+  return scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
+}
+
+function scoreMove(c) {
+  const before = sideScore(c.before), now = sideScore(c.now);
+  if (before == null || now == null || Math.abs(now - before) < SCORE_MOVE) return null;
+  const up = now > before;
+  return el("span", {
+    className: `reg-move ${up ? "up" : "down"}`,
+    title: `Average score ${formatScore(before)} → ${formatScore(now)}, though no metric flipped pass/fail`,
+  }, `${up ? "▲" : "▼"} ${formatScore(Math.abs(now - before))}`);
+}
+
 function sideHead(c, side, withBadge) {
   const data = c[side];
-  if (!data) return el("div", { className: "reg-side" }, el("span", { className: "reg-absent" }, "Not in this scan"));
+  if (!data) {
+    // Why a case is missing: it was not scored in that scan.
+    const why = side === "before" ? "Not in the baseline scan (its metric did not run or failed there)"
+      : "Not in this scan (its metric did not run or failed here)";
+    return el("div", { className: "reg-side" }, el("span", { className: "reg-absent" }, why));
+  }
   return el("div", { className: "reg-side" },
     el("span", { className: "reg-case-id" }, `test_case_${c.index}`),
     el("span", { className: "reg-case-q", title: c.input }, c.input),
-    withBadge && BADGE[c.change] ? el("span", { className: `reg-badge ${c.change}` }, BADGE[c.change]) : null);
+    withBadge && BADGE[c.change] ? el("span", { className: `reg-badge ${c.change}` }, BADGE[c.change]) : null,
+    withBadge && c.change === "same" ? scoreMove(c) : null);
 }
 
 function caseRow(c) {

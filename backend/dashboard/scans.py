@@ -67,6 +67,9 @@ def _summary(version: int, job: dict, note: str = "") -> dict:
     failed = sum(r.get("status") == _FAILED for r in results)
     errors = len(results) - passed - failed
     scores = [g for g in map(_goodness, results) if g is not None]
+    # DeepEval's test run: a test case passes only when every metric that scored it passes.
+    cases = list(_cases_of(results).values())
+    cases_passed = sum(1 for c in cases if all(m["passed"] for m in c["metrics"]))
     if job["status"] in ("queued", "running"):
         result = job["status"]
     elif failed:
@@ -84,6 +87,10 @@ def _summary(version: int, job: dict, note: str = "") -> dict:
         "passed": passed,
         "failed": failed,
         "errors": errors,
+        "test_cases": len(cases),
+        "test_cases_passed": cases_passed,
+        # Metrics the job left out, each with why (not applicable, or no test case).
+        "skipped": (job["options"] or {}).get("skipped") or [],
         "average": round(sum(scores) / len(scores), 3) if scores else None,
         "judge_model": _judge_model(results),
         "judge_tokens": sum((r.get("judge") or {}).get("tokens") or 0 for r in results),

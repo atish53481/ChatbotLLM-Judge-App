@@ -1,9 +1,8 @@
 """Executes one MetricSpec against one target and persists the run's aggregate.
 
-Scores and thresholds are reported the way the user reads them: for a "lower"
-metric (Hallucination, Bias, Toxicity, PII Leakage) the score is a violation
-rate and the threshold a maximum. DeepEval gets the matching minimum
-(see metrics_catalog.deepeval_threshold) and decides pass/fail itself.
+Scores are DeepEval's own and DeepEval decides each case's pass/fail. Only a
+user-made "lower" metric is shown as a violation rate with the threshold a
+maximum; DeepEval then gets the matching minimum (metrics_catalog.deepeval_threshold).
 """
 from __future__ import annotations
 
@@ -21,7 +20,7 @@ from backend.dashboard.stats import percentile, summary_stats
 from backend.datasets import attack_enhancers
 from backend.judges.ask import ask_json
 from backend.judges.judge import JUDGE_CONCURRENCY
-from backend.metrics_catalog import DEFAULT_THEME
+from backend.metrics_catalog import DEEPEVAL_OPTIONS, DEFAULT_THEME, apply_deepeval_options
 from backend.rag import derived_sources
 from backend.targets import instructions as target_instructions
 from backend.targets.http_client import MessageTooLong
@@ -100,7 +99,7 @@ def _transcript(turns: list[dict]) -> str:
 
 
 def _run_conversation(spec, target, scenario: dict, report, done: int, total: int,
-                      theme: str = DEFAULT_THEME) -> tuple[object, list[dict]]:
+                      theme: str = DEFAULT_THEME, latencies: list | None = None) -> tuple[object, list[dict]]:
     """Sends the scenario's user turns one by one, each with the conversation so
     far. The returned turns also keep what each reply came with (its retrieved
     context and tool calls, when the chatbot reports them, or context the app
@@ -112,7 +111,10 @@ def _run_conversation(spec, target, scenario: dict, report, done: int, total: in
     user_turns = scenario["user_turns"]
     for i, message in enumerate(user_turns):
         report(done, total, "chat", f"{scenario.get('name', 'conversation')} · turn {i + 1}/{len(user_turns)}")
+        started = time.monotonic()
         answer = target.chat(message, history=list(history))
+        if latencies is not None:
+            latencies.append(getattr(answer, "latency_s", None) or time.monotonic() - started)
         extra = {k: v for k, v in (("retrieval_context", getattr(answer, "retrieval_context", None)),
                                    ("tools_called", getattr(answer, "tools_called", None))) if v}
         if fallback and not extra.get("retrieval_context"):
@@ -241,6 +243,7 @@ def _sweep(
     max_latency_s: float | None = None,
     price_per_mtok: float | None = None,
     calibration_examples: list[dict] | None = None,
+    deepeval_options: dict | None = None,
     counts: dict | None = None,
 ) -> dict:
     """on_progress(done, total, phase, question) is called as the sweep moves:
@@ -260,10 +263,16 @@ def _sweep(
     and max_latency_s, when set, fails a run whose p95 is slower. price_per_mtok
     (USD per million judge tokens) adds the judge cost. calibration_examples
     (cases a human scored) are added to a G-Eval metric's criteria as few-shot
-    examples, so the judge scores closer to that human."""
+    examples, so the judge scores closer to that human. deepeval_options sets
+    DeepEval's strict_mode / include_reason / async_mode on every metric; with
+    strict_mode the threshold is 1, as DeepEval sets it."""
     started = time.monotonic()
     report = on_progress or (lambda *_args: None)
     kind = getattr(spec, "kind", "single")
+    if kind in ("multi_sample", "attack"):
+        # Several samples of one question, or an escalating attack: always fresh
+        # replies, never the job's shared one (targets/shared.py).
+        target = getattr(target, "fresh", target)
     metric_kwargs = dict(metric_kwargs or {})
     # Prompt Alignment's rules may come from the captured request or the standard set.
     rules_note = target_instructions.source_note(metric_kwargs.get("instructions"))
@@ -305,6 +314,10 @@ def _sweep(
         enhancements = []
 
     pass_mark = _threshold(spec, threshold)
+    deepeval_options = {k: v for k, v in (deepeval_options or {}).items() if k in DEEPEVAL_OPTIONS}
+    if deepeval_options.get("strict_mode"):
+        # DeepEval's strict mode: a case passes only with a perfect score.
+        pass_mark = 0.0 if _direction(spec) == "lower" else 1.0
     prompt = getattr(spec, "prompt", None)
     # Cases run on a few threads at once (case_workers); each thread scores with
     # its own metric, since a DeepEval metric keeps the last score on itself.
@@ -317,8 +330,9 @@ def _sweep(
     def thread_metric():
         metric = getattr(local, "metric", None)
         if metric is None:
-            metric = local.metric = spec.build_metric(judge, _deepeval_threshold(spec, pass_mark),
-                                                      **metric_kwargs)
+            metric = local.metric = apply_deepeval_options(
+                spec.build_metric(judge, _deepeval_threshold(spec, pass_mark), **metric_kwargs),
+                deepeval_options)
             calibrations.append(_calibrate(metric, calibration_examples))
         return metric
 
@@ -360,8 +374,9 @@ def _sweep(
                 expected, used, source = "", item.get("context") or None, "golden"
                 case = spec.build_case(item, reply)
             elif kind == "conversation":
-                case, turns = _run_conversation(spec, target, item, report, index, len(items), theme)
-                latency = round((time.monotonic() - chat_started) / max(1, len(turns) // 2), 3)
+                waits: list[float] = []
+                case, turns = _run_conversation(spec, target, item, report, index, len(items), theme, waits)
+                latency = round(sum(waits) / max(1, len(waits)), 3)
                 question, reply = item.get("name", "conversation"), _transcript(turns)
                 sent = "\n".join(item.get("user_turns", []))
                 expected, used, source = item.get("expected_outcome", ""), None, None
@@ -377,7 +392,8 @@ def _sweep(
                 report(progress(), len(items), "chat", question)
                 sent = item.get("send") or (prompt(item) if callable(prompt) else question)
                 answer = target.chat(sent)
-                latency = round(time.monotonic() - chat_started, 3)
+                # A reply shared by the job's metrics keeps the time the chatbot took.
+                latency = getattr(answer, "latency_s", None) or round(time.monotonic() - chat_started, 3)
                 reply = answer.reply
                 retrieval = getattr(answer, "retrieval_context", None)
                 tools = getattr(answer, "tools_called", None)
@@ -496,8 +512,11 @@ def _sweep(
 
     scores = [r["score"] for r in rows if r["score"] is not None]
     avg = sum(scores) / len(scores) if scores else None
-    # The run is judged on its average, like a quality gate; each case keeps its own verdict.
-    passed = _meets(spec, avg, pass_mark)
+    # DeepEval's verdict: each case passes on metric.is_successful() (its score
+    # against the threshold), and the run passes only when every case does, as
+    # deepeval's assert_test / test run would. The average is reported, not gated.
+    cases_passed = sum(1 for r in rows if r["passed"])
+    passed = bool(rows) and cases_passed == len(rows)
     latencies = [r["latency_s"] for r in rows if r.get("latency_s") is not None]
     latency = ({"p50": percentile(latencies, 50), "p95": percentile(latencies, 95),
                 "max": round(max(latencies), 3), "n": len(latencies)} if latencies else None)
@@ -521,6 +540,7 @@ def _sweep(
         "chatbot_calls": chatbot_calls,
         "latency": latency,
         "max_latency_s": max_latency_s,
+        **({"deepeval_options": deepeval_options} if deepeval_options else {}),
         "duration_s": duration,
         "judge_spread": spread,
         "judge_unstable": spread is not None and spread > UNSTABLE_SPREAD,
@@ -533,6 +553,8 @@ def _sweep(
         "reason": next((r["reason"] for r in rows if not r["passed"]), rows[0]["reason"]),
         "rows": rows,
         "cases_run": len(rows),
+        "cases_passed": cases_passed,
+        "pass_rate": round(cases_passed / len(rows), 4) if rows else None,
         "cases_total": available,
         "error": None,
         "stats": summary_stats(scores, [bool(r["passed"]) for r in rows]),
@@ -540,6 +562,8 @@ def _sweep(
         **({"by_enhancement": attack_enhancers.pass_rate_by_enhancement(rows)} if enhancements else {}),
         "note": _join_notes(
             rules_note,
+            f"{len(rows) - cases_passed} of {len(rows)} cases failed, so the run fails: like DeepEval, "
+            "a run passes only when every case passes." if cases_passed < len(rows) else None,
             _golden_context_note(spec, rows),
             *(derived_sources.NOTES[label] for label in derived_sources.NOTES
               if any(r["context_source"] == label for r in rows)),

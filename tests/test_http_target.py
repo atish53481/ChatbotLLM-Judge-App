@@ -162,9 +162,9 @@ def test_service_message_reply_is_an_error_not_an_answer(mock_request):
     from backend.targets.reply_check import ChatbotUnavailable
     mock_request.return_value = _response('{"data": {"text": "You have reached your daily message limit."}}')
     with pytest.raises(ChatbotUnavailable, match="service message"):
-        HttpTargetClient(_config()).chat("hi")
-    # A chatbot whose real answers look like that can switch the check off.
-    reply = HttpTargetClient(_config(check_replies=False)).chat("hi")
+        HttpTargetClient(_config(check_replies=True)).chat("hi")
+    # Off by default, as in DeepEval: the reply is scored as it is.
+    reply = HttpTargetClient(_config()).chat("hi")
     assert reply.reply == "You have reached your daily message limit."
 
 
@@ -243,7 +243,7 @@ def test_stage_one_settings_are_validated(overrides, error):
 
 def test_stage_one_settings_are_optional():
     client = HttpTargetClient(_config(max_message_length=None, send_delay=None))
-    assert client.max_message_length is None and client.send_delay == 0 and client.check_replies
+    assert client.max_message_length is None and client.send_delay == 0 and not client.check_replies
 
 
 @patch("backend.targets.http_client.requests.request")

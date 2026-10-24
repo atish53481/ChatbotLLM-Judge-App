@@ -130,8 +130,10 @@ keeps the stored ones.
    measures `spec.build_case(golden, reply)`, and the case's score, pass flag and
    reason are collected.
 4. The run's **average** score is written as **one** row in `runs`
-   (`storage.record_run`) — the charts plot run averages, not cases. The run passes
-   when that average meets the threshold (≥ for most metrics, ≤ for violation rates).
+   (`storage.record_run`) — the charts plot run averages, not cases. As in DeepEval,
+   each case passes on `metric.is_successful()` (≥ the threshold for most metrics, ≤ for
+   violation rates) and the run passes only when every case passes (`cases_passed`,
+   `pass_rate` in the result); the average does not decide the result.
    Each case row carries `input`, `actual_output`, `expected_output`, `context`
    (with `context_source`: chatbot or golden), `score`, `passed` and `reason`.
 5. The response carries `status`, `score`, `threshold`, `reason`, and per-case

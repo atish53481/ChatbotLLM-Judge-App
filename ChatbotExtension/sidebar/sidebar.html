@@ -167,8 +167,8 @@
             <input id="target-send-delay" type="number" min="0" max="60" step="0.5" placeholder="0" title="Wait this long between two messages, for chatbots that rate-limit. Busy replies (HTTP 429/503) are retried either way.">
           </label>
           <label class="row">
-            <input id="target-check-replies" type="checkbox" checked>
-            <span title="A reply like 'daily limit reached' or 'please log in' stops the run as an error instead of being scored. Turn off only if this chatbot's real answers look like that.">Treat service messages as errors</span>
+            <input id="target-check-replies" type="checkbox">
+            <span title="Off by default: like DeepEval, every reply is scored as it is. On: a reply like 'daily limit reached' or 'please log in' stops the run as an error instead of being scored.">Treat service messages as errors (not in DeepEval)</span>
           </label>
         </details>
         <input id="target-history-path" type="hidden">
@@ -293,7 +293,7 @@
     </details>
     <label class="row small consistency-check" title="The judge scores every reply twice (the chatbot is asked once). The case scores the average, and a run whose two scorings differ by more than 0.15 is flagged as judge unstable. Uses about twice the judge tokens.">
       <input id="check-consistency" type="checkbox">
-      <span>Check judge consistency (about 2× judge tokens)</span>
+      <span>Check judge consistency (about 2× judge tokens, not in DeepEval)</span>
     </label>
     <div class="row run-row-buttons">
       <button id="run-button" type="button" class="primary grow">Run judge</button>

@@ -56,6 +56,7 @@ from backend.targets.curl import (
     prepare_url,
 )
 from backend.targets.http_client import HttpTargetClient, is_stream, sse_events
+from backend.targets.shared import SharedReplies
 from backend.targets import instructions as target_instructions
 from backend.targets import presets as target_presets
 
@@ -76,6 +77,13 @@ def generate_goldens_from_document(*args, **kwargs) -> int:
     # Imported on first use: sentence-transformers/transformers take ~40s to
     # import, which would otherwise stall server startup.
     from backend.rag.generate import generate_goldens_from_document as generate
+
+    return generate(*args, **kwargs)
+
+
+def generate_goldens_from_scratch(*args, **kwargs) -> list[dict]:
+    # Imported on first use, like the document generator (DeepEval's Synthesizer).
+    from backend.rag.scratch import generate_goldens_from_scratch as generate
 
     return generate(*args, **kwargs)
 
@@ -107,6 +115,20 @@ _cancelled: set[str] = set()
 _progress_lock = threading.Lock()
 
 
+# job id -> its chatbot client, shared by the job's metrics so each question is
+# sent once and every metric scores that one reply (DeepEval's test case).
+_job_clients: dict[int, SharedReplies] = {}
+_job_clients_lock = threading.Lock()
+
+
+def _job_client(job: dict, row: dict) -> SharedReplies:
+    with _job_clients_lock:
+        client = _job_clients.get(job["id"])
+        if client is None:
+            client = _job_clients[job["id"]] = SharedReplies(_client_or_400(row))
+        return client
+
+
 def _run_job_metric(job: dict, metric_key: str, on_progress) -> dict:
     """Runs one metric of a background job, exactly as /api/run does. A job
     with a "kind" option is a pairwise comparison instead (/api/pairwise)."""
@@ -123,7 +145,7 @@ def _run_job_metric(job: dict, metric_key: str, on_progress) -> dict:
     except RuntimeError as e:
         raise JobFailed(str(e)) from e
     try:
-        target = _client_or_400(row)
+        target = _job_client(job, row)
     except HTTPException as e:
         raise JobFailed(str(e.detail)) from e
     options, config = job["options"], row["config"]
@@ -139,6 +161,7 @@ def _run_job_metric(job: dict, metric_key: str, on_progress) -> dict:
             max_latency_s=options.get("max_latency_s"), price_per_mtok=_judge_price(),
             calibration_examples=_calibration_examples(job["target_id"], metric_key)
             if options.get("use_calibration") else None,
+            deepeval_options=options.get("deepeval"),
         )
     finally:
         _save_found_paths(job, target)
@@ -218,6 +241,8 @@ def _after_job(job_id: int) -> None:
     """Records the paths a finished job found, and queues the metrics they switched
     on as one follow-up scan with the same settings (no loop: a saved path is
     never found again)."""
+    with _job_clients_lock:
+        _job_clients.pop(job_id, None)  # the job's shared replies are done with
     with _found_lock:
         entry = _found.pop(job_id, None)
     if not entry:
@@ -1245,6 +1270,33 @@ def api_delete_golden(golden_id: str):
     return {"deleted": golden_id}
 
 
+class ScratchGoldens(BaseModel):
+    target_id: int
+    count: int = Field(default=5, ge=1, le=20)
+    # Save them as drafts that runs skip until accepted.
+    review: bool = False
+
+
+@app.post("/api/goldens/generate-scratch")
+def api_generate_scratch_goldens(body: ScratchGoldens):
+    """Adds goldens without context (question + expected answer) to the chatbot's
+    golden set with DeepEval's Synthesizer.generate_goldens_from_scratch; the
+    reference-free metrics (Self-Check Consistency) run on these."""
+    target = _target_or_404(body.target_id)
+    config = target["config"]
+    theme = config.get("theme") or DEFAULT_THEME
+    try:
+        judge = build_judge(**_judge_overrides())
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    try:
+        added = generate_goldens_from_scratch(theme, judge, target["name"], config.get("persona", ""),
+                                              count=body.count, review=body.review)
+    except Exception as e:  # noqa: BLE001 - a judge / Synthesizer failure is reported, not a 500
+        raise HTTPException(status_code=502, detail=f"DeepEval Synthesizer failed: {type(e).__name__}: {e}") from e
+    return {"theme": theme, "created": len(added), "goldens": added}
+
+
 def _cases_available(spec, theme: str, persona: str, probe_set: str) -> int:
     try:
         return len(spec.cases(theme=theme, persona=persona, probe_set=probe_set))
@@ -1273,9 +1325,9 @@ def _availability(config: dict | None):
         return {**features, "context_path": features["context_path"] or found}
 
     def unavailable(s) -> str | None:
-        if s.needs_own_sources and not features_for(s)["context_path"]:
+        if getattr(s, "needs_own_sources", False) and not features_for(s)["context_path"]:
             return NEEDS_OWN_SOURCES
-        if config is not None and s.needs_target:
+        if config is not None and getattr(s, "needs_target", ()):
             missing = missing_target_fields(s, metric_options(s, None, config))
             if missing:
                 return missing
@@ -1289,6 +1341,18 @@ def _availability(config: dict | None):
         return None
 
     return theme, persona, probe_set, unavailable
+
+
+def _skip_reason(spec, theme: str, persona: str, probe_set: str, unavailable) -> str | None:
+    """Why a run leaves this metric out for the chatbot, or None when it runs."""
+    if not callable(getattr(spec, "cases", None)):
+        return None  # a spec without a dataset of its own (tests' stand-ins) always runs
+    reason = unavailable(spec)
+    if reason:
+        return reason
+    if not _cases_available(spec, theme, persona, probe_set):
+        return spec.no_cases_reason(theme)
+    return None
 
 
 @app.get("/api/metrics")
@@ -1324,6 +1388,10 @@ def api_list_metrics(target_id: int | None = None):
             "cases_available": 0 if unavailable(s) else _cases_available(s, theme, persona, probe_set),
             # Why this metric cannot run for this chatbot (None when it can).
             "unavailable": unavailable(s),
+            # Where its questions come from: the golden set or a question set of its own.
+            "question_source": s.question_source(theme, probe_set),
+            # Why a run leaves it out (not applicable, or no test case): None when it runs.
+            "skip_reason": _skip_reason(s, theme, persona, probe_set, unavailable),
             # Which security probe set this target sends (None for other datasets).
             "probe_set": (probe_set or probes_store.DEFAULT_PROBE_SET)
             if s.dataset_name in PROBE_DATASETS else None,
@@ -1403,6 +1471,13 @@ def api_run_progress(run_id: str):
     return {"active": state is not None, **(state or {})}
 
 
+class DeepEvalOptions(BaseModel):
+    """DeepEval's own metric options (metrics_catalog.DEEPEVAL_OPTIONS)."""
+    strict_mode: bool = False
+    include_reason: bool = True
+    async_mode: bool = False
+
+
 class JobCreate(BaseModel):
     target_id: int
     metric_keys: list[str]
@@ -1417,6 +1492,8 @@ class JobCreate(BaseModel):
     max_latency_s: float | None = Field(default=None, gt=0, le=600)
     # G-Eval metrics only: add this chatbot's human-scored cases as few-shot examples.
     use_calibration: bool = False
+    # DeepEval's strict_mode / include_reason / async_mode for every metric of the job.
+    deepeval: DeepEvalOptions | None = None
 
 
 class JobCancel(BaseModel):
@@ -1425,8 +1502,11 @@ class JobCancel(BaseModel):
 
 @app.post("/api/jobs")
 def api_create_job(body: JobCreate):
-    """Queues a batch of metrics; it runs in the background, even with no page open."""
-    _target_or_404(body.target_id)
+    """Queues a batch of metrics; it runs in the background, even with no page open.
+    Metrics that cannot run for this chatbot (not applicable, or no test case in
+    its golden set) are not sent: the job keeps them as `skipped` with the reason,
+    so its scan and report can say why."""
+    target = _target_or_404(body.target_id)
     if not body.metric_keys:
         raise HTTPException(status_code=400, detail="pick at least one metric")
     unknown = [k for k in body.metric_keys if get_spec(k) is None]
@@ -1439,13 +1519,24 @@ def api_create_job(body: JobCreate):
         build_judge(**_judge_overrides())
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
-    job_id = jobs.submit(body.target_id, body.metric_keys, {
+    theme, persona, probe_set, unavailable = _availability(target["config"])
+    runnable, skipped = [], []
+    for key in body.metric_keys:
+        spec = get_spec(key)
+        reason = _skip_reason(spec, theme, persona, probe_set, unavailable)
+        if reason:
+            skipped.append({"key": key, "title": spec.title, "reason": reason})
+        else:
+            runnable.append(key)
+    job_id = jobs.submit(body.target_id, runnable, {
         "thresholds": body.thresholds, "limit": body.limit, "check_consistency": body.check_consistency,
         "settings": body.settings,
         "enhancements": body.enhancements, "enhancement_options": body.enhancement_options,
         "max_latency_s": body.max_latency_s, "use_calibration": body.use_calibration,
+        **({"deepeval": body.deepeval.model_dump()} if body.deepeval else {}),
+        **({"skipped": skipped} if skipped else {}),
     })
-    return {"job_id": job_id, "status": "queued"}
+    return {"job_id": job_id, "status": "queued", "skipped": skipped}
 
 
 @app.get("/api/jobs/{job_id}")

@@ -610,6 +610,17 @@ function cardNotice(notApplicable, reason) {
   );
 }
 
+// Where a metric's questions come from: the chatbot's golden set, or a set of its own.
+const QUESTION_SOURCE_BADGE = {
+  golden: "golden set", own: "own questions", mixed: "own + golden", scenarios: "scenarios",
+};
+function questionSourceBadge(metric) {
+  const source = metric.question_source;
+  if (!source) return null;
+  return el("span", { className: `badge badge-source badge-source-${source.kind}`, title: source.label },
+    QUESTION_SOURCE_BADGE[source.kind] || source.kind);
+}
+
 function metricCard(metric, row) {
   const isRunning = state.runningKeys.has(metric.key);
   const hasRun = Boolean(row);
@@ -631,6 +642,7 @@ function metricCard(metric, row) {
       { className: "metric-card-head" },
       el("span", { className: `badge badge-${metric.ui_category}` }, metric.ui_category_label || metric.ui_category),
       el("span", { className: "badge badge-target" }, "chatbot"),
+      questionSourceBadge(metric),
       isTicked(metric) ? null : el("span", { className: "badge badge-unticked", title: "Not ticked under Metrics to run in the side panel: left out of the totals and Run all visible" }, "not ticked"),
       el("span", { className: "card-threshold" }, bound),
     ),
@@ -670,7 +682,7 @@ function metricCard(metric, row) {
         : el(
           "p",
           { className: "card-meta" },
-          `${cases} case${cases === 1 ? "" : "s"} available · ${metric.dataset}${metric.probe_set ? ` (${metric.probe_set})` : ""}`,
+          `${cases} case${cases === 1 ? "" : "s"} available · ${metric.question_source ? metric.question_source.label : metric.dataset}`,
         ),
       el("p", { className: "card-meta" }, hasRun ? formatRunTime(row.ts) : "–"),
     ),
@@ -976,13 +988,35 @@ async function renderHistory() {
     table.classList.toggle("hidden", scans.length === 0);
     table.tBodies[0].replaceChildren(...scans.map((scan, i) => {
       const [label, css] = SCAN_RESULT[scan.result] || [scan.result, ""];
-      const previous = scans[i + 1];
+      // Compare with any other scan the user picks (the one before by default).
+      const others = scans.filter((s) => s.job_id !== scan.job_id);
+      const defaultOther = scans[i + 1] || scans[i - 1];
+      const pick = others.length
+        ? el("select", { className: "compare-pick", "aria-label": `Scan to compare scan ${scan.version} with`,
+          title: "Pick the scan to compare with" },
+          ...others.map((s) => {
+            const option = el("option", { value: s.job_id }, `vs ${s.version}`);
+            option.selected = s.job_id === defaultOther.job_id;
+            return option;
+          }))
+        : null;
+      const chosen = () => others.find((s) => String(s.job_id) === pick.value);
+      const regressions = pick
+        ? el("a", { className: "button-link", target: "_blank", rel: "noopener" }, "Regressions")
+        : null;
+      const linkRegressions = () => {
+        regressions.href = `../regressions/regressions.html?job=${scan.job_id}&with=${pick.value}`;
+      };
+      if (pick) {
+        pick.addEventListener("change", linkRegressions);
+        linkRegressions();
+      }
       return el(
         "tr",
         {},
         el("td", {}, el("strong", {}, String(scan.version))),
         el("td", {}, scanTime(scan.started_at)),
-        el("td", { className: css }, `${label} · ${scan.passed} of ${scan.metrics}`,
+        el("td", { className: css }, `${label} · ${scanTally(scan)}`,
           // Paths found in the chatbot's replies, or a scan started for them.
           scan.note ? el("span", { className: "small", title: scan.note, "aria-label": scan.note }, " ⓘ") : ""),
         el("td", { className: "num" }, String(scan.passed)),
@@ -997,13 +1031,12 @@ async function renderHistory() {
           // Overview / Test Cases view of this run (runs/runs.html).
           el("a", { className: "button-link", href: `../runs/runs.html?target=${target.id}&job=${scan.job_id}#overview`,
             target: "_blank", rel: "noopener" }, "Overview"),
-          previous
-            ? el("button", { type: "button", onclick: () => compareScan(scan, previous) }, `Compare with ${previous.version}`)
-            : "",
-          // Case by case, side by side (regressions/regressions.html).
-          previous
-            ? el("a", { className: "button-link", href: `../regressions/regressions.html?job=${scan.job_id}&with=${previous.job_id}`,
-              target: "_blank", rel: "noopener" }, "Regressions")
+          pick
+            ? el("span", { className: "compare-group" },
+              pick,
+              el("button", { type: "button", onclick: () => compareScan(scan, chosen()) }, "Compare"),
+              // Case by case, side by side (regressions/regressions.html).
+              regressions)
             : ""),
       );
     }));

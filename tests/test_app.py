@@ -704,7 +704,7 @@ def test_metrics_include_card_copy_and_cases_available(client):
     assert rows["prompt_injection"]["cases_available"] == 1
     assert rows["prompt_injection"]["dataset"] == "security_probes"
     assert rows["jailbreak"]["ui_category"] == "security"
-    assert rows["bias"]["scale_hint"].startswith("0.00")
+    assert rows["bias"]["scale_hint"].startswith("1.00")  # DeepEval's scale: 1 = clean
     assert rows["answer_relevancy"]["question"].endswith("?")
 
 
@@ -1188,3 +1188,69 @@ def test_delete_one_run(client, app_module):
     rows = client.get(f"/api/history?target_id={target['id']}&metric_key=answer_relevancy").json()
     assert [r["id"] for r in rows] == [keep]
     assert client.delete(f"/api/runs/{gone}").status_code == 404
+
+
+def test_job_keeps_metrics_it_cannot_run_with_the_reason(client, app_module):
+    """Not applicable (no tool calls path) and no test case (no goldens without
+    context in the set) are not sent: the job, its scan and /api/metrics say why."""
+    target = _create_target(client)
+    theme = target["config"].get("theme") or "generic"
+    app_module.goldens_store.add_golden(theme, "Q with facts", "A", ["a fact"])
+    for g in app_module.goldens_store.load_goldens(theme=theme):
+        if not g["context"]:
+            app_module.goldens_store.delete_golden(g["id"])
+    with patch.object(app_module, "build_judge", return_value=object()):
+        created = client.post("/api/jobs", json={"target_id": target["id"],
+                                                 "metric_keys": ["tool_correctness", "self_check"]}).json()
+    reasons = {s["key"]: s["reason"] for s in created["skipped"]}
+    assert reasons["tool_correctness"].startswith("Not applicable")
+    assert "goldens without context" in reasons["self_check"]
+    job = client.get(f"/api/jobs/{created['job_id']}").json()
+    assert job["metric_keys"] == [] and job["options"]["skipped"] == created["skipped"]
+    assert client.get(f"/api/scans/{created['job_id']}").json()["skipped"] == created["skipped"]
+    metrics = {m["key"]: m for m in client.get("/api/metrics", params={"target_id": target["id"]}).json()}
+    assert metrics["self_check"]["skip_reason"] == reasons["self_check"]
+    assert metrics["answer_relevancy"]["skip_reason"] is None
+
+
+def test_scratch_goldens_endpoint(client, app_module):
+    target = _create_target(client)
+    calls = []
+
+    def fake(theme, judge, name, persona, count, review):
+        calls.append((theme, name, count, review))
+        return [{"id": "g_x", "question": "Q", "expected_answer": "A", "context": []}]
+
+    with patch.object(app_module, "build_judge", return_value=object()), \
+         patch.object(app_module, "generate_goldens_from_scratch", side_effect=fake):
+        r = client.post("/api/goldens/generate-scratch", json={"target_id": target["id"], "count": 3})
+    assert r.status_code == 200 and r.json()["created"] == 1
+    assert calls[0][2:] == (3, False)
+    with patch.object(app_module, "build_judge", return_value=object()), \
+         patch.object(app_module, "generate_goldens_from_scratch", side_effect=RuntimeError("judge down")):
+        r = client.post("/api/goldens/generate-scratch", json={"target_id": target["id"]})
+    assert r.status_code == 502 and "judge down" in r.json()["detail"]
+    assert client.post("/api/goldens/generate-scratch", json={"target_id": 999999}).status_code == 404
+
+
+def test_metrics_say_where_their_questions_come_from(client):
+    target = _create_target(client)
+    metrics = {m["key"]: m for m in client.get("/api/metrics", params={"target_id": target["id"]}).json()}
+    assert metrics["answer_relevancy"]["question_source"]["kind"] == "golden"
+    assert metrics["self_check"]["question_source"]["label"].endswith("goldens without context")
+    assert metrics["prompt_injection"]["question_source"]["kind"] == "own"
+    assert metrics["toxicity"]["question_source"]["kind"] == "mixed"
+
+
+def test_a_job_asks_each_golden_once_for_all_its_metrics(client, app_module):
+    """DeepEval's test case: one reply per golden, scored by every metric of the job."""
+    target = _create_target(client)
+    with patch.object(app_module, "build_judge", return_value=object()), \
+         patch.object(app_module, "SPECS_BY_KEY", {"answer_relevancy": _fake_spec([]), "bias": _fake_spec([])}), \
+         patch.object(app_module.HttpTargetClient, "chat", return_value=_REPLY) as chat:
+        job_id = client.post("/api/jobs", json={"target_id": target["id"],
+                                                "metric_keys": ["answer_relevancy", "bias"]}).json()["job_id"]
+        _run_jobs(app_module)
+    assert chat.call_count == 1  # both metrics scored the same reply
+    assert len(client.get(f"/api/jobs/{job_id}").json()["results"]) == 2
+    assert job_id not in app_module._job_clients  # dropped once the job ended
