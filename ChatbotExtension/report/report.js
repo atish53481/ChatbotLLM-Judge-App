@@ -450,12 +450,15 @@ const SECTION_OPTIONS = [
   ["cases", "Test case results"],
   ["improve", "How to improve the score"],
   ["details", "Metric details (case cards)"],
-  ["passed", "Passed cases in metric details"],
+  ["passed", "Passed cases in metric details (doubles the page count)"],
   ["diff", "Bold differing words"],
   ["appendix", "How to read the scores"],
 ];
 const DEFAULT_OPTIONS = Object.freeze({
   ...Object.fromEntries(SECTION_OPTIONS.map(([key]) => [key, true])),
+  // Passed cases are already rows in the test case table; their cards made
+  // the PDF about twice as long and slow to preview, so they are opt-in.
+  passed: false,
   metrics: null, // null = every metric that ran; else the chosen metric keys
 });
 

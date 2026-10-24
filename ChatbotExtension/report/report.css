@@ -220,7 +220,10 @@ b.diff { font-weight: 700; }
 .improve-label { margin: 6px 0 2px; font-weight: 600; color: var(--muted); }
 .improve ul { margin: 0; padding-left: 18px; }
 
-.metric { break-inside: avoid-page; }
+/* Metric sections often run longer than a page, so they may break; keeping
+   them whole left half-empty pages and made the print preview slow. Headings
+   still stay with what follows. */
+h2, h3, h4 { break-after: avoid; }
 .page-break { break-before: page; }
 
 @media print {

@@ -16,11 +16,30 @@ if not exist "..\..\.venv\Scripts\python.exe" (
     exit /b 1
 )
 
-if not exist "frontend\node_modules" (
-    echo [WARN] frontend\node_modules is missing. Run "npm install" in the frontend folder once first.
-    pause
-    exit /b 1
+"..\..\.venv\Scripts\python.exe" -c "import groq" >nul 2>&1
+if errorlevel 1 (
+    echo [INFO] Installing chatbot backend dependency...
+    "..\..\.venv\Scripts\python.exe" -m pip install groq==1.7.0
+    if errorlevel 1 (
+        echo [ERROR] Backend dependency installation failed.
+        pause
+        exit /b 1
+    )
 )
+
+if not exist "frontend\node_modules\vite\bin\vite.js" (
+    echo [INFO] Installing frontend dependencies...
+    pushd frontend
+    call npm install
+    if errorlevel 1 (
+        popd
+        echo [ERROR] Frontend dependency installation failed.
+        pause
+        exit /b 1
+    )
+    popd
+)
+
 
 REM Starting a second copy puts two servers on one port and breaks chat: open the running one instead.
 netstat -ano | findstr /r /c:":8202 .*LISTENING" /c:":5173 .*LISTENING" >nul

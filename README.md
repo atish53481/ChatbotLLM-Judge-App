@@ -269,9 +269,11 @@ selected chatbot:
 - **How to improve the score**: failed metrics furthest from passing first, then passed
   metrics that still had failed cases, each with its failed test cases, the score if they
   were fixed, the judge's reasons, what to fix in the chatbot and what to check in the test;
-- **Metric details**: each metric's meaning and verdict and every case (failed first) with
+- **Metric details**: each metric's meaning and verdict and a card per failed case with
   the question, actual and expected answer (differing words in bold for single-turn cases)
-  and the judge's reason; then how to read the scores.
+  and the judge's reason; then how to read the scores. Cards for passed cases are off by
+  default (they are already rows in the test case table and double the PDF's length);
+  tick "Passed cases in metric details" to include them.
 
 Before saving, tick on the page which sections and which metrics (All / Failed only /
 None, or one by one) go into the PDF; the choice is remembered in this browser and is

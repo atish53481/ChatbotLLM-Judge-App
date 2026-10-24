@@ -23,7 +23,7 @@ try:
 except ImportError:
     pass
 
-GROQ_MODEL = os.getenv("CHATBOT_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL = os.getenv("CHATBOT_MODEL", "qwen/qwen3.8-27b")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 # Optional: any OpenAI-compatible API instead of Groq (e.g. Command Code).
 CHATBOT_BASE_URL = os.getenv("CHATBOT_BASE_URL", "")

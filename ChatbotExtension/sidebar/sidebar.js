@@ -739,7 +739,11 @@ $("golden-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   $("golden-form-error").textContent = "";
   const target = currentTarget();
-  if (!target) return;
+  if (!target) {
+    // Goldens belong to the selected chatbot's theme, so there is nowhere to add one yet.
+    $("golden-form-error").textContent = "Add or select a chatbot first: golden answers are saved to its theme.";
+    return;
+  }
   const context = $("golden-context").value.split("\n").map((s) => s.trim()).filter(Boolean);
   const categories = $("golden-categories").value.split(",").map((s) => s.trim()).filter(Boolean);
   const expectedTools = $("golden-tools").value.split(",").map((s) => s.trim()).filter(Boolean);

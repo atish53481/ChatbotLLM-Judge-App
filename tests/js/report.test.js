@@ -253,8 +253,14 @@ test("how to improve covers failed metrics and passed metrics with failed cases"
   assert.match(items[0].textContent, /Fix the chatbot/);
 });
 
-test("case cards: bold diff for single-turn cases, none for conversations", async () => {
+test("passed case cards are opt-in: off by default, listed when ticked", async () => {
   const { report } = await loadReport();
+  assert.equal(byClass(report, "case").length, 1, "only the failed case gets a card");
+  assert.match(report.textContent, /passed cases? not listed/);
+});
+
+test("case cards: bold diff for single-turn cases, none for conversations", async () => {
+  const { report } = await loadReport({ saved: { reportOptions: { passed: true } } });
   const cases = byClass(report, "case");
   const relevancy = cases.find((c) => /TC-01 · ✕ fail/.test(c.textContent));
   assert.deepEqual(byClass(relevancy, "diff").map((b) => b.textContent), ["5", "7"]);
