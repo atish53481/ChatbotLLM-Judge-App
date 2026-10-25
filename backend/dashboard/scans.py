@@ -61,6 +61,21 @@ def _judge_model(results: list[dict]) -> str:
     return model.replace(" (Local Model)", "")
 
 
+def _metric_score(result: dict) -> dict:
+    """One metric's score in a scan and its spread (population std) over the
+    test cases it scored, for the runs table and its error bars."""
+    scores = [r["score"] for r in result.get("rows") or [] if r.get("score") is not None]
+    mean = sum(scores) / len(scores) if scores else None
+    std = (sum((x - mean) ** 2 for x in scores) / len(scores)) ** 0.5 if scores else None
+    return {"key": result["key"], "score": result.get("score"), "status": result.get("status"),
+            "direction": result.get("direction", "higher"),
+            "std": round(std, 3) if std is not None else None, "cases": len(scores)}
+
+
+# Job options that say how a scan was run (its "hyperparameters" in the Overview).
+_RUN_OPTIONS = ("limit", "metric_concurrency", "deepeval", "check_consistency", "enhancements", "max_latency_s")
+
+
 def _summary(version: int, job: dict, note: str = "") -> dict:
     results = job["results"] or []
     passed = sum(r.get("status") == _PASSED for r in results)
@@ -92,6 +107,7 @@ def _summary(version: int, job: dict, note: str = "") -> dict:
         # Metrics the job left out, each with why (not applicable, or no test case).
         "skipped": (job["options"] or {}).get("skipped") or [],
         "average": round(sum(scores) / len(scores), 3) if scores else None,
+        "metric_scores": [_metric_score(r) for r in results],
         "judge_model": _judge_model(results),
         "judge_tokens": sum((r.get("judge") or {}).get("tokens") or 0 for r in results),
         "started_at": job.get("started_at") or job.get("created_at"),
@@ -116,7 +132,9 @@ def get_scan(conn, job_id: int) -> dict | None:
     version = next((v for v, j in numbered if j["id"] == job_id), None)
     if version is None:
         return None
-    return {**_summary(version, job, _notes(numbered).get(job_id, "")), "target_id": job["target_id"], "results": job["results"] or []}
+    options = job["options"] or {}
+    return {**_summary(version, job, _notes(numbered).get(job_id, "")), "target_id": job["target_id"],
+            "run_options": {k: options[k] for k in _RUN_OPTIONS if k in options}, "results": job["results"] or []}
 
 
 def compare_scans(conn, job_id: int, other_id: int) -> dict | None:

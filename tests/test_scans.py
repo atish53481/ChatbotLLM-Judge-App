@@ -86,3 +86,42 @@ def test_scan_lists_the_metrics_it_did_not_run(tmp_path):
     job_id = storage.add_job(conn, bot, ["faithfulness"], {"skipped": skipped})
     storage.update_job(conn, job_id, status="done", results=[_result("faithfulness", "pass", 0.9)])
     assert scans.get_scan(conn, job_id)["skipped"] == skipped
+
+
+def test_scan_lists_each_metrics_score_and_spread(tmp_path):
+    """The runs table shows each metric's score; the chart its spread over the cases."""
+    conn = storage.init_db(str(tmp_path / "s.db"))
+    bot = storage.add_target(conn, "bot", "http", {})
+    rows = [{"golden_id": "g1", "score": 0.6, "passed": False}, {"golden_id": "g2", "score": 1.0, "passed": True}]
+    _scan(conn, bot, [{**_result("faithfulness", "fail", 0.8), "rows": rows},
+                      _result("toxicity", "error", None, "lower")])
+    faith, tox = scans.list_scans(conn, bot)[0]["metric_scores"]
+    assert faith == {"key": "faithfulness", "score": 0.8, "status": "fail", "direction": "higher",
+                     "std": 0.2, "cases": 2}
+    assert tox["score"] is None and tox["std"] is None and tox["cases"] == 0
+
+
+def test_scan_detail_carries_its_run_options(tmp_path):
+    conn = storage.init_db(str(tmp_path / "s.db"))
+    bot = storage.add_target(conn, "bot", "http", {})
+    job_id = storage.add_job(conn, bot, ["faithfulness"], {"limit": 1, "metric_concurrency": 3,
+                                                          "deepeval": {"strict_mode": True}, "skipped": []})
+    storage.update_job(conn, job_id, status="done", results=[_result("faithfulness", "pass", 0.9)])
+    assert scans.get_scan(conn, job_id)["run_options"] == {"limit": 1, "metric_concurrency": 3,
+                                                            "deepeval": {"strict_mode": True}}
+
+
+def test_delete_one_scan_removes_its_job_and_runs(app_module, client):
+    bot = _create_target(client, name="Delete Bot", config={"url": "http://127.0.0.1:9/del"})
+    conn = app_module._conn
+    keep = _scan(conn, bot["id"], [_result("faithfulness", "pass", 0.9)])
+    gone = _scan(conn, bot["id"], [_result("faithfulness", "fail", 0.4)])
+    storage.update_job(conn, gone, started_at="2026-10-23T10:00:00Z", finished_at="2026-10-23T10:05:00Z")
+    storage.record_run(conn, bot["id"], "faithfulness", 0.4, False, "2026-10-23T10:03:00Z")  # in the scan
+    storage.record_run(conn, bot["id"], "faithfulness", 0.9, True, "2026-10-22T10:03:00Z")   # another scan's
+    assert client.delete(f"/api/scans/{gone}").json() == {"deleted": gone, "runs_deleted": 1}
+    assert [s["job_id"] for s in client.get(f"/api/targets/{bot['id']}/scans").json()] == [keep]
+    assert [r[0] for r in conn.execute("SELECT score FROM runs WHERE target_id = ?", (bot["id"],))] == [0.9]
+    assert client.delete(f"/api/scans/{gone}").status_code == 404
+    running = storage.add_job(conn, bot["id"], ["faithfulness"], {})
+    assert client.delete(f"/api/scans/{running}").status_code == 409

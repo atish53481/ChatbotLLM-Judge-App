@@ -15,10 +15,12 @@
       <div class="nav-brand"><span class="nav-logo" aria-hidden="true">LJ</span> LLM Judge</div>
       <label class="nav-target">Chatbot <select id="target"></select></label>
       <nav>
+        <a href="#evaluation" data-view="evaluation">◷ Evaluation</a>
         <a href="#home" data-view="home">⌂ Home</a>
         <p class="nav-group">Test run</p>
         <a href="#overview" data-view="overview">▦ Overview</a>
         <a href="#cases" data-view="cases">⚗ Test Cases</a>
+        <a href="#compare" data-view="compare">⇆ Compare Test Results</a>
         <p class="nav-group">Compare</p>
         <a id="nav-regressions" href="../regressions/regressions.html">⇄ Regressions</a>
         <p class="nav-group">App</p>
@@ -30,6 +32,7 @@
       <p class="muted">Loading…</p>
     </main>
   </div>
+  <div id="tip" class="tip" role="tooltip" hidden></div>
   <script src="../lib/api.js"></script>
   <script src="../lib/announce.js"></script>
   <script src="../lib/ui.js"></script>

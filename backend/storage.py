@@ -485,6 +485,27 @@ def delete_run(conn: sqlite3.Connection, run_id: int) -> bool:
         return cur.rowcount > 0
 
 
+def delete_scan(conn: sqlite3.Connection, job_id: int) -> int | None:
+    """Removes one finished scan: its job, and the target's runs of the job's
+    metrics recorded between the job's start and finish (runs carry no job id).
+    Returns how many runs went, or None when there is no such finished job."""
+    with _LOCK:
+        job = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if job is None or job["status"] in ("queued", "running"):
+            return None
+        keys = json.loads(job["metric_keys"] or "[]")
+        start = job["started_at"] or job["created_at"]
+        runs = 0
+        if keys and start and job["finished_at"]:
+            marks = ",".join("?" * len(keys))
+            runs = conn.execute(
+                f"DELETE FROM runs WHERE target_id = ? AND metric_key IN ({marks}) AND ts >= ? AND ts <= ?",
+                (job["target_id"], *keys, start, job["finished_at"])).rowcount
+        conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+        conn.commit()
+        return runs
+
+
 # Background runs (backend/dashboard/jobs.py): one row per batch of metrics.
 JOB_INTERRUPTED = "the backend stopped before this run finished; run it again"
 _JOB_JSON = {"metric_keys": [], "options": {}, "results": [], "current": None, "discovered": {}}

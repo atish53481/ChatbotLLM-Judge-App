@@ -662,6 +662,17 @@ def api_delete_run(run_id: int):
     return {"deleted": run_id}
 
 
+@app.delete("/api/scans/{job_id}")
+def api_delete_scan(job_id: int):
+    """Deletes one finished test run (scan) and the runs it recorded."""
+    job = storage.get_job(_conn, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="scan not found")
+    if job["status"] in ("queued", "running"):
+        raise HTTPException(status_code=409, detail="this run is still going; stop it first")
+    return {"deleted": job_id, "runs_deleted": storage.delete_scan(_conn, job_id)}
+
+
 @app.post("/api/session/start")
 def api_session_start():
     """Mark a fresh panel load: views then show only the runs after `since_id`.

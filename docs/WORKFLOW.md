@@ -280,7 +280,7 @@ Each row opens, in new tabs:
 | Button | Page | Shows |
 | --- | --- | --- |
 | Open | `scan/scan.html?job=<job id>` | One scan in full (`GET /api/scans/{job id}`): overall result, started / duration / judge / tokens, the metric table, then every metric's reason and cases (question, reply, expected, score, verdict, judge's reason); links to the scans before and after. |
-| Overview | `runs/runs.html?target=&job=#overview` | Test runs: **Home** (all runs of a chatbot), a run's **Overview**, and its **Test Cases** (`#cases`): each golden or probe with every metric's verdict on it. |
+| Overview | `runs/runs.html?target=&job=#overview` | Test runs: **Evaluation** (`#evaluation`, every run of a chatbot: date range, metric chart with ±1 std error bars, % trends over the last 7 runs, runs table; tick two runs to compare), **Home**, a run's **Overview** (properties, results dial, run settings, radar, Histogram / Average / Median / Breakdown), its **Test Cases** (`#cases`: filters, columns, per-metric tabs) and **Compare Test Results** (`#compare&with=`: two runs side by side, matched by golden or input). |
 | Compare with N | inline in the dashboard | Metric by metric against the scan before (`GET /api/scans/{id}/compare?with=`): better / worse / same / new / removed. |
 | Regressions | `regressions/regressions.html?job=&with=` | The two scans case by case (`GET /api/scans/{id}/cases?with=`): improved, regressed, new, removed; filter by metric or search; click a case for every metric's verdict on both sides. |
 
