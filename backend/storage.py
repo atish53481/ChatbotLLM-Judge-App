@@ -540,6 +540,13 @@ def active_jobs(conn: sqlite3.Connection, target_id: int) -> list[dict]:
     return [_job(r) for r in rows]
 
 
+def all_active_jobs(conn: sqlite3.Connection) -> list[dict]:
+    """Queued and running jobs of every chatbot."""
+    with _LOCK:
+        rows = conn.execute("SELECT * FROM jobs WHERE status IN ('queued', 'running') ORDER BY id").fetchall()
+    return [_job(r) for r in rows]
+
+
 def next_queued_job(conn: sqlite3.Connection) -> dict | None:
     with _LOCK:
         row = conn.execute("SELECT * FROM jobs WHERE status = 'queued' ORDER BY id LIMIT 1").fetchone()

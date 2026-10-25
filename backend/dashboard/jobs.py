@@ -16,20 +16,28 @@ import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
-from backend import storage, traffic
+from backend import cancel, storage, traffic
 from backend.dashboard.runner import RunCancelled, _now_iso
 
 logger = logging.getLogger(__name__)
 
 
+# Bounds for metrics run at once, from .env or a job's own "metric_concurrency".
+MIN_METRIC_CONCURRENCY, MAX_METRIC_CONCURRENCY = 1, 8
+
+
 def _metric_concurrency() -> int:
     try:
-        return max(1, min(8, int(os.getenv("JUDGE_METRIC_CONCURRENCY", "2"))))
+        return clamp_metric_concurrency(int(os.getenv("JUDGE_METRIC_CONCURRENCY", "2")))
     except ValueError:
         return 2
 
 
-# Metrics of one job run at once; 1 = one after another.
+def clamp_metric_concurrency(value: int) -> int:
+    return max(MIN_METRIC_CONCURRENCY, min(MAX_METRIC_CONCURRENCY, int(value)))
+
+
+# Metrics of one job run at once; 1 = one after another. A job may ask for its own.
 METRIC_CONCURRENCY = _metric_concurrency()
 
 
@@ -76,6 +84,10 @@ class JobQueue:
             storage.update_job(self._conn, job_id, status="cancelled", finished_at=_now_iso())
         return True
 
+    def cancel_all(self) -> list[int]:
+        """Stops every job of every chatbot: the running one and the whole queue."""
+        return [j["id"] for j in storage.all_active_jobs(self._conn) if self.cancel(j["id"])]
+
     def process_next(self) -> bool:
         job = storage.next_queued_job(self._conn)
         if job is None:
@@ -107,7 +119,9 @@ class JobQueue:
                     raise RunCancelled()
 
             try:
-                result = self._run_metric(job, key, on_progress)
+                # Stop also reaches the next chatbot / judge call, not just the next step.
+                with cancel.watching(lambda: self._is_cancelled(job_id) or stop.is_set()):
+                    result = self._run_metric(job, key, on_progress)
             except JobFailed as e:
                 fail(str(e))
                 return
@@ -124,7 +138,9 @@ class JobQueue:
                 done = [results[i] for i in sorted(results)]
             storage.update_job(self._conn, job_id, results=done)
 
-        workers = 1 if job["options"].get("kind") == "pairwise" else min(METRIC_CONCURRENCY, len(keys))
+        wanted = job["options"].get("metric_concurrency")
+        parallel = clamp_metric_concurrency(wanted) if isinstance(wanted, int) else METRIC_CONCURRENCY
+        workers = 1 if job["options"].get("kind") == "pairwise" else min(parallel, len(keys))
         if workers > 1:
             with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"llm-judge-job{job_id}") as pool:
                 for future in [pool.submit(run_one, i, key) for i, key in enumerate(keys)]:

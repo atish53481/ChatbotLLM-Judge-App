@@ -1205,6 +1205,9 @@ $("target-select").addEventListener("change", () => {
 });
 $("check-consistency").addEventListener("change", () =>
   settings.set("checkConsistency", $("check-consistency").checked));
+// Run mode: Low = 1 case per metric, High = all (null); shared with the dashboard.
+$("run-mode").addEventListener("change", () =>
+  settings.set("casesPerRun", $("run-mode").value ? Number($("run-mode").value) : null));
 
 // --- Metrics to run: a tick and a threshold per metric ------------------------
 async function setChecked(keys) {
@@ -1216,6 +1219,8 @@ async function renderThresholds() {
   const thresholds = await settings.get("thresholds", {});
   const saved = await settings.get("checkedMetrics", null);
   $("check-consistency").checked = await settings.get("checkConsistency", false);
+  $("run-mode").value = String((await settings.get("casesPerRun", null)) || "");
+  bindParallelSelect($("parallel-metrics")).catch(() => {});
   const known = new Set(state.metrics.map((m) => m.key));
   state.checked = new Set((saved ?? [...known]).filter((key) => known.has(key)));
   $("metric-check-count").textContent = `(${state.checked.size} of ${state.metrics.length} ticked)`;
@@ -1339,6 +1344,7 @@ settings.onChange((changes) => {
     renderThresholds();
   }
   if (changes.thresholds && target) renderLatest();
+  if (changes.casesPerRun) $("run-mode").value = String(changes.casesPerRun.newValue || "");
 });
 
 async function loadEverything() {

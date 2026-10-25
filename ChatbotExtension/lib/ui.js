@@ -386,6 +386,10 @@ async function runMetrics(target, metricKeys, onProgress, control = {}) {
   if (!metricKeys.length) return [];  // nothing this chatbot can run
   const thresholds = await settings.get("thresholds", {});
   const checkConsistency = await settings.get("checkConsistency", false);
+  // Run mode (dashboard header), for runs started on any page: Low = 1 case per
+  // metric, High = every case (null). The dashboard passes its own as control.limit.
+  const limit = control.limit || (await settings.get("casesPerRun", null));
+  const parallel = await settings.get("metricConcurrency", null);
   const picked = Object.fromEntries(metricKeys
     .filter((key) => typeof thresholds[key] === "number")
     .map((key) => [key, thresholds[key]]));
@@ -393,7 +397,8 @@ async function runMetrics(target, metricKeys, onProgress, control = {}) {
     method: "POST",
     body: {
       target_id: target.id, metric_keys: metricKeys, thresholds: picked,
-      limit: control.limit || undefined, check_consistency: checkConsistency,
+      limit: limit || undefined, check_consistency: checkConsistency,
+      metric_concurrency: parallel || undefined,
       ...(await runOptionsBody(metricKeys)),
     },
   });
@@ -401,6 +406,34 @@ async function runMetrics(target, metricKeys, onProgress, control = {}) {
   // Lets the other page (side panel or dashboard) pick up and show this run.
   await settings.set("startedJob", { targetId: target.id, jobId: job.job_id, at: Date.now() });
   return followJob(target, job.job_id, onProgress, control);
+}
+
+// A "Parallel metrics" <select>: Default (the server's JUDGE_METRIC_CONCURRENCY)
+// or any count from the server's min to max (GET /api/run-limits). Saved as
+// setting "metricConcurrency" (null = default), shared by the side panel and dashboard.
+async function bindParallelSelect(select) {
+  let limits = { metric_concurrency: { default: 2, min: 1, max: 8 }, judge_concurrency: 4 };
+  try {
+    limits = await api("/api/run-limits");
+  } catch {
+    // Older backend: the usual bounds.
+  }
+  const { default: fallback, min, max } = limits.metric_concurrency;
+  const options = [el("option", { value: "" }, `Default · ${fallback}`)];
+  for (let n = min; n <= max; n += 1) {
+    const label = n === min ? `${n} · one at a time (min)` : n === max ? `${n} (max)` : String(n);
+    options.push(el("option", { value: String(n) }, label));
+  }
+  select.replaceChildren(...options);
+  select.title = `How many metrics of a run are scored at the same time (${min} to ${max}). `
+    + `The judge takes at most ${limits.judge_concurrency} calls at once, so more metrics than that wait for it.`;
+  const show = (value) => { select.value = value ? String(value) : ""; };
+  show(await settings.get("metricConcurrency", null));
+  select.addEventListener("change", () =>
+    settings.set("metricConcurrency", select.value ? Number(select.value) : null));
+  settings.onChange((changes) => {
+    if (changes.metricConcurrency) show(changes.metricConcurrency.newValue);
+  });
 }
 
 // The optional run settings saved on the Advanced page ("runOptions"):
@@ -503,11 +536,11 @@ async function activeJob(target) {
   }
 }
 
+// Stop halts the whole app, not just this run: every running and queued job of
+// every chatbot ends at its next chatbot or judge call.
 async function stopRun(control) {
   control.stopped = true;
-  if (control.jobId) {
-    await api(`/api/jobs/${control.jobId}/cancel`, { method: "POST", body: {} });
-  }
+  await api("/api/jobs/cancel-all", { method: "POST", body: {} });
 }
 
 // Case details for Details and the report from a /api/runs/latest row's stored

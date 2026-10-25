@@ -65,11 +65,20 @@ body.dash {
 }
 .header-controls select,
 .header-controls input {
-  min-width: 130px; padding: 5px 8px; border-radius: 4px;
+  min-width: 150px; height: 34px; box-sizing: border-box; padding: 0 8px; border-radius: 4px;
   background: #fff; color: #231f1b; border: 1px solid transparent;
-  text-transform: none; letter-spacing: 0;
+  /* The label above is 9px caps; the field itself reads at body size. */
+  font-size: 13px; text-transform: none; letter-spacing: 0;
 }
-.header-controls button { padding: 6px 12px; border-radius: 4px; }
+/* Long values (a model name, "Low - 1 case per metric") fit without cutting off. */
+.header-controls #judge-model { min-width: 210px; }
+.header-controls #cases-select { min-width: 180px; }
+/* Every control in the bar is the same height, so the row lines up. */
+.header-controls button,
+.header-controls a.button-link { height: 34px; box-sizing: border-box; padding: 0 12px; border-radius: 4px;
+  display: inline-flex; align-items: center; }
+.header-controls .segmented { height: 34px; box-sizing: border-box; }
+.header-controls .segmented button { height: 100%; }
 /* Secondary header actions: outlined on the dark bar, so the terracotta
    primary ("Run all visible", the active view) stays the one that stands out. */
 .header-controls .ghost {
@@ -641,6 +650,12 @@ body.dash {
   color: inherit;
   text-decoration: none;
 }
+
+/* Scan history: every row's actions on one line, the long result text wraps instead. */
+td.scan-actions { white-space: nowrap; width: 1%; }
+td.scan-actions > * { vertical-align: middle; }
+td.scan-actions > * + * { margin-left: 4px; }
+td.scan-result { min-width: 180px; max-width: 320px; }
 
 /* Scan history: pick the scan to compare with, then Compare / Regressions. */
 .compare-group {

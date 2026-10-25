@@ -16,11 +16,12 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from backend import storage, traffic, usage
+from backend import cancel, storage, traffic, usage
 from backend.dashboard import hardening
 from backend.dashboard import scans as scan_history
 from backend.dashboard.compare import compare_runs
-from backend.dashboard.jobs import JobFailed, JobQueue
+from backend.dashboard import jobs as jobs_module
+from backend.dashboard.jobs import MAX_METRIC_CONCURRENCY, MIN_METRIC_CONCURRENCY, JobFailed, JobQueue
 from backend.dashboard.pairwise import run_pairwise
 from backend.dashboard.runner import (
     NEEDS_OWN_SOURCES, RunCancelled, missing_target_fields, judge_one, run_spec,
@@ -32,7 +33,7 @@ from backend.datasets import custom_metrics as custom_store
 from backend.datasets import goldens as goldens_store
 from backend.datasets import simulator
 from backend.datasets import security_probes as probes_store
-from backend.judges.judge import build_judge, judge_config
+from backend.judges.judge import JUDGE_CONCURRENCY, build_judge, judge_config
 from backend.metrics_catalog import (
     DEFAULT_THEME, ENVIRONMENTS, GROUPS, PROBE_DATASETS, SPECS_BY_KEY, UI_CATEGORIES,
     UI_CATEGORY_LABELS, all_specs, ask, get_spec as _catalog_spec, metric_options,
@@ -248,9 +249,9 @@ def _after_job(job_id: int) -> None:
     if not entry:
         return
     storage.update_job(_conn, job_id, discovered=entry["paths"])
-    if not entry["keys"]:
-        return
     job = storage.get_job(_conn, job_id)
+    if not entry["keys"] or job["status"] == "cancelled":
+        return  # a stopped job starts nothing new
     options = {**job["options"], "auto_discovered": {"from_job": job_id, "paths": entry["paths"]}}
     follow_up = jobs.submit(job["target_id"], entry["keys"], options)
     traffic.log("== job %s: queued job %s with %d metrics the found paths switched on",
@@ -1435,17 +1436,22 @@ def api_run(req: RunRequest):
                     "done": done, "total": total, "phase": phase, "question": question,
                 }
 
+    def stopped() -> bool:
+        with _progress_lock:
+            return bool(req.run_id) and req.run_id in _cancelled
+
     try:
-        return run_spec(
-            spec, judge, target, req.target_id, _conn, theme=theme, threshold=req.threshold,
-            on_progress=on_progress, persona=row["config"].get("persona", ""), limit=req.limit,
-            probe_set=row["config"].get("probe_set", ""), check_consistency=req.check_consistency,
-            metric_kwargs=metric_options(spec, req.settings, row["config"]),
-            enhancements=req.enhancements, enhancement_options=req.enhancement_options,
-            max_latency_s=req.max_latency_s, price_per_mtok=_judge_price(),
-            calibration_examples=_calibration_examples(req.target_id, req.metric_key)
-            if req.use_calibration else None,
-        )
+        with cancel.watching(stopped):
+            return run_spec(
+                spec, judge, target, req.target_id, _conn, theme=theme, threshold=req.threshold,
+                on_progress=on_progress, persona=row["config"].get("persona", ""), limit=req.limit,
+                probe_set=row["config"].get("probe_set", ""), check_consistency=req.check_consistency,
+                metric_kwargs=metric_options(spec, req.settings, row["config"]),
+                enhancements=req.enhancements, enhancement_options=req.enhancement_options,
+                max_latency_s=req.max_latency_s, price_per_mtok=_judge_price(),
+                calibration_examples=_calibration_examples(req.target_id, req.metric_key)
+                if req.use_calibration else None,
+            )
     finally:
         if req.run_id:
             with _progress_lock:
@@ -1494,6 +1500,8 @@ class JobCreate(BaseModel):
     use_calibration: bool = False
     # DeepEval's strict_mode / include_reason / async_mode for every metric of the job.
     deepeval: DeepEvalOptions | None = None
+    # Metrics of this job run at once (the web app's "Parallel metrics"); None = the server's default.
+    metric_concurrency: int | None = Field(default=None, ge=MIN_METRIC_CONCURRENCY, le=MAX_METRIC_CONCURRENCY)
 
 
 class JobCancel(BaseModel):
@@ -1535,8 +1543,20 @@ def api_create_job(body: JobCreate):
         "max_latency_s": body.max_latency_s, "use_calibration": body.use_calibration,
         **({"deepeval": body.deepeval.model_dump()} if body.deepeval else {}),
         **({"skipped": skipped} if skipped else {}),
+        **({"metric_concurrency": body.metric_concurrency} if body.metric_concurrency else {}),
     })
     return {"job_id": job_id, "status": "queued", "skipped": skipped}
+
+
+@app.get("/api/run-limits")
+def api_run_limits():
+    """What the web app's "Parallel metrics" may pick, and the server's caps."""
+    return {
+        "metric_concurrency": {"default": jobs_module.METRIC_CONCURRENCY,
+                               "min": MIN_METRIC_CONCURRENCY, "max": MAX_METRIC_CONCURRENCY},
+        # Judge calls in flight across the app: more parallel metrics wait for these.
+        "judge_concurrency": JUDGE_CONCURRENCY,
+    }
 
 
 @app.get("/api/jobs/{job_id}")
@@ -1590,6 +1610,15 @@ def api_compare_scan_cases(job_id: int, with_: int = Query(alias="with")):
 @app.post("/api/jobs/{job_id}/cancel")
 def api_cancel_job(job_id: int, _body: JobCancel):
     return {"cancelling": jobs.cancel(job_id)}
+
+
+@app.post("/api/jobs/cancel-all")
+def api_cancel_all_jobs(_body: JobCancel):
+    """The web app's Stop: every running and queued job of every chatbot, and any
+    /api/run in flight, stop at their next chatbot or judge call."""
+    with _progress_lock:
+        _cancelled.update(_progress)
+    return {"cancelled": jobs.cancel_all()}
 
 
 @app.post("/api/judge")

@@ -24,10 +24,8 @@ from backend.metrics_catalog import DEEPEVAL_OPTIONS, DEFAULT_THEME, apply_deepe
 from backend.rag import derived_sources
 from backend.targets import instructions as target_instructions
 from backend.targets.http_client import MessageTooLong
-
-
-class RunCancelled(Exception):
-    """Raised from on_progress to stop a sweep between steps."""
+# Raised from on_progress, or before any call of a stopped job (backend/cancel.py).
+from backend.cancel import RunCancelled  # noqa: F401 - re-exported for jobs, app and pairwise
 
 
 def _now_iso() -> str:

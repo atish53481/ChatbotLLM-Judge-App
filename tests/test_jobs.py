@@ -1,6 +1,6 @@
 import threading
 
-from backend import storage
+from backend import cancel, storage
 from backend.dashboard import jobs as jobs_module
 from backend.dashboard.jobs import JobFailed, JobQueue
 from backend.dashboard.runner import RunCancelled
@@ -72,6 +72,67 @@ def test_cancel_while_queued_never_starts(tmp_path):
     assert not queue.process_next()
     assert calls == [] and queue.get(job_id)["status"] == "cancelled"
     assert not queue.cancel(job_id)
+
+
+def test_cancel_all_stops_every_chatbots_running_and_queued_jobs(tmp_path):
+    holder, calls = {}, []
+
+    def run(job, key, on_progress):
+        calls.append(key)
+        assert holder["queue"].cancel_all() == holder["ids"]
+        return {"key": key, "status": "pass"}
+
+    queue, _ = _queue(tmp_path, run)
+    holder["queue"] = queue
+    holder["ids"] = [queue.submit(1, ["a", "b"], {}), queue.submit(2, ["c"], {})]
+    queue.process_next()
+    assert not queue.process_next()  # the other chatbot's queued job never starts
+    assert calls == ["a"]
+    assert [queue.get(i)["status"] for i in holder["ids"]] == ["cancelled", "cancelled"]
+    assert queue.cancel_all() == []
+
+
+def test_stop_reaches_the_next_chatbot_or_judge_call(tmp_path):
+    holder, sent = {}, []
+
+    def run(job, key, on_progress):
+        cancel.check()
+        sent.append("first call")
+        holder["queue"].cancel(job["id"])
+        try:
+            cancel.check()  # what the chatbot client and the judge call before each request
+        except RunCancelled:
+            return {"key": key, "status": "cancelled"}
+        sent.append("second call")
+        return {"key": key, "status": "pass"}
+
+    queue, _ = _queue(tmp_path, run)
+    holder["queue"] = queue
+    job_id = queue.submit(1, ["a"], {})
+    queue.process_next()
+    assert sent == ["first call"] and queue.get(job_id)["status"] == "cancelled"
+    cancel.check()  # outside a job nothing is stopped
+
+
+def test_a_job_picks_its_own_number_of_parallel_metrics(tmp_path, monkeypatch):
+    monkeypatch.setattr(jobs_module, "METRIC_CONCURRENCY", 1)
+    running, peak, lock = [0], [0], threading.Lock()
+    both = threading.Barrier(2, timeout=5)
+
+    def run(job, key, p):
+        with lock:
+            running[0] += 1
+            peak[0] = max(peak[0], running[0])
+        both.wait()  # only returns when two metrics are in flight together
+        with lock:
+            running[0] -= 1
+        return {"key": key, "status": "pass"}
+
+    queue, _ = _queue(tmp_path, run)
+    job_id = queue.submit(1, ["a", "b"], {"metric_concurrency": 2})
+    queue.process_next()
+    assert queue.get(job_id)["status"] == "done" and peak[0] == 2
+    assert jobs_module.clamp_metric_concurrency(0) == 1 and jobs_module.clamp_metric_concurrency(99) == 8
 
 
 def test_live_progress_is_visible_while_running(tmp_path):

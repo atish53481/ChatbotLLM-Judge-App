@@ -492,8 +492,10 @@ function renderReport(data, options) {
     parts.push(el("p", { className: "note" }, "No metric is selected: tick at least one under \"Metrics\" above."));
   }
   if (options.summary) parts.push(summaryTable(shown, latestByKey, thresholds));
-  if (options.notrun && !options.metrics) {
-    const section = notRunSection(metrics, latestByKey);
+  if (options.notrun) {
+    // A hand-picked set still lists the metrics this chatbot cannot run (they
+    // cannot be picked), just not the ones left unticked.
+    const section = notRunSection(options.metrics ? metrics.filter((m) => m.skip_reason) : metrics, latestByKey);
     if (section) parts.push(section);
   }
   if (options.cases && ran.length) parts.push(testCaseTable(cases, ran, latestByKey, details, options));

@@ -19,7 +19,7 @@ from urllib.parse import quote, quote_plus, urlsplit
 
 import requests
 
-from backend import traffic, usage
+from backend import cancel, traffic, usage
 from backend.targets.base import ChatbotClient, ChatReply
 from backend.targets.curl import (
     MESSAGE_PLACEHOLDER,
@@ -271,12 +271,14 @@ class HttpTargetClient(ChatbotClient):
             k: v for k, v in self.headers.items() if k.lower() not in _DROPPED_HEADERS
         }
         for attempt in range(BUSY_RETRIES + 1):
+            cancel.check()  # a stopped job sends no more messages
             if self._pace is None:
                 r = self._request(url, body, headers)
             else:
                 # One message at a time to a paced chatbot, send_delay apart.
                 with self._pace["lock"]:
                     self._wait_for_send_delay()
+                    cancel.check()
                     r = self._request(url, body, headers)
             if r.status_code not in BUSY_STATUSES or attempt == BUSY_RETRIES:
                 break

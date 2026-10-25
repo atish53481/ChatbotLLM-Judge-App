@@ -1154,6 +1154,28 @@ def test_queued_job_can_be_cancelled(client, app_module):
     assert client.get(f"/api/jobs/{job_id}").json()["status"] == "cancelled"
 
 
+def test_parallel_metrics_is_kept_on_the_job_within_its_bounds(client, app_module):
+    limits = client.get("/api/run-limits").json()["metric_concurrency"]
+    assert limits["min"] == 1 and limits["max"] == 8
+    target = _create_target(client)
+    body = {"target_id": target["id"], "metric_keys": ["bias"], "metric_concurrency": 3}
+    with patch.object(app_module, "build_judge", return_value=object()):
+        job_id = client.post("/api/jobs", json=body).json()["job_id"]
+        assert client.post("/api/jobs", json={**body, "metric_concurrency": 9}).status_code == 422
+    assert client.get(f"/api/jobs/{job_id}").json()["options"]["metric_concurrency"] == 3
+
+
+def test_stop_cancels_every_queued_job(client, app_module):
+    first, second = _create_target(client), _create_target(client)
+    with patch.object(app_module, "build_judge", return_value=object()):
+        ids = [client.post("/api/jobs", json={"target_id": t["id"], "metric_keys": ["bias"]}).json()["job_id"]
+               for t in (first, second)]
+    # Jobs other tests left queued in the shared database are stopped too.
+    assert set(ids) <= set(client.post("/api/jobs/cancel-all", json={}).json()["cancelled"])
+    _run_jobs(app_module)
+    assert [client.get(f"/api/jobs/{i}").json()["status"] for i in ids] == ["cancelled", "cancelled"]
+
+
 def _record_run(app_module, target_id, key, score):
     return app_module.storage.record_run(
         app_module._conn, target_id, key, score, score >= 0.5, "2026-10-21T10:00:00+00:00",

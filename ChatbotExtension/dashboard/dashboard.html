@@ -20,14 +20,15 @@
     </div>
     <div class="header-controls">
       <label>Target <select id="target-select"></select></label>
-      <label>Cases per run
+      <label title="Low: each metric scores 1 test case (fast, few judge tokens). High: each metric scores every test case it has. Applies to runs from the side panel too.">Run mode
         <select id="cases-select">
-          <option value="1">1 case</option>
-          <option value="3">3 cases</option>
-          <option value="5">5 cases</option>
-          <option value="">All cases</option>
+          <option value="1">Low · 1 case per metric</option>
+          <option value="3">3 cases per metric</option>
+          <option value="5">5 cases per metric</option>
+          <option value="">High · all cases</option>
         </select>
       </label>
+      <label>Parallel metrics <select id="parallel-metrics"></select></label>
       <label>Judge model <input id="judge-model" readonly title="Change it in the side panel's Judge settings"></label>
       <div class="segmented view-switch" role="group" aria-label="Dashboard view">
         <button type="button" data-view="judge" aria-pressed="true">Judge</button>
@@ -39,7 +40,7 @@
       <button id="report-button" type="button" class="ghost" title="Open a printable report of every metric's latest run for this chatbot, pick what to include, then Save as PDF">Download report (PDF)</button>
       <button type="button" class="theme-toggle ghost"></button>
       <button id="run-all-button" type="button" class="primary">▶ Run all visible</button>
-      <button id="stop-button" type="button" class="danger hidden" title="Stop the batch (the judge call in progress finishes first)">■ Stop</button>
+      <button id="stop-button" type="button" class="danger hidden" title="Stop everything: every running and queued run ends at its next chatbot or judge call">■ Stop</button>
     </div>
   </header>
   <p id="status" class="secondary" role="status"></p>

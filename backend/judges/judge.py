@@ -13,7 +13,7 @@ import time
 from deepeval.models import LocalModel
 from dotenv import load_dotenv
 
-from backend import traffic, usage
+from backend import cancel, traffic, usage
 
 load_dotenv()
 
@@ -53,14 +53,16 @@ class GroqJudge(LocalModel):
 
     def _call(self, fn, *args, **kwargs):
         for attempt in range(_MAX_RETRIES):
+            cancel.check()  # a stopped job makes no more judge calls
             try:
                 with _SLOTS:
+                    cancel.check()  # it may have been stopped while waiting for a slot
                     return fn(*args, **kwargs)
             except Exception as e:  # noqa: BLE001 - provider raises many types
-                if not _is_rate_limit(e) or attempt == _MAX_RETRIES - 1:
+                if isinstance(e, cancel.RunCancelled) or not _is_rate_limit(e) or attempt == _MAX_RETRIES - 1:
                     raise
                 delay = min(70, 25 * (attempt + 1)) + random.uniform(0, 5)
-                time.sleep(delay)
+                cancel.sleep(delay)
         raise RuntimeError("unreachable")
 
     def generate(self, *args, **kwargs):

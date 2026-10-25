@@ -756,7 +756,7 @@ $("stop-button").addEventListener("click", async () => {
   if (!state.runControl) return;
   $("stop-button").disabled = true;
   $("stop-button").textContent = "Stopping…";
-  setStatus("Stopping after the current step…");
+  setStatus("Stopping all runs…");
   try {
     await stopRun(state.runControl);
   } catch (error) {
@@ -1016,7 +1016,7 @@ async function renderHistory() {
         {},
         el("td", {}, el("strong", {}, String(scan.version))),
         el("td", {}, scanTime(scan.started_at)),
-        el("td", { className: css }, `${label} · ${scanTally(scan)}`,
+        el("td", { className: `scan-result ${css}` }, `${label} · ${scanTally(scan)}`,
           // Paths found in the chatbot's replies, or a scan started for them.
           scan.note ? el("span", { className: "small", title: scan.note, "aria-label": scan.note }, " ⓘ") : ""),
         el("td", { className: "num" }, String(scan.passed)),
@@ -1024,7 +1024,7 @@ async function renderHistory() {
         el("td", { className: "num" }, String(scan.errors)),
         el("td", { className: "num" }, formatScore(scan.average)),
         el("td", { className: "small" }, scan.judge_model || "–"),
-        el("td", {},
+        el("td", { className: "scan-actions" },
           // Opens the scan's full report in its own tab (scan/scan.html).
           el("a", { className: "button-link", href: `../scan/scan.html?job=${scan.job_id}`,
             target: "_blank", rel: "noopener" }, "Open"),
@@ -1241,6 +1241,11 @@ $("metric-select").addEventListener("change", () => {
 });
 
 settings.onChange((changes) => {
+  if (changes.casesPerRun) {
+    // Run mode changed in the side panel.
+    state.casesPerRun = changes.casesPerRun.newValue || null;
+    $("cases-select").value = state.casesPerRun ? String(state.casesPerRun) : "";
+  }
   if (changes.checkedMetrics) {
     const keys = changes.checkedMetrics.newValue;
     state.checked = Array.isArray(keys) ? new Set(keys) : null;
@@ -1302,6 +1307,7 @@ window.addEventListener("focus", () => {
     state.categoryFilter = await settings.get("dashCategory", "all");
     state.casesPerRun = await settings.get("casesPerRun", null);
     $("cases-select").value = state.casesPerRun ? String(state.casesPerRun) : "";
+    bindParallelSelect($("parallel-metrics")).catch(() => {});
     await loadMetrics();
     const ticked = await settings.get("checkedMetrics", null);
     state.checked = Array.isArray(ticked) ? new Set(ticked) : null;
