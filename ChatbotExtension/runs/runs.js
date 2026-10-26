@@ -596,7 +596,7 @@ function overviewView() {
   if (state.radarCat && !cats.includes(state.radarCat)) state.radarCat = "";
   const radarResults = state.radarCat ? scored.filter((r) => state.categories.get(r.key) === state.radarCat) : scored;
   return [
-    head("Overview", `${state.target.name} · test run v${scan.version}`, copy,
+    head("Overview", `${state.target.name} · test run v${scan.version}`, confidentControl(scan), copy,
       el("a", { className: "btn", href: "#cases" }, "View test cases →")),
     el("div", { className: "grid grid-3" },
       el("div", { className: "card" }, el("p", { className: "card-title" }, "Test Run Properties"),
@@ -668,6 +668,34 @@ function overviewView() {
         el("p", { className: "why" }, m.reason || "No reason given."))))
         : el("p", { className: "empty" }, "No failing test cases.")),
   ];
+}
+
+// Confident AI (optional): view the run there once sent, else send it now when
+// a key is set in the side panel; without a key the run simply stays here.
+function confidentControl(scan) {
+  const sent = scan.confident && scan.confident.link;
+  if (sent) return el("a", { className: "btn", href: scan.confident.link, target: "_blank", rel: "noopener" }, "View in Confident AI ↗");
+  if (!state.confidentKey) {
+    return el("span", { className: "small muted", title: "Add a Confident AI key under Confident AI in the side panel" }, "Confident AI: off");
+  }
+  const failed = scan.confident && scan.confident.error;
+  const button = el("button", { type: "button", className: "btn", title: failed ? `Last try failed: ${failed}` : "Copy this run to your Confident AI portal",
+    onclick: async () => {
+      button.disabled = true;
+      button.textContent = "Sending…";
+      try {
+        const res = await api(`/api/scans/${scan.job_id}/confident`, { method: "POST" });
+        scan.confident = { link: res.link, id: res.id };
+        render();
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = "↗ Send to Confident AI";
+        button.title = error.message;
+        showTip({ clientX: button.getBoundingClientRect().left, clientY: button.getBoundingClientRect().bottom }, ["Not sent", error.message]);
+        setTimeout(hideTip, 5000);
+      }
+    } }, failed ? "↻ Retry send to Confident AI" : "↗ Send to Confident AI");
+  return button;
 }
 
 // --- Test Cases --------------------------------------------------------------
@@ -990,6 +1018,8 @@ async function init() {
     state.targets = targets;
     state.titles = new Map(metrics.map((m) => [m.key, m.title]));
     state.categories = new Map(metrics.map((m) => [m.key, m.ui_category || m.group]));
+    const confident = await api("/api/confident/settings").catch(() => null);
+    state.confidentKey = Boolean(confident && confident.has_key);
     const targetId = params.get("target") || (targets[0] && targets[0].id);
     fillSelect($("target"), targets.map((t) => ({ value: t.id, label: t.name })), targetId);
     await selectTarget(targetId, params.get("job"), params.get("with"));

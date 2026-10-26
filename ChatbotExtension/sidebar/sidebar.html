@@ -52,6 +52,35 @@
     </form>
   </details>
 
+  <details id="confident-settings" class="card">
+    <summary>Confident AI <span id="confident-summary" class="muted small">· optional</span></summary>
+    <form id="confident-form" class="stack">
+      <p class="muted small">Optional. With a Confident AI key, test runs also appear in your
+        <a href="https://app.confident-ai.com" target="_blank" rel="noopener">Confident AI portal</a>.
+        Without one the app works as usual and every report stays here. Sending copies the run's questions, replies,
+        context and the judge's reasons to Confident AI; chatbot keys and cookies are never sent.</p>
+      <label>Confident AI API key
+        <input id="confident-key" type="password" autocomplete="off" spellcheck="false" placeholder="paste your Confident AI API key">
+      </label>
+      <p id="confident-key-hint" class="muted small"></p>
+      <label>Project name <span class="muted small">(only with an organization key)</span>
+        <input id="confident-project" spellcheck="false" maxlength="200" placeholder="e.g. Test">
+      </label>
+      <p class="muted small">A project key (confident_us_proj_…) works as it is. With an organization key
+        (confident_us_org_…) the app creates a project key named "LLM Judge app" in the project you name and keeps
+        only that; the organization key is not stored.</p>
+      <label class="row small">
+        <input id="confident-auto" type="checkbox">
+        <span>Send each finished run automatically (else use "Send to Confident AI" on a run)</span>
+      </label>
+      <div class="row">
+        <button type="submit" class="primary">Save</button>
+        <button type="button" id="confident-clear-key" class="small-button hidden" title="Forget the key saved here">Remove saved key</button>
+      </div>
+      <p id="confident-result" class="small" role="status"></p>
+    </form>
+  </details>
+
   <section class="card" aria-labelledby="chatbot-heading">
     <h2 id="chatbot-heading">Chatbot</h2>
     <div class="row">

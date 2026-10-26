@@ -1359,6 +1359,7 @@ async function loadEverything() {
     await settings.set("freshSinceRunId", session.since_id);
     await settings.set("lastRun", null);
     await loadJudgeSettings();
+    await loadConfidentSettings();
     await loadMetrics();
     await loadTargets();
     return true;
@@ -1440,6 +1441,53 @@ armConfirm($("judge-clear-key"), async () => {
     showJudgeResult(true, "Saved key removed.");
   } catch (error) {
     showJudgeResult(false, error.message);
+  }
+});
+
+// --- Confident AI: optional copy of each run in the Confident AI portal -------
+// The key stays on the backend; the panel only ever sees its last 4 characters.
+async function loadConfidentSettings() {
+  const current = await api("/api/confident/settings");
+  const source = { panel: "saved here", env: "from the .env file" }[current.key_source];
+  $("confident-key").value = "";
+  $("confident-key").placeholder = current.has_key ? `${current.key_hint} (leave empty to keep it)` : "paste your Confident AI API key";
+  $("confident-key-hint").textContent = current.has_key
+    ? `Key ${current.key_hint}, ${source}${current.project ? `, project '${current.project}'` : ""}.`
+    : "No key: runs are not sent anywhere.";
+  if (current.project) $("confident-project").value = current.project;
+  $("confident-auto").checked = current.has_key ? current.auto : true;
+  $("confident-auto").disabled = false;
+  $("confident-clear-key").classList.toggle("hidden", current.key_source !== "panel");
+  $("confident-summary").textContent = !current.has_key ? "· optional, off"
+    : current.auto ? "· sending every run" : "· on request";
+}
+
+function showConfidentResult(ok, text) {
+  $("confident-result").className = ok ? "small status-pass" : "small status-error";
+  $("confident-result").textContent = text;
+}
+
+$("confident-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    const saved = await api("/api/confident/settings", { method: "PUT",
+      body: { api_key: $("confident-key").value.trim(), project: $("confident-project").value.trim(),
+        auto: $("confident-auto").checked } });
+    await loadConfidentSettings();
+    showConfidentResult(true, !saved.has_key ? "No key saved yet."
+      : saved.auto ? "Saved. Each finished run will also appear in Confident AI." : "Saved. Send runs from a run's Overview page.");
+  } catch (error) {
+    showConfidentResult(false, error.message);
+  }
+});
+
+armConfirm($("confident-clear-key"), async () => {
+  try {
+    await api("/api/confident/settings", { method: "PUT", body: { clear_key: true, auto: false } });
+    await loadConfidentSettings();
+    showConfidentResult(true, "Saved key removed.");
+  } catch (error) {
+    showConfidentResult(false, error.message);
   }
 });
 

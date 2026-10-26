@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 from typing import Literal
@@ -16,7 +17,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from backend import cancel, storage, traffic, usage
+from backend import cancel, confident_upload, storage, traffic, usage
 from backend.dashboard import hardening
 from backend.dashboard import scans as scan_history
 from backend.dashboard.compare import compare_runs
@@ -244,6 +245,7 @@ def _after_job(job_id: int) -> None:
     never found again)."""
     with _job_clients_lock:
         _job_clients.pop(job_id, None)  # the job's shared replies are done with
+    _auto_send_to_confident(job_id)
     with _found_lock:
         entry = _found.pop(job_id, None)
     if not entry:
@@ -671,6 +673,116 @@ def api_delete_scan(job_id: int):
     if job["status"] in ("queued", "running"):
         raise HTTPException(status_code=409, detail="this run is still going; stop it first")
     return {"deleted": job_id, "runs_deleted": storage.delete_scan(_conn, job_id)}
+
+
+# --- Confident AI: optional copy of each test run in the Confident AI portal ----
+# The key is saved here (side panel) or read from CONFIDENT_API_KEY in .env; it is
+# never sent back to the browser. Without a key nothing is ever sent anywhere.
+_CONFIDENT_KEY_META = "confident_api_key"
+_CONFIDENT_AUTO_META = "confident_auto"
+
+
+def _confident_key() -> tuple[str | None, str | None]:
+    """(key, where it came from: "panel" or "env")."""
+    saved = storage.get_meta(_conn, _CONFIDENT_KEY_META)
+    if saved:
+        return saved, "panel"
+    env = confident_upload.api_key()
+    return (env, "env") if env else (None, None)
+
+
+_CONFIDENT_PROJECT_META = "confident_project"
+
+
+class ConfidentSettings(BaseModel):
+    # Empty api_key keeps the saved one; auto None keeps the current choice.
+    api_key: str = Field(default="", max_length=500)
+    # Needed with an organization key: the project whose key the app creates.
+    project: str = Field(default="", max_length=200)
+    clear_key: bool = False
+    auto: bool | None = None
+
+
+@app.get("/api/confident/settings")
+def api_get_confident_settings():
+    key, source = _confident_key()
+    return {"has_key": bool(key), "key_source": source, "key_hint": _key_hint(key or ""),
+            "auto": bool(key) and storage.get_meta(_conn, _CONFIDENT_AUTO_META) == "1",
+            "project": storage.get_meta(_conn, _CONFIDENT_PROJECT_META) if source == "panel" else None}
+
+
+@app.put("/api/confident/settings")
+def api_put_confident_settings(body: ConfidentSettings):
+    auto = body.auto
+    key, project = body.api_key.strip(), body.project.strip() or None
+    if body.clear_key:
+        storage.set_meta(_conn, _CONFIDENT_KEY_META, None)
+        storage.set_meta(_conn, _CONFIDENT_PROJECT_META, None)
+    elif key:
+        if confident_upload.is_org_key(key):
+            # Test runs need a project key: make one with the org key, keep only that.
+            try:
+                key, project = confident_upload.project_key_from_org(key, body.project)
+            except confident_upload.ConfidentKeyError as error:
+                raise HTTPException(status_code=400, detail=str(error))
+            except Exception as error:  # noqa: BLE001 - network trouble, never the key
+                raise HTTPException(status_code=502, detail=f"Could not reach Confident AI: {str(error)[:200]}")
+        storage.set_meta(_conn, _CONFIDENT_KEY_META, key)
+        storage.set_meta(_conn, _CONFIDENT_PROJECT_META, project)
+        auto = True if auto is None else auto  # a new key means "send my runs"
+    if auto is not None:
+        storage.set_meta(_conn, _CONFIDENT_AUTO_META, "1" if auto else None)
+    return api_get_confident_settings()
+
+
+def _send_to_confident(job_id: int, key: str) -> dict:
+    """Uploads one finished scan and keeps the link with its job."""
+    scan = scan_history.get_scan(_conn, job_id)
+    target = storage.get_target(_conn, scan["target_id"])
+    name = target["name"] if target else f"chatbot {scan['target_id']}"
+    theme = ((target or {}).get("config") or {}).get("theme") or DEFAULT_THEME
+    titles = {s.key: s.title for s in all_specs()}
+    sent = confident_upload.upload(scan, name, theme, titles, api_key=key)
+    job = storage.get_job(_conn, job_id)
+    storage.update_job(_conn, job_id, options={**job["options"], "confident": {
+        "id": sent["id"], "link": sent["link"],
+        "sent_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}})
+    traffic.log("== job %s: sent %d test cases to Confident AI", job_id, sent["test_cases"])
+    return sent
+
+
+def _auto_send_to_confident(job_id: int) -> None:
+    """After a finished (not stopped) scan, when the user turned auto-send on."""
+    key, _ = _confident_key()
+    if not key or storage.get_meta(_conn, _CONFIDENT_AUTO_META) != "1":
+        return
+    job = storage.get_job(_conn, job_id)
+    if job is None or job["status"] != "done" or (job["options"] or {}).get("kind") == "pairwise":
+        return
+    try:
+        _send_to_confident(job_id, key)
+    except Exception as error:  # noqa: BLE001 - the run itself is fine either way
+        storage.update_job(_conn, job_id, options={**job["options"], "confident": {"error": str(error)[:300]}})
+        traffic.log("== job %s: sending to Confident AI failed: %s", job_id, str(error)[:200])
+
+
+@app.post("/api/scans/{job_id}/confident")
+def api_send_scan_to_confident(job_id: int):
+    """Sends one finished test run to Confident AI and returns its portal link."""
+    key, _ = _confident_key()
+    if not key:
+        raise HTTPException(status_code=400, detail="No Confident AI key: add one in the side panel (Confident AI).")
+    job = storage.get_job(_conn, job_id)
+    if job is None or scan_history.get_scan(_conn, job_id) is None:
+        raise HTTPException(status_code=404, detail="scan not found")
+    if job["status"] in ("queued", "running"):
+        raise HTTPException(status_code=409, detail="this run is still going; send it when it finishes")
+    try:
+        return _send_to_confident(job_id, key)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    except Exception as error:  # noqa: BLE001 - Confident AI's own message, never the key
+        raise HTTPException(status_code=502, detail=f"Confident AI: {str(error)[:300]}")
 
 
 @app.post("/api/session/start")

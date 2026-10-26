@@ -134,7 +134,9 @@ def get_scan(conn, job_id: int) -> dict | None:
         return None
     options = job["options"] or {}
     return {**_summary(version, job, _notes(numbered).get(job_id, "")), "target_id": job["target_id"],
-            "run_options": {k: options[k] for k in _RUN_OPTIONS if k in options}, "results": job["results"] or []}
+            "run_options": {k: options[k] for k in _RUN_OPTIONS if k in options},
+            # Set once the run was sent to Confident AI: {id, link, sent_at} or {error}.
+            "confident": options.get("confident"), "results": job["results"] or []}
 
 
 def compare_scans(conn, job_id: int, other_id: int) -> dict | None:
