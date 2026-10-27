@@ -153,8 +153,16 @@ def target_features(target, spec=None) -> dict:
             "tools_path": bool(getattr(target, "tools_path", ""))}
 
 
-def _not_applicable_error(reason: str) -> str:
-    return reason if reason.startswith("Not applicable") else f"Not applicable for any case: {reason}"
+def _not_applicable_error(reasons: list[str]) -> str:
+    """Why no case could be scored: every distinct reason, with how many cases it covers."""
+    counts: dict[str, int] = {}
+    for reason in reasons:
+        counts[reason] = counts.get(reason, 0) + 1
+    if len(counts) == 1:
+        reason = next(iter(counts))
+        return reason if reason.startswith("Not applicable") else f"Not applicable for any case: {reason}"
+    parts = [f"{n} case{'s' if n != 1 else ''}: {reason}" for reason, n in counts.items()]
+    return "Not applicable for any case. " + " ".join(parts)
 
 
 _slots_lock = threading.Lock()
@@ -250,8 +258,10 @@ def _sweep(
     persona and probe_set go to spec.cases (security probes: the bot's role in
     the context, and which probe set to send); limit caps how many cases are sent.
     check_consistency has the judge score every reply twice (the chatbot is
-    asked once): each case scores the average, and the run reports the widest
-    gap between the two scorings, flagged when it passes UNSTABLE_SPREAD.
+    asked once): each case scores the average. When the two differ by more than
+    UNSTABLE_SPREAD a third scoring breaks the tie and the median is kept; the
+    case's gap is then that of the closest pair. The run reports the widest
+    case gap, flagged as judge unstable when it passes UNSTABLE_SPREAD.
     metric_kwargs go to spec.build_metric (metrics_catalog.metric_options: the
     spec's tunable settings and the target fields it needs); settings the
     runner itself reads (spec.runner_settings, e.g. an attack's max_turns) are
@@ -294,13 +304,19 @@ def _sweep(
     if not_applicable:
         return _error(spec, theme, not_applicable, cases_total=0)
     available = len(items)
+    # Run mode's limit counts scored cases: cases a metric leaves out (no tool
+    # called, no context found, ...) are replaced by the next goldens, so a metric
+    # that can leave cases out keeps the rest in reserve.
+    reserve: list = []
     if limit:
-        items = items[:limit]
+        items, reserve = items[:limit], items[limit:]
     # The chatbot's max message length: prompts that can shrink (Summarization's
     # source) are cut to it, and cases still too long are skipped, not sent.
     max_len = getattr(target, "max_message_length", None)
     if max_len and kind not in ("conversation", "attack"):
         items = [{**item, "max_chars": max_len} for item in items]
+    if max_len and kind not in ("conversation", "attack"):
+        reserve = [{**item, "max_chars": max_len} for item in reserve]
     enhancements = [e for e in enhancements or [] if e]
     if enhancements and getattr(spec, "dataset_name", "") in _PROBE_DATASETS and kind == "single":
         try:
@@ -431,12 +447,25 @@ def _sweep(
         if check_consistency:
             metric.measure(case)
             row_scores = [score, _reported(spec, metric.score)]
-            both = [s for s in row_scores if s is not None]
-            if both:
-                score = sum(both) / len(both)
+            reasons = [reason, metric.reason or ""]
+            if None not in row_scores and abs(row_scores[0] - row_scores[1]) > UNSTABLE_SPREAD:
+                # The two scorings disagree: a third one breaks the tie and the
+                # median is kept, with the reason of the scoring that gave it.
+                metric.measure(case)
+                row_scores.append(_reported(spec, metric.score))
+                reasons.append(metric.reason or "")
+            known = [s for s in row_scores if s is not None]
+            if len(known) == 3:
+                score = sorted(known)[1]
+                reason = reasons[row_scores.index(score)]
                 passed_case = _meets(spec, score, pass_mark)
-            if None not in row_scores:
-                spread = abs(row_scores[0] - row_scores[1])
+                # Settled when two of the three agree: the gap of the closest pair.
+                spread = min(abs(a - b) for i, a in enumerate(known) for b in known[i + 1:])
+            elif known:
+                score = sum(known) / len(known)
+                passed_case = _meets(spec, score, pass_mark)
+                if len(known) == 2:
+                    spread = abs(known[0] - known[1])
         outcomes[index] = (item, spread, {
             "question": question,
             "golden_id": item.get("id"),
@@ -463,13 +492,14 @@ def _sweep(
         return ([o[2] for o in done], [o[0] for o in done], outcomes.count(_SKIPPED),
                 [o[1] for o in done if o[1] is not None])
 
-    try:
+    def run_batch(start: int) -> None:
+        batch = list(enumerate(items))[start:]
         if workers > 1:
             pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="llm-judge-case")
             try:
                 # Each case gets a copy of this context, so its calls reach the run's usage meter.
                 futures = [pool.submit(contextvars.copy_context().run, run_case, i, item)
-                           for i, item in enumerate(items)]
+                           for i, item in batch]
                 finished_futures, pending = futures_wait(futures, return_when=FIRST_EXCEPTION)
                 for future in pending:
                     future.cancel()
@@ -480,8 +510,23 @@ def _sweep(
             finally:
                 pool.shutdown(wait=True, cancel_futures=True)
         else:
-            for i, item in enumerate(items):
+            for i, item in batch:
                 run_case(i, item)
+
+    can_leave_out = (callable(skip_before) or callable(skip_case) or callable(after_score)
+                     or bool(fallback)) and not enhancements
+    try:
+        start = 0
+        while True:
+            run_batch(start)
+            missing = limit - sum(isinstance(o, tuple) for o in outcomes) if limit else 0
+            if not (can_leave_out and reserve and missing > 0):
+                break
+            # Some cases had nothing to score: send the next goldens in their place.
+            start = len(items)
+            more, reserve = reserve[:missing], reserve[missing:]
+            items.extend(more)
+            outcomes.extend([None] * len(more))
         rows, scored, skipped, spreads = collected()
         calibrated = calibrations[0] if calibrations else 0
     except RunCancelled:
@@ -498,7 +543,7 @@ def _sweep(
         return _error(spec, theme, f"{type(e).__name__}: {e}", cases_total=len(items))
     left_out = [o for o in outcomes if isinstance(o, _NotApplicable)]
     if not rows and left_out:
-        return _error(spec, theme, _not_applicable_error(left_out[0]), cases_total=len(items))
+        return _error(spec, theme, _not_applicable_error(left_out), cases_total=len(items))
     if not rows:
         return _error(
             spec, theme,
@@ -528,6 +573,7 @@ def _sweep(
     chatbot_calls = spent["target_calls"]
     duration = round(time.monotonic() - started, 2)
     spread = max(spreads) if spreads else None
+    tie_breaks = sum(len(r.get("scores") or []) == 3 for r in rows)
     previous = storage.history(conn, target_id, spec.key)
     previous_model = previous[-1].get("judge_model") if previous else None
     result = {
@@ -574,7 +620,10 @@ def _sweep(
             f"Judge model changed from {previous_model} to {judge_model}: scores may not be "
             "comparable with earlier runs."
             if previous_model and judge_model and previous_model != judge_model else None,
-            f"Judge unstable: two scorings of one case differed by {spread:.2f} (over "
+            f"The judge disagreed with itself on {tie_breaks} case{'s' if tie_breaks != 1 else ''}: "
+            "a third scoring broke the tie and the median was kept."
+            if tie_breaks else None,
+            f"Judge unstable: the scorings of one case still differed by {spread:.2f} (over "
             f"{UNSTABLE_SPREAD}), so treat this score with care."
             if spread is not None and spread > UNSTABLE_SPREAD else None,
             f"Too slow: 95% of replies took up to {latency['p95']:.2f}s, over the "
@@ -603,7 +652,9 @@ MAX_CALIBRATION_EXAMPLES = 5
 
 def _calibrate(metric, examples: list[dict] | None) -> int:
     """Appends human-scored examples to a G-Eval metric's criteria; returns how
-    many. Other metrics (DeepEval's own templates) have no criteria to extend."""
+    many. Other metrics (DeepEval's own templates) have no criteria to extend.
+    With fixed evaluation_steps, DeepEval scores from the steps alone, so the
+    examples go in as one last step instead."""
     criteria = getattr(metric, "criteria", None)
     if not examples or not isinstance(criteria, str) or not criteria:
         return 0
@@ -612,7 +663,11 @@ def _calibrate(metric, examples: list[dict] | None) -> int:
         f"\n- Input: {e['question'][:300]!r}\n  Output: {e['actual_output'][:500]!r}\n"
         f"  Human score: {e['human_score']:.2f}" + (f" ({e['note'][:200]})" if e.get("note") else "")
         for e in chosen)
-    metric.criteria = criteria + CALIBRATION_HEADER + shots
+    steps = getattr(metric, "evaluation_steps", None)
+    if isinstance(steps, list) and steps:
+        metric.evaluation_steps = steps + [CALIBRATION_HEADER.strip() + shots]
+    else:
+        metric.criteria = criteria + CALIBRATION_HEADER + shots
     return len(chosen)
 
 

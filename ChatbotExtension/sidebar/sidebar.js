@@ -1011,10 +1011,25 @@ armConfirm($("reset-target-runs"), async () => {
 // job records the same reason, so the scan and the report show it too).
 function renderSkippedRow(line, title, theme, reason, metric) {
   line.className = "run-row skipped";
+  const why = reason || `No test case for it in the golden set '${theme}'.`;
+  // The reason is cut to one line in the narrow panel: hover shows it all, a click unfolds it.
+  line.title = `${title} was not run: ${why}`;
+  const detail = el("span", {
+    className: "run-row-detail muted", title: why, role: "button", tabindex: "0",
+    "aria-expanded": "false", "aria-label": `Why ${title} was not run: ${why}`,
+  }, why);
+  const toggle = () => {
+    const open = detail.classList.toggle("expanded");
+    detail.setAttribute("aria-expanded", String(open));
+  };
+  detail.addEventListener("click", toggle);
+  detail.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggle(); }
+  });
   line.replaceChildren(
     el("span", { className: "run-row-title" }, title),
     el("span", { className: "run-row-chip muted" }, "not run"),
-    el("span", { className: "run-row-detail muted" }, reason || `No test case for it in the golden set '${theme}'.`),
+    detail,
     metric && metric.dataset === "goldens_without_context" && !metric.unavailable ? scratchButton() : "",
   );
 }
@@ -1129,8 +1144,11 @@ async function watchRun(target, lines, titles, start, count) {
   // ends, how it ended; it stays until dismissed or the next run starts.
   const startedAt = Date.now();
   const finished = new Map();
+  const running = new Map();  // key -> latest progress of each metric still being scored
   let current = "";
   let queued = false;
+  // What the hover panel describes (see pauseRunView).
+  state.runInfo = { target, titles, finished, running, count, startedAt, isQueued: () => queued };
   const showProgress = () => showRunBanner(runSummary({
     status: queued ? "queued" : "running", results: [...finished.values()], count, current,
     elapsedMs: Date.now() - startedAt,
@@ -1145,11 +1163,16 @@ async function watchRun(target, lines, titles, start, count) {
         lines.set(key, el("li"));
         $("run-results").append(lines.get(key));
       }
-      renderRunRow(lines.get(key), titles.get(key) || key, result, progress);
-      if (result) finished.set(key, result);
-      else {
+      // While the user hovers the banner or the list, rows wait (see pauseRunView).
+      if (state.runPaused) state.pendingRows.set(key, () => renderRunRow(lines.get(key), titles.get(key) || key, result, progress));
+      else renderRunRow(lines.get(key), titles.get(key) || key, result, progress);
+      if (result) {
+        finished.set(key, result);
+        running.delete(key);
+      } else {
         queued = Boolean(progress && progress.queued);
         current = titles.get(key) || key;
+        running.set(key, progress);
       }
       showProgress();
     }, control);
@@ -1163,16 +1186,74 @@ async function watchRun(target, lines, titles, start, count) {
   } finally {
     clearInterval(ticker);
     state.runControl = null;
+    state.runInfo = null;
     $("stop-button").classList.add("hidden");
     updateRunButton();
   }
+  // The end of the run is shown even mid-hover: there is nothing left to freeze.
+  resumeRunView();
   showRunBanner(summary);
   announceRun(summary.text);
 }
 
-function showRunBanner({ tone, text }) {
+function showRunBanner(summary) {
+  if (state.runPaused) {
+    state.pendingBanner = summary;
+    return;
+  }
+  const { tone, text } = summary;
   $("run-banner-text").textContent = text;
+  // Keeps the hover panel's hidden state through the class swap.
   $("run-banner").className = `run-banner run-banner-${tone}`;
+}
+
+// --- Hover to read a running run -------------------------------------------
+// The banner ticks every second and rows redraw as cases finish, so while the
+// pointer (or keyboard focus) is on the banner or the results list, nothing
+// moves: updates wait, and a panel says what the run is doing right now.
+state.pendingRows = new Map();
+function pauseRunView() {
+  if (!state.runInfo || state.runPaused) return;
+  state.runPaused = true;
+  renderRunDetail();
+}
+
+function resumeRunView() {
+  if (!state.runPaused) return;
+  state.runPaused = false;
+  $("run-detail").classList.add("hidden");
+  for (const draw of state.pendingRows.values()) draw();
+  state.pendingRows.clear();
+  if (state.pendingBanner) showRunBanner(state.pendingBanner);
+  state.pendingBanner = null;
+}
+
+function renderRunDetail() {
+  const info = state.runInfo;
+  const results = [...info.finished.values()];
+  const tally = (status) => results.filter((r) => r.status === status).length;
+  const waiting = Math.max(0, info.count - info.finished.size - info.running.size);
+  const now = [...info.running.entries()].map(([key, progress]) => el("li", {},
+    el("strong", {}, info.titles.get(key) || key),
+    el("span", { className: "muted" }, ` · ${progressText(progress) || "starting"}`)));
+  $("run-detail").replaceChildren(
+    el("p", { className: "run-detail-head" }, `Paused while you read · ${info.target.name} · ${formatElapsed(Date.now() - info.startedAt)} so far`),
+    info.isQueued() ? el("p", {}, "Waiting for the run before this one to finish.") : "",
+    now.length ? el("div", {}, el("p", { className: "run-detail-label" }, "Running now"), el("ul", {}, ...now)) : "",
+    el("p", { className: "run-detail-label" }, "So far"),
+    el("p", {}, `${info.finished.size} of ${info.count} metrics finished`
+      + (results.length ? ` · ${tally("pass")} passed · ${tally("fail")} failed · ${tally("error")} could not run` : "")
+      + (waiting ? ` · ${waiting} waiting` : "")),
+    el("p", { className: "muted small" }, "Move the pointer away to see live updates again."),
+  );
+  $("run-detail").classList.remove("hidden");
+}
+
+for (const id of ["run-banner", "run-results"]) {
+  $(id).addEventListener("mouseenter", pauseRunView);
+  $(id).addEventListener("mouseleave", resumeRunView);
+  $(id).addEventListener("focusin", pauseRunView);
+  $(id).addEventListener("focusout", resumeRunView);
 }
 
 // Screen readers hear the start and the end once, not every second's update.
@@ -1343,6 +1424,8 @@ settings.onChange((changes) => {
   if ((changes.thresholds || changes.thresholdEnv || changes.checkedMetrics) && state.metrics.length) {
     renderThresholds();
   }
+  // A metric was added, edited or deleted on the dashboard or Advanced tools.
+  if (changes.metricsChangedAt) loadMetrics().catch(() => {});
   if (changes.thresholds && target) renderLatest();
   if (changes.casesPerRun) $("run-mode").value = String(changes.casesPerRun.newValue || "");
 });

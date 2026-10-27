@@ -183,12 +183,19 @@ function toolList(side) {
 
 // Each metric asks the chatbot on its own, so replies can differ: the one
 // shown first is the reply behind the metric that changed; the rest fold away.
+// A failed side marks the words that differ from its expected answer.
+function failedDiff(side) {
+  return side ? outputsDiff(side.actual_output, side.expected_output, !side.metrics.some((m) => !m.passed)) : null;
+}
+
 function replies(side) {
   if (!side) return "–";
+  const diff = failedDiff(side);
+  const reply = (diff && diff.actual) || side.actual_output || "–";
   const others = side.metrics.filter((m) => m.actual_output && m.actual_output !== side.actual_output);
-  if (!others.length) return side.actual_output || "–";
+  if (!others.length) return reply;
   return el("div", {},
-    side.actual_output || "–",
+    reply,
     el("details", { className: "reg-replies" },
       el("summary", {}, `Replies by metric (${side.metrics.length})`),
       ...side.metrics.map((m) => el("p", {}, el("strong", {}, `${title(m.key)}: `), m.actual_output || "–"))));
@@ -214,7 +221,9 @@ function detail(c) {
     ...line("Metrics", metricList),
     ...line("Input", text("input")),
     ...line("Actual output", replies),
-    ...line("Expected output", text("expected_output")),
+    ...line("Expected output", (side) => { const d = failedDiff(side); return (d && d.expected) || text("expected_output")(side); }),
+    ...line("Differences", (side) => { const d = failedDiff(side); return (d && d.differences) || "–"; },
+      [before, now].some((s) => failedDiff(s) && failedDiff(s).differences)),
     ...line("Tools called", toolList, hasTools),
     ...line("Why it failed", reasons));
 }

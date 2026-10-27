@@ -1,4 +1,5 @@
 """ShopSphere e-commerce support chatbot — FastAPI + Groq."""
+import json
 import os
 import re
 from typing import List, Optional
@@ -152,6 +153,87 @@ def retrieve(query: str, k: int = TOP_K) -> list:
     return [{"id": c["id"], "title": c["title"], "text": c["text"]} for _, c in scored[:k]]
 
 
+# Mock order database, reachable only through the lookup_order tool.
+ORDERS = {
+    "ORD-1001": {"status": "shipped", "carrier": "UPS", "tracking": "1Z999AA10123456784",
+                 "items": ["SP-EARBUDS-01"], "placed": "2026-10-20", "eta": "2026-10-28"},
+    "ORD-1002": {"status": "processing", "items": ["SP-HOODIE-CL", "SP-MUG-CER"],
+                 "placed": "2026-10-25", "eta": "2026-11-02"},
+    "ORD-1003": {"status": "delivered", "items": ["SP-LAMP-LED"],
+                 "placed": "2026-10-01", "delivered": "2026-10-06"},
+}
+
+# The tools the model may call (OpenAI function-calling format, which Groq
+# accepts too). /chat returns every call as `tools_called`, so an evaluation
+# harness can score them (tool correctness, argument correctness, plan quality).
+# CHATBOT_TOOLS=0 turns them off (one plain LLM call, as before).
+USE_TOOLS = os.getenv("CHATBOT_TOOLS", "1") != "0"
+MAX_TOOL_ROUNDS = 4
+TOOLS = [
+    {"type": "function", "function": {
+        "name": "lookup_order",
+        "description": "Status, items and delivery dates of one customer order. Use whenever the customer gives an order ID.",
+        "parameters": {"type": "object", "properties": {
+            "order_id": {"type": "string", "description": "Order ID, e.g. ORD-1001"}},
+            "required": ["order_id"]},
+    }},
+    {"type": "function", "function": {
+        "name": "get_product",
+        "description": "Price and details of one product by SKU. Use whenever the customer names a SKU.",
+        "parameters": {"type": "object", "properties": {
+            "sku": {"type": "string", "description": "Product SKU, e.g. SP-MUG-CER"}},
+            "required": ["sku"]},
+    }},
+    {"type": "function", "function": {
+        "name": "search_knowledge_base",
+        "description": "Search the store policies and product catalog when the retrieved sources do not answer the question.",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "What to search for"}},
+            "required": ["query"]},
+    }},
+]
+
+
+def lookup_order(order_id: str) -> dict:
+    order = ORDERS.get(str(order_id).strip().upper())
+    return {"order_id": order_id, **order} if order else {"error": f"No order found with ID {order_id}."}
+
+
+def get_product(sku: str) -> dict:
+    sku = str(sku).strip().upper()
+    chunk = next((c for c in KNOWLEDGE if c["id"].upper() == sku), None)
+    if not chunk:
+        return {"error": f"No product found with SKU {sku}."}
+    return {"id": chunk["id"], "title": chunk["title"], "text": chunk["text"]}
+
+
+def search_knowledge_base(query: str) -> list:
+    return retrieve(str(query))
+
+
+_TOOL_FUNCS = {"lookup_order": lookup_order, "get_product": get_product,
+               "search_knowledge_base": search_knowledge_base}
+
+
+def run_tool(name: str, args: dict):
+    func = _TOOL_FUNCS.get(name)
+    if func is None:
+        return {"error": f"Unknown tool {name}."}
+    try:
+        return func(**args)
+    except TypeError as e:
+        return {"error": f"Bad arguments for {name}: {e}"}
+
+
+def _tool_sources(name: str, output) -> list:
+    """Knowledge-base chunks a tool returned: they reached the model, so they count as sources."""
+    if name == "search_knowledge_base" and isinstance(output, list):
+        return output
+    if name == "get_product" and isinstance(output, dict) and "text" in output:
+        return [output]
+    return []
+
+
 SYSTEM_PROMPT = """You are ShopBot, the customer support assistant for ShopSphere — a mid-sized e-commerce store that sells electronics, apparel, and home goods.
 
 You answer questions about orders, refunds, shipping, returns, accounts, and products using ONLY the retrieved policies and product info below. If they do not cover the question, say so politely and suggest contacting human support at support@shopsphere.com.
@@ -167,10 +249,18 @@ Rules:
 5. Cite the source you used in square brackets, e.g. [Refund Policy].
 """
 
+TOOLS_PROMPT = """
+Tools:
+- When the customer gives an order ID (like ORD-1001), call lookup_order before answering. Never guess an order's status.
+- When the customer names a SKU, call get_product.
+- If the retrieved sources do not answer the question, call search_knowledge_base once before saying you don't know.
+- Do not call a tool you don't need. Cite tool results as [Order ORD-1001] or the product title.
+"""
+
 
 def _system_prompt(sources: list) -> str:
     body = "\n\n".join(f"[{s['title']}]\n{s['text']}" for s in sources) or "(no matching sources)"
-    return SYSTEM_PROMPT.format(sources=body)
+    return SYSTEM_PROMPT.format(sources=body) + (TOOLS_PROMPT if USE_TOOLS else "")
 
 
 class ChatMessage(BaseModel):
@@ -192,9 +282,11 @@ class ChatResponse(BaseModel):
     usage: Optional[dict] = None
     # The knowledge-base chunks retrieved for this question: {id, title, text}.
     sources: List[dict] = []
+    # Every tool the model called, in order: {name, args, output}.
+    tools_called: List[dict] = []
 
 
-app = FastAPI(title="ShopSphere Chatbot", version="1.0.0")
+app =FastAPI(title="ShopSphere Chatbot", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -226,6 +318,7 @@ def chat(req: ChatRequest):
             model="mock",
             mode="mock",
             sources=sources,
+            tools_called=_mock_tools(req.message) if USE_TOOLS else [],
         )
 
     client = _client()
@@ -234,15 +327,47 @@ def chat(req: ChatRequest):
         messages.append({"role": m.role, "content": m.content})
     messages.append({"role": "user", "content": req.message})
 
+    tools_called = []
+    reply = ""
+    usage ={"prompt_tokens": 0, "completion_tokens": 0}
     try:
-        completion = client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=messages,
-            temperature=0.3,
-            max_tokens=MAX_TOKENS,
-        )
-        reply = (completion.choices[0].message.content or "").strip()
-        usage = completion.usage
+        # Tool loop: the model either answers or asks for tools; we run them,
+        # hand back the results and ask again (at most MAX_TOOL_ROUNDS times).
+        for round_no in range(MAX_TOOL_ROUNDS + 1):
+            extra = {"tools": TOOLS, "tool_choice": "auto"} if USE_TOOLS and round_no < MAX_TOOL_ROUNDS else {}
+            completion = client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=messages,
+                temperature=0.3,
+                max_tokens=MAX_TOKENS,
+                **extra,
+            )
+            if completion.usage:
+                usage["prompt_tokens"] += getattr(completion.usage, "prompt_tokens", 0) or 0
+                usage["completion_tokens"] += getattr(completion.usage, "completion_tokens", 0) or 0
+            msg = completion.choices[0].message
+            calls = getattr(msg, "tool_calls", None) or []
+            if not calls:
+                reply = (msg.content or "").strip()
+                break
+            messages.append({
+                "role": "assistant",
+                "content": msg.content or "",
+                "tool_calls": [{"id": c.id, "type": "function",
+                                "function": {"name": c.function.name, "arguments": c.function.arguments}}
+                               for c in calls],
+            })
+            for c in calls:
+                try:
+                    args = json.loads(c.function.arguments or "{}")
+                except ValueError:
+                    args = {}
+                output = run_tool(c.function.name, args)
+                tools_called.append({"name": c.function.name, "args": args, "output": output})
+                for chunk in _tool_sources(c.function.name, output):
+                    if all(s["id"] != chunk["id"] for s in sources):
+                        sources.append(chunk)
+                messages.append({"role": "tool", "tool_call_id": c.id, "content": json.dumps(output)})
     except Exception as e:
         source = "Chatbot LLM" if USE_OPENAI_COMPAT else "Groq"
         raise HTTPException(status_code=502, detail=f"{source} error: {e}") from e
@@ -251,11 +376,9 @@ def chat(req: ChatRequest):
         reply=reply,
         model=GROQ_MODEL,
         mode="live",
-        usage={
-            "prompt_tokens": getattr(usage, "prompt_tokens", 0),
-            "completion_tokens": getattr(usage, "completion_tokens", 0),
-        } if usage else None,
+        usage=usage,
         sources=sources,
+        tools_called=tools_called,
     )
 
 
@@ -265,6 +388,18 @@ def _mock_reply(msg: str) -> str:
         f"You asked: '{msg}'. ShopSphere supports refunds within 30 days, "
         "free standard shipping over $50, and 24/7 email support."
     )
+
+
+def _mock_tools(msg: str) -> list:
+    """Without an LLM, call the tools a message clearly asks for (order IDs, SKUs)."""
+    calls = []
+    for order_id in re.findall(r"\bORD-\d+\b", msg, re.I):
+        args = {"order_id": order_id.upper()}
+        calls.append({"name": "lookup_order", "args": args, "output": lookup_order(**args)})
+    for sku in re.findall(r"\bSP-[A-Z0-9]+-[A-Z0-9]+\b", msg, re.I):
+        args = {"sku": sku.upper()}
+        calls.append({"name": "get_product", "args": args, "output": get_product(**args)})
+    return calls
 
 
 # Serve static frontend (built React app) if present

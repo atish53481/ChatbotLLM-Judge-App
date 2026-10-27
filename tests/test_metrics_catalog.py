@@ -127,7 +127,7 @@ EXPECTED_GROUPS = {
                        "turn_contextual_recall", "turn_contextual_relevancy"},
     "agent": {"task_completion", "tool_correctness", "argument_correctness", "plan_quality",
               "plan_adherence", "step_efficiency"},
-    "reference": {"bleu", "rouge_l", "levenshtein", "exact_match"},
+    "reference": {"bleu", "rouge_l", "exact_match"},
     "rag_retrieval": {"contextual_precision", "contextual_recall", "contextual_relevancy"},
     "rag_quality": {"faithfulness", "answer_relevancy", "hallucination", "correctness", "summarization",
                     "prompt_alignment", "robustness", "self_check"},
@@ -215,7 +215,7 @@ def test_harmful_content_is_a_security_probe_metric():
 
 
 def test_catalog_has_31_specs():
-    assert len(ALL_SPECS) == 45
+    assert len(ALL_SPECS) == 44
 
 
 def test_every_spec_has_card_copy():

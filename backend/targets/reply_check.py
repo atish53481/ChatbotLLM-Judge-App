@@ -26,7 +26,9 @@ _PATTERNS = [
     r"\b(please|you need to|you must|you have to)\s+(log|sign)\s*in\b(?=\s*(to\b|first\b|[.!]|$))",
     r"\b(log|sign)\s*in\s+to\s+continue\b",
     r"\bsession\s+(has\s+)?(expired|timed out)\b",
-    r"\bsomething went wrong\b",
+    # An error page ("Something went wrong. Please try again."), not an offer to
+    # help ("If something went wrong with an order, I can look into it.").
+    r"(?<!\bif )(?<!\bwhen )\bsomething went wrong\b(?!\s+with\b)",
     r"\binternal server error\b",
     r"\bservice\s+(is\s+)?(temporarily\s+)?unavailable\b",
 ]

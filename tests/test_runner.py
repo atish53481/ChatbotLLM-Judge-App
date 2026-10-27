@@ -465,22 +465,36 @@ def test_changed_judge_model_is_noted(tmp_path):
     assert same["note"] is None
 
 
-def test_consistency_check_scores_twice_and_flags_a_wide_gap(tmp_path):
+def test_consistency_check_scores_twice_and_breaks_a_wide_gap_with_a_third(tmp_path):
     conn, target_id = _db(tmp_path)
     target = MagicMock()
     target.chat.return_value = SimpleNamespace(reply="r", retrieval_context=None)
-    # Case 1 scores 0.9 then 0.8 (gap 0.1); case 2 scores 0.9 then 0.5 (gap 0.4).
-    metric = _fake_metric([0.9, 0.8, 0.9, 0.5], [True, True, True, False])
+    # Case 1 scores 0.9 then 0.8 (gap 0.1: averaged); case 2 scores 0.9 then 0.5
+    # (gap 0.4), so a third scoring of 0.85 breaks the tie: median 0.85, and the
+    # closest pair (0.9, 0.85) agrees, so the judge is not unstable.
+    metric = _fake_metric([0.9, 0.8, 0.9, 0.5, 0.85], [True] * 5)
     spec = _fake_spec([_case("q1"), _case("q2")], metric)
     result = run_spec(spec, judge=_judge(), target=target, target_id=target_id, conn=conn,
                       check_consistency=True)
     assert target.chat.call_count == 2  # the chatbot is asked once per case
-    assert metric.measure.call_count == 4
-    assert [r["score"] for r in result["rows"]] == pytest.approx([0.85, 0.7])
-    assert [r["scores"] for r in result["rows"]] == [[0.9, 0.8], [0.9, 0.5]]
-    assert result["score"] == pytest.approx(0.775)
-    assert result["judge_spread"] == pytest.approx(0.4) and result["judge_unstable"] is True
-    assert storage.history(conn, target_id, "fake_metric")[0]["judge_spread"] == pytest.approx(0.4)
+    assert metric.measure.call_count == 5
+    assert [r["score"] for r in result["rows"]] == pytest.approx([0.85, 0.85])
+    assert [r["scores"] for r in result["rows"]] == [[0.9, 0.8], [0.9, 0.5, 0.85]]
+    assert result["judge_spread"] == pytest.approx(0.1) and result["judge_unstable"] is False
+    assert "a third scoring broke the tie" in result["note"]
+
+
+def test_consistency_check_stays_unstable_when_three_scorings_disagree(tmp_path):
+    conn, target_id = _db(tmp_path)
+    target = MagicMock()
+    target.chat.return_value = SimpleNamespace(reply="r", retrieval_context=None)
+    metric = _fake_metric([0.9, 0.5, 0.2], [True, False, False])
+    spec = _fake_spec([_case("q1")], metric)
+    result = run_spec(spec, judge=_judge(), target=target, target_id=target_id, conn=conn,
+                      check_consistency=True)
+    assert result["rows"][0]["score"] == pytest.approx(0.5)  # the median
+    assert result["judge_spread"] == pytest.approx(0.3) and result["judge_unstable"] is True
+    assert storage.history(conn, target_id, "fake_metric")[0]["judge_spread"] == pytest.approx(0.3)
 
 
 def test_without_the_check_nothing_is_scored_twice(tmp_path):

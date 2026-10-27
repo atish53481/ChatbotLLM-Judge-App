@@ -616,7 +616,10 @@ def test_reset_restores_shipped_goldens_and_keeps_other_themes(client):
     r = client.post("/api/goldens/reset", json={})
     assert r.status_code == 200
     restored = client.get("/api/goldens", params={"theme": "general_support"}).json()
-    assert restored == shipped
+    with open(goldens_store.DEFAULT_GOLDENS_PATH, encoding="utf-8") as f:
+        defaults = [g for g in json.load(f) if g["theme"] == "general_support"]
+    assert [g["id"] for g in restored] == [g["id"] for g in defaults]
+    assert {g["id"] for g in shipped} <= {g["id"] for g in restored}
     assert [g["question"] for g in client.get("/api/goldens", params={"theme": "my_bot"}).json()] == ["mine?"]
     # Like every POST here, it needs a JSON body, so other sites cannot trigger it.
     assert client.post("/api/goldens/reset").status_code == 422
@@ -696,7 +699,7 @@ def test_conversation_scenarios_crud_and_reset(client):
 def test_metrics_include_card_copy_and_cases_available(client):
     target = _create_target(client, config={"theme": "no_such_theme", "persona": "Shop bot"})
     rows = {m["key"]: m for m in client.get(f"/api/metrics?target_id={target['id']}").json()}
-    assert len(rows) == 45 + 2  # shipped metrics + the two example custom metrics
+    assert len(rows) == 44 + 2  # shipped metrics + the two example custom metrics
     assert rows["answer_relevancy"]["cases_available"] == 0
     # Bias / Toxicity / No-Prompt-Leak read the probe store too, so they report the probe set.
     assert rows["bias"]["probe_set"] == rows["no_prompt_leak"]["probe_set"] == "generic"
@@ -1038,7 +1041,8 @@ def test_run_can_check_judge_consistency_and_reports_how_it_was_judged(client, a
 
 
 def test_goldens_health_reports_missing_shipped_rows(client):
-    shipped = client.get("/api/goldens", params={"theme": "general_support"}).json()
+    client.post("/api/goldens/reset", json={})
+    shipped =client.get("/api/goldens", params={"theme": "general_support"}).json()
     client.delete(f"/api/goldens/{shipped[0]['id']}")
     health = {h["theme"]: h for h in client.get("/api/goldens/health").json()}
     assert health["general_support"]["missing"] == 1

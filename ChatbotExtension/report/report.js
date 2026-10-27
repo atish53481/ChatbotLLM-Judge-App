@@ -282,41 +282,6 @@ function caseTip(metric) {
   return (advice.chatbot && advice.chatbot[0]) || (advice.tests && advice.tests[0]) || "";
 }
 
-// Word-level difference between the actual and expected answer: each side comes
-// back as spans, words the other side lacks in bold. Case and punctuation are
-// ignored when comparing. Very long answers are left plain (the LCS table grows
-// with the product of their lengths).
-function wordDiff(actual, expected) {
-  const split = (text) => text.split(/(\s+)/).filter(Boolean);
-  const key = (token) => token.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
-  const a = split(actual);
-  const b = split(expected);
-  const aWords = a.map((t, i) => [key(t), i]).filter(([k]) => k);
-  const bWords = b.map((t, i) => [key(t), i]).filter(([k]) => k);
-  if (aWords.length * bWords.length > 250_000) return null;
-  const n = aWords.length;
-  const m = bWords.length;
-  const lcs = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
-  for (let i = n - 1; i >= 0; i--) {
-    for (let j = m - 1; j >= 0; j--) {
-      lcs[i][j] = aWords[i][0] === bWords[j][0] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
-    }
-  }
-  const sameA = new Set();
-  const sameB = new Set();
-  for (let i = 0, j = 0; i < n && j < m;) {
-    if (aWords[i][0] === bWords[j][0]) {
-      sameA.add(aWords[i][1]);
-      sameB.add(bWords[j][1]);
-      i++;
-      j++;
-    } else if (lcs[i + 1][j] >= lcs[i][j + 1]) i++;
-    else j++;
-  }
-  const render = (tokens, same) => tokens.map((t, i) => (key(t) && !same.has(i) ? el("b", { className: "diff" }, t) : t));
-  return { actual: render(a, sameA), expected: render(b, sameB) };
-}
-
 // A conversation's expected output describes the outcome, not a reply to
 // compare word by word, so only single-turn cases get the bold diff.
 function caseBlock(metric, row, direction, threshold, id, options = DEFAULT_OPTIONS) {
@@ -331,16 +296,17 @@ function caseBlock(metric, row, direction, threshold, id, options = DEFAULT_OPTI
     ["Actual result", diff ? el("span", {}, ...diff.actual) : actual || "–"],
     ["Expected result", diff ? el("span", {}, ...diff.expected) : expected || "– (this case has no expected answer)"],
   );
-  if (row.context && row.context.length) pairs.push(["Context", el("ul", {}, ...row.context.map((c) => el("li", {}, c)))]);
-  if (row.scores && row.scores.length === 2) {
-    pairs.push(["Two scorings", `${formatScore(row.scores[0])} and ${formatScore(row.scores[1])} (averaged)`]);
+  // Differences are listed for failed cases only: a passed case's wording may differ freely.
+  if (diff && diff.changes.length && !row.passed) {
+    const reference = (metric.scores_on || []).includes("expected_output") ? []
+      : [el("p", { className: "muted small" }, `${metric.title} does not compare the reply with the expected answer; the differences are for reference.`)];
+    pairs.push(["Differences", el("div", {}, diffList(diff.changes), ...reference)]);
   }
+  if (row.context && row.context.length) pairs.push(["Context", el("ul", {}, ...row.context.map((c) => el("li", {}, c)))]);
+  if (row.scores && row.scores.length >= 2) pairs.push(["Judge scorings", scoringsText(row.scores)]);
   pairs.push(["Why", row.reason || "No reason given."]);
-  const advice = metric.improve || {};
-  if (options.improve && !row.passed && ((advice.chatbot && advice.chatbot.length) || (advice.tests && advice.tests.length))) {
-    pairs.push(["How to improve", el("ul", {},
-      ...(advice.chatbot || []).map((t) => el("li", {}, t)),
-      ...(advice.tests || []).map((t) => el("li", {}, "Check the test: ", t)))]);
+  if (options.improve && !row.passed) {
+    pairs.push(["How to improve", howToPass(metric, row, direction, threshold, diff ? diff.changes : [])]);
   }
   const outcome = row.passed ? "pass" : "fail";
   return el(
@@ -432,10 +398,11 @@ function appendix(metrics) {
       el("li", {}, "As in DeepEval, a case passes when its score meets the metric's threshold, and a run passes only when every one of its cases passes. A run's score is the average of its case scores, shown for trends; it does not decide the result."),
       el("li", {}, "Test case results: a test case (TC-01, …) is one golden question. Each metric that asked it is one check: PASSED when that case's score meets the metric's threshold. A test case's success rate is the share of its checks that passed; the overall success rate is the share of all checks."),
       el("li", {}, `Higher is better (≥) for most metrics. ${lowerText}`),
-      el("li", {}, "In single-turn cases (when bold differences are on), bold words in the actual result are missing from the expected result, and bold words in the expected result are missing from the actual one (case and punctuation ignored). Different wording is not always wrong: the judge scores meaning."),
+      el("li", {}, "In single-turn cases (when highlighted differences are on), the actual and expected results are compared word by word (case and punctuation ignored): red dotted = missing from the reply, amber wavy = changed (the reply says something else there), green underlined = added by the reply. Failed cases also list each difference. Different wording is not always wrong: most judge metrics score meaning, not words."),
+      el("li", {}, "How to improve, for each failed case: DeepEval's pass rule and how far the score is off, what the metric scores, fixes taken from that case's differences (only for the fields the metric reads), then what to change in the chatbot and what to check in the test."),
       el("li", {}, "A test case passes only when every metric that scored it passes (DeepEval's test-run rule)."),
       el("li", {}, "Skipped cases were longer than the chatbot's max message length and were not sent."),
-      el("li", {}, "With the judge-consistency check on, every reply is scored twice; a run whose two scorings of one case differ by more than 0.15 is marked judge unstable."),
+      el("li", {}, "With the judge-consistency check on, every reply is scored twice and the two are averaged. When they differ by more than 0.15 it is scored a third time and the median is kept; a run is marked judge unstable only when no two of a case's three scorings agree within 0.15."),
       el("li", {}, "Replies such as \"limit reached\" or \"please log in\" stop a run as an error; such runs are not scored or listed."),
     ),
   );
@@ -451,7 +418,7 @@ const SECTION_OPTIONS = [
   ["improve", "How to improve the score"],
   ["details", "Metric details (case cards)"],
   ["passed", "Passed cases in metric details (doubles the page count)"],
-  ["diff", "Bold differing words"],
+  ["diff", "Highlight differences (missing / changed / added)"],
   ["appendix", "How to read the scores"],
 ];
 const DEFAULT_OPTIONS = Object.freeze({

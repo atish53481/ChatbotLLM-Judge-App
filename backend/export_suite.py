@@ -59,7 +59,8 @@ def _metric_entry(spec, threshold: float, target_config: dict) -> tuple[dict | N
         entry.update(kind="dag", dag=row["dag"], strict=row["strict"])
         return entry, None
     if spec.criteria:
-        entry.update(kind="geval", criteria=spec.criteria, params=list(spec.scores_on))
+        entry.update(kind="geval", criteria=spec.criteria, params=list(spec.scores_on),
+                     evaluation_steps=list(spec.evaluation_steps))
         return entry, None
     return None, "has no exportable definition"
 
@@ -176,7 +177,8 @@ def build_metric(entry):
     common = {"threshold": entry["threshold"], "model": judge(), "async_mode": False}
     if entry["kind"] == "geval":
         params = [SingleTurnParams(p) for p in entry["params"]]
-        return dm.GEval(name=entry["title"], criteria=entry["criteria"], evaluation_params=params, **common)
+        return dm.GEval(name=entry["title"], criteria=entry["criteria"],
+                        evaluation_steps=entry.get("evaluation_steps") or None, evaluation_params=params, **common)
     if entry["kind"] == "dag":
         return dm.DAGMetric(name=entry["title"], dag=dag_from_dict(entry["dag"]), strict_mode=entry["strict"],
                             **common)

@@ -101,3 +101,6 @@ details.metric .body { padding: 0 14px 14px; }
   .scan-nav { display: none; }
   details.metric { break-inside: avoid; }
 }
+
+.case-help { margin-top: 6px; white-space: normal; }
+.case-help summary { cursor: pointer; font-weight: 600; }

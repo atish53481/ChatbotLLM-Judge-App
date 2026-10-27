@@ -207,8 +207,28 @@ table.cases .tip { margin: 4px 0 0; padding-top: 3px; border-top: 1px dashed var
 
 .case-head { margin: 0 0 4px; font-weight: 600; }
 
-/* Words the other answer (actual vs expected) does not have. */
-b.diff { font-weight: 700; }
+/* Words the other answer (actual vs expected) does not have: missing (only the
+   expected answer has them), changed (the reply says something else there),
+   added (only the reply has them). Colour plus an underline style, so the
+   kinds still read apart when printed in black and white. */
+b.diff {
+  font-weight: 700;
+  padding: 0 1px;
+  border-radius: 2px;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+b.diff.missing { background: #fbe3e3; color: #8a1414; text-decoration: underline dotted; }
+b.diff.changed { background: #fdf0c4; color: #6a4b00; text-decoration: underline wavy; }
+b.diff.added { background: #dff0df; color: #0b5d0b; text-decoration: underline; }
+
+.diff-list { margin: 0; padding-left: 18px; }
+.diff-item.missing b { color: #8a1414; }
+.diff-item.changed b { color: #6a4b00; }
+.diff-item.added b { color: #0b5d0b; }
+
+.how-to-pass { margin: 0; padding-left: 18px; }
+.how-to-pass li { margin: 1px 0; }
 
 .plan-item {
   margin: 10px 0;

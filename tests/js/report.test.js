@@ -172,6 +172,8 @@ async function loadReport({ saved = {}, runs = latestRuns() } = {}) {
       },
       setItem: (k, v) => { storage[k.replace(/^llmJudge:/, "")] = JSON.parse(v); },
     },
+    // ui.js keeps per-tab settings (the fresh-session mark) in sessionStorage.
+    sessionStorage: { getItem: () => null, setItem: () => {} },
   };
   context.window.addEventListener = () => {};
   document.addEventListener = () => {};
@@ -358,4 +360,36 @@ test("wordDiff ignores case and punctuation and gives up on huge answers", async
   assert.ok(same.actual.every((t) => typeof t === "string"));
   const huge = Array.from({ length: 600 }, (_, i) => `w${i}`).join(" ");
   assert.equal(context.wordDiff(huge, huge), null);
+});
+
+test("wordDiff names each difference: missing, changed or added", async () => {
+  const { context } = await loadReport();
+  const diff = context.wordDiff(
+    "Refunds take 5 days to the original card. Thanks!",
+    "Refunds take 7 business days to the original payment method.",
+  );
+  const kinds = JSON.parse(JSON.stringify(diff.changes.map((c) => [c.kind, c.actual.trim(), c.expected.trim()])));
+  assert.deepEqual(kinds, [
+    ["changed", "5", "7 business"],
+    ["changed", "card. Thanks!", "payment method."],
+  ]);
+  const onlyMissing = context.wordDiff("Refunds take 7 days.", "Refunds take 7 business days.");
+  assert.deepEqual(JSON.parse(JSON.stringify(onlyMissing.changes.map((c) => [c.kind, c.expected.trim()]))), [["missing", "business"]]);
+  const onlyAdded = context.wordDiff("Refunds take 7 days. Happy shopping!", "Refunds take 7 days.");
+  assert.deepEqual(JSON.parse(JSON.stringify(onlyAdded.changes.map((c) => [c.kind, c.actual.trim()]))), [["added", "Happy shopping!"]]);
+  // Each side marks its own words with the change's kind.
+  const marked = (nodes) => JSON.parse(JSON.stringify(nodes.filter((n) => typeof n !== "string").map((n) => [n.className, n.textContent])));
+  assert.deepEqual(marked(onlyMissing.expected), [["diff missing", "business"]]);
+  assert.deepEqual(marked(onlyAdded.actual), [["diff added", "Happy"], ["diff added", "shopping!"]]);
+});
+
+test("failed case cards list the differences and how to pass the way DeepEval decides", async () => {
+  const { report } = await loadReport();
+  const card = byClass(report, "case").find((c) => /TC-01 · ✕ fail/.test(c.textContent));
+  const differences = byClass(card, "diff-list")[0];
+  assert.match(differences.textContent, /Changed: the reply says “5” where the expected answer says “7”/);
+  assert.match(card.textContent, /Answer Relevancy does not compare the reply with the expected answer/);
+  const pass = byClass(card, "how-to-pass")[0].textContent;
+  assert.match(pass, /Pass rule: DeepEval passes this case when the Answer Relevancy score is ≥ 0\.70; it scored 0\.40, 0\.30 short\./);
+  assert.match(pass, /Fix the chatbot: Answer the question first\./);
 });

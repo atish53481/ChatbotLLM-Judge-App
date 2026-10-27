@@ -225,6 +225,7 @@ loaders.custom = async () => {
         await api(`/api/custom-metrics/${row.id}`, { method: "DELETE" });
         await loadMetrics();
         await loaders.custom();
+        await settings.set("metricsChangedAt", Date.now());
       }))),
   )) : [el("p", { className: "muted" }, "No custom metrics yet.")]));
   if (!$("custom-params").children.length) clearCustomForm();
@@ -237,6 +238,7 @@ armConfirm($("custom-reset"), () => guarded(async () => {
   await api("/api/custom-metrics/reset", { method: "POST", body: {} });
   await loadMetrics();
   await loaders.custom();
+  await settings.set("metricsChangedAt", Date.now());
   setStatus("The example metrics are back; your own metrics were kept.");
 }));
 
@@ -265,10 +267,11 @@ $("custom-form").addEventListener("submit", (event) => {
     };
     const id = $("custom-id").value;
     await api(id ? `/api/custom-metrics/${id}` : "/api/custom-metrics", { method: id ? "PUT" : "POST", body });
-    setStatus(`Saved “${body.name}”. Find it under Custom in the side panel and the dashboard.`);
+    setStatus(`Saved “${body.name}”. Find it under ${kind === "dag" ? "Custom" : "G-Eval"} in the side panel and the dashboard.`);
     clearCustomForm();
     await loadMetrics();
     await loaders.custom();
+    await settings.set("metricsChangedAt", Date.now());
   });
 });
 

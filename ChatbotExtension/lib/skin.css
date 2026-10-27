@@ -211,3 +211,11 @@
 @media (prefers-reduced-motion: reduce) {
   :root[data-theme="dark"] .metric-card { transition: none; }
 }
+
+/* Actual vs expected differences (theme.css has the light look). */
+:root[data-theme="dark"] b.diff.missing { background: rgba(229, 88, 95, 0.22); color: #f3a3a7; }
+:root[data-theme="dark"] b.diff.changed { background: rgba(217, 166, 60, 0.22); color: #f0cf85; }
+:root[data-theme="dark"] b.diff.added { background: rgba(63, 182, 139, 0.22); color: #8fdcbd; }
+:root[data-theme="dark"] .diff-item.missing > b { color: #f3a3a7; }
+:root[data-theme="dark"] .diff-item.changed > b { color: #f0cf85; }
+:root[data-theme="dark"] .diff-item.added > b { color: #8fdcbd; }

@@ -16,13 +16,13 @@ from backend.metric_advice import ADVICE
 from backend.targets.base import ChatReply
 from backend.targets.curl import find_tools_path, tool_calls
 from backend.targets.http_client import HttpTargetClient
-from backend.text_match import bleu, exact_match, levenshtein_similarity, rouge_l
+from backend.text_match import bleu, exact_match, rouge_l
 from tests.fakes import CannedChatbot
 
 NEW_KEYS = {
     "turn_faithfulness", "turn_contextual_precision", "turn_contextual_recall",
     "turn_contextual_relevancy", "task_completion", "tool_correctness", "argument_correctness",
-    "plan_quality", "plan_adherence", "step_efficiency", "bleu", "rouge_l", "levenshtein",
+    "plan_quality", "plan_adherence", "step_efficiency", "bleu", "rouge_l",
     "exact_match",
 }
 
@@ -77,10 +77,21 @@ def test_exact_match_ignores_case_spacing_and_end_punctuation():
     assert exact_match("Refunds take 7 days", "Refunds take 8 days") == 0.0
 
 
-def test_levenshtein_similarity_is_one_minus_edits_over_length():
-    assert levenshtein_similarity("kitten", "sitting") == pytest.approx(1 - 3 / 7)
-    assert levenshtein_similarity("same", "same") == 1.0
-    assert levenshtein_similarity("", "") == 1.0
+def test_exact_match_and_rouge_l_are_deepevals_scorers():
+    from deepeval.scorer import Scorer
+
+    assert exact_match("The refund takes 7 days!", "refund takes 7 days") == 1.0  # articles dropped, as DeepEval does
+    assert exact_match("", "") == 1.0 and exact_match("", "x") == 0.0
+    pairs = [("refunds take days", "refund takes days"), ("the cat sat on the mat", "the cat ate the mat")]
+    for actual, expected in pairs:
+        assert rouge_l(actual, expected) == Scorer.rouge_score(expected, actual, "rougeL")
+    assert rouge_l("refunds take days", "refund takes days") == 1.0  # stemmed
+    assert rouge_l("", "") == 1.0 and rouge_l("", "x") == 0.0
+
+
+def test_levenshtein_is_gone_as_deepeval_has_no_such_scorer():
+    from backend import metrics_catalog as catalog
+    assert catalog.get_spec("levenshtein") is None
 
 
 def test_rouge_l_is_lcs_f1_over_words():
@@ -90,7 +101,37 @@ def test_rouge_l_is_lcs_f1_over_words():
     assert rouge_l("a b c", "x y z") == 0.0
 
 
+def _punkt_or_skip():
+    from backend import text_match
+    try:
+        text_match._punkt_ready()
+    except RuntimeError:
+        pytest.skip("NLTK punkt_tab data not available offline")
+
+
+def test_bleu_is_deepevals_scorer():
+    from deepeval.scorer import Scorer
+    _punkt_or_skip()
+    actual, expected = "orders ship within two days", "orders ship within two business days"
+    assert bleu(actual, expected) == pytest.approx(Scorer.sentence_bleu_score(expected, actual, "bleu1"))
+    assert bleu("", "") == 1.0 and bleu("", "x") == 0.0
+
+
+def test_bleu_without_tokenizer_data_says_how_to_fix(monkeypatch):
+    import nltk
+    from backend import text_match
+
+    def missing(_):
+        raise LookupError("punkt_tab")
+    monkeypatch.setattr(text_match, "_PUNKT_READY", False)
+    monkeypatch.setattr(nltk.data, "find", missing)
+    monkeypatch.setattr(nltk, "download", lambda *a, **k: False)
+    with pytest.raises(RuntimeError, match="punkt_tab"):
+        bleu("a b", "a b")
+
+
 def test_bleu_is_one_for_identical_and_zero_for_disjoint_text():
+    _punkt_or_skip()
     text = "orders ship within two business days from our warehouse"
     assert bleu(text, text) == pytest.approx(1.0)
     assert bleu("nothing in common here", text) == 0.0
@@ -241,6 +282,52 @@ def test_plan_metric_without_a_plan_is_not_applicable_rather_than_a_free_pass(tm
     result = run_spec(spec, judge=object(), target=ToolBot(tools=[{"name": "t"}]), target_id=target_id, conn=conn)
     assert result["status"] == "error"
     assert "no plan" in result["error"].lower()
+
+
+class OrderBot(ToolBot):
+    """Calls lookup_order only for questions that name an order."""
+
+    def chat(self, message, history=None):
+        reply = super().chat(message, history)
+        tools = [{"name": "lookup_order"}] if "ORD" in message else None
+        return ChatReply(reply=reply.reply, model="canned", mode="http", tools_called=tools)
+
+
+def test_run_mode_limit_counts_scored_cases_and_backfills_left_out_ones(tmp_path):
+    conn, target_id = _db(tmp_path)
+    metric = _recording_metric()
+    goldens = [{"id": f"g{i}", "question": q, "expected_answer": "x", "context": []}
+               for i, q in enumerate(["Which products?", "Which categories?", "Where is ORD-1?",
+                                      "Hours?", "Where is ORD-2?", "Where is ORD-3?"])]
+    spec = _with(catalog.get_spec("argument_correctness"), metric=metric, items=goldens)
+    result = run_spec(spec, judge=object(), target=OrderBot(tools=[]), target_id=target_id, conn=conn, limit=2)
+    # The first two goldens call no tool, so the next ones are sent until 2 are scored.
+    assert result["status"] == "pass", result
+    assert [r["golden_id"] for r in result["rows"]] == ["g2", "g4"]
+    assert result["cases_not_applicable"] == 3
+
+
+def test_run_mode_limit_stops_backfilling_when_the_golden_set_runs_out(tmp_path):
+    conn, target_id = _db(tmp_path)
+    metric = _recording_metric()
+    goldens = [{"id": f"g{i}", "question": q, "expected_answer": "x", "context": []}
+               for i, q in enumerate(["Which products?", "Where is ORD-1?", "Hours?"])]
+    spec = _with(catalog.get_spec("argument_correctness"), metric=metric, items=goldens)
+    result = run_spec(spec, judge=object(), target=OrderBot(tools=[]), target_id=target_id, conn=conn, limit=2)
+    assert [r["golden_id"] for r in result["rows"]] == ["g1"]
+
+
+def test_not_applicable_error_names_every_reason_with_its_count(tmp_path):
+    conn, target_id = _db(tmp_path)
+    metric = _recording_metric(
+        score=1.0, reason="There were no plans to evaluate within the trace of your agent's execution.")
+    goldens = [{"id": f"g{i}", "question": q, "expected_answer": "x", "context": []}
+               for i, q in enumerate(["Which products?", "Hours?", "Where is ORD-1?"])]
+    spec = _with(catalog.get_spec("plan_quality"), metric=metric, items=goldens)
+    result = run_spec(spec, judge=object(), target=OrderBot(tools=[]), target_id=target_id, conn=conn, limit=3)
+    assert result["status"] == "error"
+    assert "2 cases: The chatbot called no tools" in result["error"]
+    assert "1 case: The chatbot's tool calls carry no plan" in result["error"]
 
 
 def test_task_completion_always_applies_and_passes_tools_when_present(tmp_path):

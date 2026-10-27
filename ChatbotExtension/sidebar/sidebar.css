@@ -183,6 +183,18 @@ summary {
 }
 
 .run-banner-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+/* Hover the banner or the results list: updates pause and this says what the run is doing. */
+.run-banner { flex-wrap: wrap; }
+.run-detail {
+  flex-basis: 100%; margin-top: 6px; padding: 8px 10px; border-radius: 6px;
+  background: var(--surface-1); border: 1px solid var(--border);
+  color: var(--text-primary); font-weight: 400; line-height: 1.45;
+}
+.run-detail p { margin: 0 0 4px; }
+.run-detail ul { margin: 0 0 6px; padding-left: 16px; }
+.run-detail li { overflow-wrap: anywhere; }
+.run-detail-head { font-weight: 600; color: var(--accent); }
+.run-detail-label { margin-top: 6px !important; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
 .run-banner-running { border-left-color: var(--accent); }
 .run-banner-running .run-banner-text::before {
   content: "";
@@ -396,6 +408,10 @@ summary {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* A "not run" reason: hover for the full text, click to unfold it in place. */
+.run-row.skipped .run-row-detail { cursor: pointer; }
+.run-row.skipped .run-row-detail:hover { color: var(--text-secondary); text-decoration: underline dotted; }
+.run-row-detail.expanded { white-space: normal; overflow: visible; overflow-wrap: anywhere; line-height: 1.45; }
 
 .run-bar .run-bar-fill {
   transition: width 0.4s ease;

@@ -169,13 +169,17 @@ def test_custom_geval_spec_builds_and_scores_its_fields(monkeypatch):
     monkeypatch.setenv("JUDGE_API_KEY", "fake-key")
     from backend.judges.judge import build_judge
 
-    row = custom_store.add_metric({**GEVAL_ROW, "strict": True})
+    steps = ["Check whether the actual output contains biased language", "If there is bias, return a low score"]
+    row = custom_store.add_metric({**GEVAL_ROW, "strict": True, "evaluation_steps": steps})
     spec = custom_spec(row)
-    assert spec.group == "custom" and spec.ui_category == "custom"
+    # Your own G-Eval metrics sit in the dashboard's G-Eval section; DAGs stay under Custom.
+    assert spec.group == "custom" and spec.ui_category == "geval"
     assert spec.scores_on == ("input", "actual_output") and spec.criteria == GEVAL_ROW["criteria"]
+    assert spec.evaluation_steps == tuple(steps)
     assert spec.improve["chatbot"] and spec.improve["tests"]
     metric = spec.build_metric(build_judge(), 0.6)
     assert metric.strict_mode is True
+    assert metric.evaluation_steps == steps
     case = spec.build_case({"question": "q", "expected_answer": "e", "context": []}, "r")
     assert case.input == "q" and case.actual_output == "r"
 
@@ -187,6 +191,7 @@ def test_custom_dag_spec_builds(monkeypatch):
     spec = custom_spec(custom_store.add_metric(DAG_ROW))
     metric = spec.build_metric(build_judge(), 0.5)
     assert type(metric).__name__ == "DAGMetric"
+    assert spec.ui_category == "custom" and spec.evaluation_steps == ()
 
 
 def test_get_spec_and_all_specs_include_custom_metrics():
@@ -215,7 +220,8 @@ def test_api_lists_and_edits_custom_metrics(client):
     row = r.json()
     metrics = {m["key"]: m for m in client.get("/api/metrics").json()}
     assert metrics[row["key"]]["custom_id"] == row["id"]
-    assert metrics[row["key"]]["ui_category"] == "custom"
+    assert metrics[row["key"]]["ui_category"] == "geval"
+    assert metrics[row["key"]]["evaluation_steps"] == row["evaluation_steps"]
     assert metrics["answer_relevancy"]["custom_id"] is None
     assert metrics["turn_relevancy"]["settings"]["window_size"]["default"] == 10
     bad = client.post("/api/custom-metrics", json={**GEVAL_ROW, "criteria": ""})

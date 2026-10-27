@@ -232,15 +232,25 @@ function parseStored(raw) {
   }
 }
 
+// Settings kept per browser tab, not shared by every tab: the fresh-session
+// mark. Loading the side panel in a second tab (or reloading another one) must
+// not blank the scores this tab is showing. The panel and dashboard frames of
+// one tab still share it (and hear its changes) through sessionStorage.
+const TAB_KEYS = new Set(["freshSinceRunId"]);
+
+function storeFor(key) {
+  return TAB_KEYS.has(key) ? sessionStorage : localStorage;
+}
+
 function webRead(key) {
-  return parseStored(localStorage.getItem(STORAGE_PREFIX + key));
+  return parseStored(storeFor(key).getItem(STORAGE_PREFIX + key));
 }
 
 // Every listener hears every change, the writing page's own included; other
 // tabs and frames hear it via the "storage" event.
 function webWrite(key, value) {
   const oldValue = webRead(key);
-  localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(value));
+  storeFor(key).setItem(STORAGE_PREFIX + key, JSON.stringify(value));
   const changes = { [key]: { oldValue, newValue: value } };
   setTimeout(() => webListeners.forEach((callback) => callback(changes)), 0);
 }
@@ -645,6 +655,9 @@ function metricMeaning(metric) {
     pairs.push(["The judge reads", metric.scores_on.map(fieldLabel).join(", ")]);
   }
   if (metric.criteria) pairs.push(["Rubric", metric.criteria]);
+  if (metric.evaluation_steps && metric.evaluation_steps.length) {
+    pairs.push(["Evaluation steps", metric.evaluation_steps.map((s, i) => `${i + 1}. ${s}`).join(" ")]);
+  }
   pairs.push(["Run result", "As in DeepEval: each case passes when its score meets the threshold, and the run passes only when every case passes. The score shown is the average of the case scores."]);
   return pairs;
 }
@@ -679,6 +692,175 @@ function improvementBlock(metric, details) {
     advice.tests && advice.tests.length ? el("p", { className: "improve-label" }, "Check the test") : null,
     advice.tests && advice.tests.length ? list(advice.tests) : null,
   );
+}
+
+// Word-level difference between the actual and expected answer. Each stretch
+// of differing words between two shared words is one change: "missing" (only
+// the expected answer has it), "added" (only the reply has it) or "changed"
+// (both have different words there: the reply overrode the expected text).
+// Each side comes back as spans with those words marked, plus the list of
+// changes. Case and punctuation are ignored when comparing. Very long answers
+// are left plain (the LCS table grows with the product of their lengths).
+function wordDiff(actual, expected) {
+  const split = (text) => text.split(/(\s+)/).filter(Boolean);
+  const key = (token) => token.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+  const a = split(actual);
+  const b = split(expected);
+  const aWords = a.map((t, i) => [key(t), i]).filter(([k]) => k);
+  const bWords = b.map((t, i) => [key(t), i]).filter(([k]) => k);
+  if (aWords.length * bWords.length > 250_000) return null;
+  const n = aWords.length;
+  const m = bWords.length;
+  const lcs = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      lcs[i][j] = aWords[i][0] === bWords[j][0] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+    }
+  }
+  // Walk the LCS: each run of unshared words between shared ones is one hunk.
+  const hunks = [];
+  let hunk = { a: [], b: [] };
+  const close = () => {
+    if (hunk.a.length || hunk.b.length) hunks.push(hunk);
+    hunk = { a: [], b: [] };
+  };
+  let i = 0;
+  let j = 0;
+  while (i < n || j < m) {
+    if (i < n && j < m && aWords[i][0] === bWords[j][0]) {
+      close();
+      i++;
+      j++;
+    } else if (j >= m || (i < n && lcs[i + 1][j] >= lcs[i][j + 1])) hunk.a.push(aWords[i++][1]);
+    else hunk.b.push(bWords[j++][1]);
+  }
+  close();
+  const markA = new Map();
+  const markB = new Map();
+  const phrase = (tokens, idx) => tokens.slice(idx[0], idx[idx.length - 1] + 1).join("");
+  const changes = hunks.map((h) => {
+    const kind = h.a.length && h.b.length ? "changed" : h.a.length ? "added" : "missing";
+    h.a.forEach((k) => markA.set(k, kind));
+    h.b.forEach((k) => markB.set(k, kind));
+    return { kind, actual: h.a.length ? phrase(a, h.a) : "", expected: h.b.length ? phrase(b, h.b) : "" };
+  });
+  const render = (tokens, marks) => tokens.map((t, k) => (marks.has(k)
+    ? el("b", { className: `diff ${marks.get(k)}`, title: DIFF_LABELS[marks.get(k)] }, t) : t));
+  return { actual: render(a, markA), expected: render(b, markB), changes };
+}
+
+const DIFF_LABELS = {
+  missing: "missing from the reply",
+  changed: "the reply says something else here",
+  added: "in the reply, not in the expected answer",
+};
+
+// The differences as a list: what the reply left out, overrode and added.
+function diffList(changes, limit = 8) {
+  const quote = (text) => `“${text.trim()}”`;
+  const items = changes.slice(0, limit).map((c) => el(
+    "li",
+    { className: `diff-item ${c.kind}` },
+    c.kind === "missing" ? [el("b", {}, "Missing: "), "the reply leaves out ", quote(c.expected)]
+      : c.kind === "added" ? [el("b", {}, "Added: "), "the reply adds ", quote(c.actual)]
+        : [el("b", {}, "Changed: "), "the reply says ", quote(c.actual), " where the expected answer says ", quote(c.expected)],
+  ));
+  if (changes.length > limit) items.push(el("li", { className: "muted" }, `… and ${changes.length - limit} more`));
+  return el("ul", { className: "diff-list" }, ...items);
+}
+
+// What would make this failed case pass, the way DeepEval decides it: the
+// pass rule and how far off the score is, what the metric scores, then fixes
+// drawn from this case's own differences (only for the fields the metric
+// reads), then the metric's general advice.
+function howToPass(metric, row, direction, threshold, changes) {
+  const reads = new Set(metric.scores_on || []);
+  const steps = [];
+  const gap = typeof row.score === "number" && typeof threshold === "number"
+    ? Math.abs(row.score - threshold) : null;
+  steps.push(el("li", {}, el("b", {}, "Pass rule: "),
+    `DeepEval passes this case when the ${metric.title} score is ${comparator(direction)} ${formatScore(threshold)}`,
+    gap !== null ? `; it scored ${formatScore(row.score)}, ${formatScore(gap)} ${direction === "lower" ? "too high" : "short"}.` : "."));
+  if (metric.scale_hint) {
+    const fields = metric.scores_on && metric.scores_on.length ? ` The judge reads: ${metric.scores_on.map(fieldLabel).join(", ").toLowerCase()}.` : "";
+    steps.push(el("li", {}, el("b", {}, "What it scores: "), `${metric.scale_hint}.${fields}`));
+  }
+  const missing = changes.filter((c) => c.kind === "missing");
+  const changed = changes.filter((c) => c.kind === "changed");
+  const added = changes.filter((c) => c.kind === "added");
+  const quote = (list) => list.slice(0, 4).map((c) => `“${c.trim()}”`).join(", ");
+  if (reads.has("expected_output") && reads.has("actual_output")) {
+    if (missing.length) steps.push(el("li", {}, el("b", {}, "Add to the reply: "), quote(missing.map((c) => c.expected))));
+    if (changed.length) {
+      steps.push(el("li", {}, el("b", {}, "Correct in the reply: "),
+        changed.slice(0, 4).map((c) => `“${c.actual.trim()}” → “${c.expected.trim()}”`).join(", ")));
+    }
+    if (added.length && ["exact_match", "bleu", "rouge_l"].includes(metric.key)) {
+      steps.push(el("li", {}, el("b", {}, "Remove from the reply: "), quote(added.map((c) => c.actual)),
+        " (this metric counts words, so extra words lower the score)"));
+    }
+  } else if (reads.has("expected_output")) {
+    if (missing.length || changed.length) {
+      steps.push(el("li", {}, el("b", {}, "Retrieve text that covers: "),
+        quote([...missing, ...changed].map((c) => c.expected)), " (the expected answer's facts must be in the retrieved context)"));
+    }
+  } else if (changes.length && reads.has("actual_output")
+    && (reads.has("context") || reads.has("retrieval_context"))) {
+    const unsupported = [...added, ...changed].map((c) => c.actual);
+    if (unsupported.length) {
+      steps.push(el("li", {}, el("b", {}, "Check these claims against the context: "), quote(unsupported),
+        " (keep them only if the context backs them; they are not in the expected answer)"));
+    }
+  } else if (added.length && metric.key === "answer_relevancy") {
+    steps.push(el("li", {}, el("b", {}, "Cut off-topic extras: "), quote(added.map((c) => c.actual)),
+      " (every sentence that does not answer the question lowers the score)"));
+  }
+  const advice = metric.improve || {};
+  steps.push(...(advice.chatbot || []).map((t) => el("li", {}, el("b", {}, "Fix the chatbot: "), t)));
+  steps.push(...(advice.tests || []).map((t) => el("li", {}, el("b", {}, "Check the test: "), t)));
+  return el("ul", { className: "how-to-pass" }, ...steps);
+}
+
+// A failed single-turn case's actual and expected results with their
+// differences marked, the list of differences and how to pass, for every page
+// that shows cases. null when there is nothing to compare: a passed case (its
+// wording may differ freely), a conversation (its expected output describes the
+// outcome), or either side empty.
+function failedCaseView(metric, row, direction, threshold) {
+  const actual = row.actual_output || "";
+  const expected = row.expected_output || "";
+  if (row.passed || !metric || metric.kind === "conversation") return null;
+  const diff = actual && expected ? wordDiff(actual, expected) : null;
+  const changes = diff ? diff.changes : [];
+  const reference = (metric.scores_on || []).includes("expected_output") ? null
+    : el("p", { className: "muted small" }, `${metric.title} does not compare the reply with the expected answer; the differences are for reference.`);
+  return {
+    actual: diff ? el("span", {}, ...diff.actual) : null,
+    expected: diff ? el("span", {}, ...diff.expected) : null,
+    differences: changes.length ? el("div", { className: "differences" }, diffList(changes), reference) : null,
+    howToPass: howToPass(metric, row, direction ?? metric.direction, threshold ?? metric.threshold, changes),
+  };
+}
+
+// The same marks for a whole failed test case (no single metric): its reply
+// and expected answer with differing words marked, and the list. null when it
+// passed or either side is empty.
+function outputsDiff(actual, expected, passed) {
+  if (passed || !actual || !expected) return null;
+  const diff = wordDiff(actual, expected);
+  if (!diff) return null;
+  return {
+    actual: el("span", {}, ...diff.actual),
+    expected: el("span", {}, ...diff.expected),
+    differences: diff.changes.length ? diffList(diff.changes) : null,
+  };
+}
+
+// A case's judge scorings (consistency check): two are averaged; a third,
+// taken when the two disagreed, breaks the tie and the median is kept.
+function scoringsText(scores) {
+  const list = scores.map(formatScore).join(", ");
+  return scores.length === 3 ? `${list} (disagreed, so scored a third time: median kept)` : `${list} (averaged)`;
 }
 
 // One case as plain text, for pasting into a bug report.

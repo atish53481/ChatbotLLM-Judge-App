@@ -34,6 +34,11 @@ def test_flags_an_empty_reply():
     "have shared. For account-specific help, please sign in and check “My Orders,” or "
     "contact human support at support@shopsphere.com.",
     "To see your order history, please log in and open My Orders.",
+    # A refusal that offers help when something went wrong is an answer, not an error page.
+    "I'm not going to insult you, I'm here to help with your ShopSphere orders, returns, refunds, "
+    "or products. If something went wrong with an order, I'm happy to look into it. Just share your "
+    "order ID or question.",
+    "When something went wrong with a delivery, contact support@shopsphere.com.",
     # A real answer that happens to explain limits is long enough to be kept.
     "Our API has a rate limit of 100 requests per minute per key. " * 6,
 ])

@@ -9,7 +9,7 @@ const $ = (id) => document.getElementById(id);
 const SVG = "http://www.w3.org/2000/svg";
 
 const state = {
-  targets: [], target: null, scans: [], scan: null, baseline: null, cache: new Map(), titles: new Map(), series: new Map(),
+  targets: [], target: null, scans: [], scan: null, baseline: null, cache: new Map(), titles: new Map(), metrics: new Map(), series: new Map(),
   view: "evaluation", filter: "all", open: new Set(), json: false,
   // Evaluation
   range: "all", selected: new Set(), hidden: new Set(),
@@ -17,6 +17,8 @@ const state = {
   analysis: "histogram", interval: 0.1, radarCat: "", categories: new Map(),
   // Test Cases
   query: "", metricFilter: "", caseTab: new Map(), saving: false,
+  // Eval Insights: per run {status, issues, overview, ...}; the open chip; the cases an issue covers
+  insights: new Map(), insightOpen: "", insightCases: null,
   // Compare
   cmp: { match: "id", filter: "all", query: "", open: new Set(), current: true, baseline: true },
 };
@@ -708,10 +710,12 @@ function casesView() {
   const shown = cases
     .filter((c) => state.filter === "all" || (state.filter === "passed") === c.passed)
     .filter((c) => !state.metricFilter || c.metrics.some((m) => m.key === state.metricFilter && !m.passed))
-    .filter((c) => !q || [c.name, c.input, c.actual_output, c.expected_output].some((t) => t.toLowerCase().includes(q)));
+    .filter((c) => !q || [c.name, c.input, c.actual_output, c.expected_output].some((t) => t.toLowerCase().includes(q)))
+    .filter((c) => !state.insightCases || state.insightCases.keys.has(c.key));
   const keys = [...new Set(cases.flatMap((c) => c.metrics.map((m) => m.key)))];
   return [
     head("Test Cases", `${state.target.name} · v${scan.version} · ${formatRunTime(scan.started_at)}`),
+    insightsCard(scan, cases),
     el("div", { className: "toolbar" },
       seg([["all", "All"], ["passed", "Passed"], ["failed", "Failed"]], state.filter, (v) => { state.filter = v; render(); }, "Show"),
       el("div", { className: "summary-pills" },
@@ -731,12 +735,94 @@ function casesView() {
           columnPicker(CASE_COLUMNS, state.caseCols, "caseCols"),
           el("button", { type: "button", className: "btn", onclick: () => downloadCsv(cases) }, "⭳ Download all as CSV"))),
       state.saving ? saveDatasetRow(shown, scan) : ""),
-    el("p", { className: "muted small" }, `Showing ${shown.length} of ${cases.length} test case(s)`),
+    el("p", { className: "muted small" }, `Showing ${shown.length} of ${cases.length} test case(s)`,
+      state.insightCases ? el("span", {}, ` · only the cases of “${state.insightCases.title}” `,
+        el("button", { type: "button", className: "link-btn", onclick: () => { state.insightCases = null; render(); } }, "show all")) : ""),
     el("div", { className: "card", style: "padding:0" }, el("div", { className: "table-wrap" }, el("table", { className: "data" },
       el("thead", {}, el("tr", {}, ...Object.entries(CASE_COLUMNS).filter(([k]) => state.caseCols.has(k)).map(([, l]) => el("th", {}, l)))),
       el("tbody", {}, ...(shown.length ? shown.flatMap(caseRows)
         : [el("tr", {}, el("td", { colspan: state.caseCols.size, className: "empty" }, "No test cases here."))]))))),
   ];
+}
+
+// --- Eval Insights: the judge's read of what went wrong in this run ---------
+// Chips for serious / mild issues and the logged hyperparameters; a chip opens
+// its list, an issue's "Show cases" filters the table. One judge call per run,
+// made only when asked, and saved by the backend.
+function insightsCard(scan, cases) {
+  const jobId = scan.job_id;
+  const data = state.insights.get(jobId);
+  if (!data) {
+    state.insights.set(jobId, { status: "loading" });
+    api(`/api/scans/${jobId}/insights`)
+      .then((d) => state.insights.set(jobId, d))
+      .catch((e) => state.insights.set(jobId, { status: "error", error: e.message }))
+      .finally(render);
+  }
+  const info = state.insights.get(jobId);
+  const names = new Map(cases.map((c) => [c.key, c.name]));
+  const generate = async (button) => {
+    button.disabled = true;
+    button.textContent = "Reading the results…";
+    try {
+      state.insights.set(jobId, await api(`/api/scans/${jobId}/insights`, { method: "POST" }));
+    } catch (e) {
+      state.insights.set(jobId, { ...info, status: info.status === "ready" ? "ready" : "error", error: e.message });
+    }
+    render();
+  };
+  const genButton = (label) => {
+    const b = el("button", { type: "button", className: "btn", title: "One judge call: groups the failed and weak cases into issues" }, label);
+    b.addEventListener("click", () => generate(b));
+    return b;
+  };
+  const params = info.hyperparameters || {};
+  const paramCount = Object.keys(params).length;
+  const chip = (key, label, cls) => el("button", {
+    type: "button", className: `insight-chip ${cls}`, "aria-expanded": String(state.insightOpen === key),
+    onclick: () => { state.insightOpen = state.insightOpen === key ? "" : key; render(); },
+  }, label);
+  const ready = info.status === "ready";
+  const counts = (ready && info.counts) || {};
+  const chips = el("div", { className: "insight-chips" },
+    ready ? chip("serious", `${counts.serious || 0} serious issue${counts.serious === 1 ? "" : "s"}`, counts.serious ? "serious" : "none") : "",
+    ready ? chip("mild", `${counts.mild || 0} mild issue${counts.mild === 1 ? "" : "s"}`, counts.mild ? "mild" : "none") : "",
+    chip("params", paramCount ? `${paramCount} hyperparameter${paramCount === 1 ? "" : "s"} logged` : "No hyperparameters logged",
+      paramCount ? "params" : "serious"));
+  let panel = "";
+  if (state.insightOpen === "params") {
+    panel = paramCount
+      ? el("dl", { className: "insight-params" }, ...Object.entries(params).flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, v)]))
+      : el("p", { className: "small muted" }, "This run logged no chatbot model, instructions or role. Set them on the chatbot in the side panel so runs can be told apart.");
+  } else if (ready && state.insightOpen) {
+    const list = info.issues.filter((i) => i.severity === state.insightOpen);
+    panel = list.length ? el("ul", { className: "insight-issues" }, ...list.map((issue) => el("li", { className: issue.severity },
+      el("strong", {}, issue.title),
+      issue.detail ? el("p", {}, issue.detail) : "",
+      el("p", { className: "small muted" },
+        issue.metrics.length ? `${issue.metrics.map(title).join(", ")} · ` : "",
+        issue.cases.length ? el("button", { type: "button", className: "link-btn", onclick: () => {
+          state.insightCases = { title: issue.title, keys: new Set(issue.cases) };
+          state.filter = "all";
+          render();
+        } }, `Show ${issue.cases.length} case${issue.cases.length === 1 ? "" : "s"}: ${issue.cases.map((k) => names.get(k) || k).join(", ")}`) : "no cases named"))))
+      : el("p", { className: "small muted" }, `No ${state.insightOpen} issues in this run.`);
+  }
+  const overview = ready
+    ? el("div", { className: "insight-overview" }, el("p", { className: "insight-overview-title" }, "Overview"),
+      el("ul", {}, ...info.overview.map((b) => el("li", {}, b))))
+    : el("div", { className: "insight-overview empty" },
+      info.status === "loading" ? el("p", { className: "small muted" }, "Loading…")
+        : el("div", {}, el("p", { className: "small muted" }, info.status === "error" ? `Could not get insights: ${info.error}`
+          : "The judge reads this run's failed and borderline test cases and names the issues behind them."),
+        genButton("✨ Generate insights")));
+  return el("div", { className: "card insights" },
+    el("div", { className: "insights-left" },
+      el("div", { className: "insights-head" }, el("h2", { className: "section" }, "Eval Insights"),
+        ready ? genButton("↻ Regenerate") : ""),
+      chips, panel,
+      ready ? el("p", { className: "small muted" }, `Reviewed ${info.cases_reviewed} of ${info.cases_total} test cases · ${formatRunTime(info.generated_at)}`) : ""),
+    overview);
 }
 
 // Save as new dataset: the cases shown become goldens of a new golden set
@@ -791,15 +877,25 @@ function caseRows(c) {
     metrics: c.metrics.map(({ key, score, passed, reason }) => ({ metric: title(key), score, passed, reason })) };
   const pick = (value) => { state.caseTab.set(c.key, value); render(); };
   const m = c.metrics.find((x) => x.key === tab);
+  // Failed: the words that differ between reply and expected answer, and how to pass.
+  const judged = m && failedCaseView(state.metrics.get(m.key), { passed: m.passed, score: m.score, reason: m.reason,
+    actual_output: m.actual_output || c.actual_output, expected_output: c.expected_output }, m.direction, m.threshold);
+  const whole = outputsDiff(c.actual_output, c.expected_output, c.passed);
   const body = state.json ? el("pre", { className: "json" }, JSON.stringify(json, null, 2))
     : m ? el("div", { className: "props-grid" },
       prop("Metric", title(m.key)), prop("Status", m.passed ? "Passed" : "Failed"),
       prop("Score", `${formatScore(m.score)}${m.threshold != null ? ` (threshold ${formatScore(m.threshold)}, ${m.direction === "lower" ? "max" : "min"})` : ""}`),
-      prop("Reason", m.reason), prop("Actual output it judged", m.actual_output || c.actual_output))
+      prop("Reason", m.reason),
+      prop("Actual output it judged", (judged && judged.actual) || m.actual_output || c.actual_output),
+      ...(judged && judged.expected ? [prop("Expected output", judged.expected)] : []),
+      ...(judged && judged.differences ? [prop("Differences", judged.differences)] : []),
+      ...(judged ? [prop("How to pass", judged.howToPass)] : []))
       : el("div", { className: "props-grid" },
         prop("Name", c.name), prop("Status", c.passed ? "Passed" : "Failed"),
         prop("Run duration", typeof c.latency_s === "number" ? `${c.latency_s.toFixed(2)}s` : "–"),
-        prop("Input", c.input), prop("Actual output", c.actual_output), prop("Expected output", c.expected_output),
+        prop("Input", c.input), prop("Actual output", (whole && whole.actual) || c.actual_output),
+        prop("Expected output", (whole && whole.expected) || c.expected_output),
+        ...(whole && whole.differences ? [prop("Differences", whole.differences)] : []),
         el("div", { className: "prop" }, el("span", {}, "Retrieval context"), contextCards(c.context)),
         el("div", { className: "prop" }, el("span", {}, "Tools called"), toolList(c.tools_called)));
   const detail = el("td", { className: "detail-cell", colspan: state.caseCols.size },
@@ -923,8 +1019,9 @@ function comparePair(p) {
   return el("div", { className: "cmp-item" }, headRow, el("div", { className: "cmp-body" },
     line("Metrics", (c) => el("div", { className: "chips col" }, ...[...c.metrics].sort((x, y) => x.passed - y.passed).map(metricChip))),
     line("Input", (c) => c.input),
-    line("Actual output", (c) => c.actual_output || "None"),
-    line("Expected output", (c) => c.expected_output || "None"),
+    line("Actual output", (c) => { const d = outputsDiff(c.actual_output, c.expected_output, c.passed); return (d && d.actual) || c.actual_output || "None"; }),
+    line("Expected output", (c) => { const d = outputsDiff(c.actual_output, c.expected_output, c.passed); return (d && d.expected) || c.expected_output || "None"; }),
+    line("Differences", (c) => { const d = outputsDiff(c.actual_output, c.expected_output, c.passed); return (d && d.differences) || el("span", { className: "muted" }, c.passed ? "Passed" : "None"); }),
     line("Retrieval context", (c) => contextCards(c.context)),
     line("Tools called", (c) => toolList(c.tools_called))));
 }
@@ -1017,6 +1114,7 @@ async function init() {
     const [targets, metrics] = await Promise.all([api("/api/targets"), api("/api/metrics").catch(() => [])]);
     state.targets = targets;
     state.titles = new Map(metrics.map((m) => [m.key, m.title]));
+    state.metrics = new Map(metrics.map((m) => [m.key, m]));
     state.categories = new Map(metrics.map((m) => [m.key, m.ui_category || m.group]));
     const confident = await api("/api/confident/settings").catch(() => null);
     state.confidentKey = Boolean(confident && confident.has_key);

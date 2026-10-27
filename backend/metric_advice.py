@@ -424,7 +424,7 @@ ADVICE: dict[str, dict[str, list[str]]] = {
             "Use Correctness (G-Eval) for free-form answers.",
             "Write expected answers in the wording the bot is supposed to use.",
         ],
-    } for key in ("bleu", "rouge_l", "levenshtein", "exact_match")},
+    } for key in ("bleu", "rouge_l", "exact_match")},
 }
 
 # Your own G-Eval / DAG metrics: the rubric is yours, so the advice is general.

@@ -410,7 +410,7 @@ function caseDetailPanel(metric, details) {
           el("dl", {
             className: "case-fields", title: "Double-click to read this case full size",
             ondblclick: () => openCaseViewer(metric, row, direction, threshold),
-          }, ...caseFields(metric, row)),
+          }, ...caseFields(metric, row, direction, threshold)),
         )),
       )
       : el("p", { className: "case-detail-empty muted" }, "No failed cases in the last run."),
@@ -489,7 +489,7 @@ function openCaseViewer(metric, row, direction, threshold) {
         copyCaseButton(metric, row, direction, threshold),
         closeButton),
     ),
-    el("dl", { className: "case-fields" }, ...caseFields(metric, row)),
+    el("dl", { className: "case-fields" }, ...caseFields(metric, row, direction, threshold)),
   );
   const viewer = el("div", { className: "case-viewer", onclick: (e) => { if (e.target === viewer) close(); } }, panel);
   document.addEventListener("keydown", onKey);
@@ -524,8 +524,10 @@ async function loadDetailHistory(key) {
 }
 
 // Label / value pairs for one case: what was asked, what came back, what was
-// expected, the context the judge read, and the judge's reason.
-function caseFields(metric, row) {
+// expected (a failed case with the differing words marked), the context the
+// judge read, the judge's reason and, when it failed, how to pass.
+function caseFields(metric, row, direction, threshold) {
+  const failed = failedCaseView(metric, row, direction, threshold);
   const pairs = [];
   const add = (label, value) => {
     if (value === null || value === undefined || value === "") return;
@@ -541,12 +543,11 @@ function caseFields(metric, row) {
     }
   } else {
     add("Question", row.input && row.input !== row.question ? row.input : row.question);
-    if (row.scores && row.scores.length === 2) {
-      add("Two scorings", `${formatScore(row.scores[0])} and ${formatScore(row.scores[1])} (averaged)`);
-    }
+    if (row.scores && row.scores.length >= 2) add("Judge scorings", scoringsText(row.scores));
     if (row.enhancement) add("Attack sent as", row.enhancement.replace(/_/g, " "));
-    add("Actual result", row.actual_output);
-    add("Expected result", row.expected_output);
+    add("Actual result", (failed && failed.actual) || row.actual_output);
+    add("Expected result", (failed && failed.expected) || row.expected_output);
+    if (failed && failed.differences) add("Differences", failed.differences);
     if (row.context && row.context.length) {
       add(contextLabel(metric, row), el("ul", {}, ...row.context.map((line) => el("li", {}, line))));
     }
@@ -557,6 +558,7 @@ function caseFields(metric, row) {
   }
   if (typeof row.latency_s === "number") add("Chatbot latency", `${row.latency_s.toFixed(2)} s`);
   add("Why", row.reason || "No reason given.");
+  if (failed) add("How to pass", failed.howToPass);
   return pairs;
 }
 
@@ -704,6 +706,18 @@ function metricCard(metric, row) {
         { type: "button", onclick: () => toggleCardDetails(metric.key) },
         state.expandedDetailKeys.has(metric.key) ? "Hide details" : "Details",
       ),
+      // Your own G-Eval metric: change it in the builder above, or remove it.
+      metric.custom_id && metric.ui_category === "geval"
+        ? el("button", {
+          type: "button",
+          disabled: state.running,
+          onclick: () => editOwnGeval(metric).catch((error) => setStatus(error.message, true)),
+        }, "Edit")
+        : null,
+      metric.custom_id && metric.ui_category === "geval" && !state.running
+        ? confirmButton("Delete", `Delete ${metric.title}`,
+          () => deleteOwnGeval(metric).catch((error) => setStatus(error.message, true)))
+        : null,
     ),
     state.expandedDetailKeys.has(metric.key) ? caseDetailPanel(metric, state.caseDetailsCache[metric.key]) : null,
   );
@@ -857,7 +871,202 @@ function renderMetricGrid() {
   $("metric-grid-empty").classList.toggle("hidden", state.metrics.length > 0);
   // Metrics that cannot run for this chatbot go last, so the runnable ones lead.
   const ordered = [...shown.filter((m) => !m.unavailable), ...shown.filter((m) => m.unavailable)];
-  $("metric-grid").replaceChildren(...ordered.map((m) => metricCard(m, byKey.get(m.key))));
+  // The G-Eval section starts with the builder for your own G-Eval metrics.
+  const builder = state.categoryFilter === "geval" ? gevalBuilder.node() : null;
+  $("metric-grid").replaceChildren(...[builder, ...ordered.map((m) => metricCard(m, byKey.get(m.key)))].filter(Boolean));
+}
+
+// --- Your own G-Eval metrics (DeepEval GEval), built in the G-Eval section ------
+// Saved through /api/custom-metrics like the Advanced page's form; they show in
+// the G-Eval section of the side panel and here. The form node is built once and
+// reused, so a grid refresh (a run's progress) never loses what was typed.
+const GEVAL_PARAMS = [
+  ["input", "INPUT"],
+  ["actual_output", "ACTUAL_OUTPUT"],
+  ["expected_output", "EXPECTED_OUTPUT"],
+  ["context", "CONTEXT"],
+  ["retrieval_context", "RETRIEVAL_CONTEXT"],
+];
+const GEVAL_DEFAULT_THRESHOLD = 0.7;
+
+const gevalBuilder = (() => {
+  let card = null;
+  let open = false;
+  let editing = null;  // the stored row being edited, or null for a new metric
+  const f = {};
+
+  function steps() {
+    return f.steps.value.split("\n").map((s) => s.trim()).filter(Boolean);
+  }
+  function params() {
+    return GEVAL_PARAMS.map(([key]) => key).filter((key) => f.params[key].checked);
+  }
+  function threshold() {
+    const value = Number(f.threshold.value);
+    return f.threshold.value !== "" && Number.isFinite(value) && value >= 0 && value <= 1
+      ? value : GEVAL_DEFAULT_THRESHOLD;
+  }
+
+  // The same metric as DeepEval code, so what is saved here reads like a notebook cell.
+  function preview() {
+    const q = (s) => JSON.stringify(s);
+    const lines = [`metric = GEval(`, `    name=${q(f.name.value.trim() || "My metric")},`];
+    if (f.criteria.value.trim()) lines.push(`    criteria=${q(f.criteria.value.trim())},`);
+    if (steps().length) lines.push(`    evaluation_steps=[`, ...steps().map((s) => `        ${q(s)},`), `    ],`);
+    lines.push(`    evaluation_params=[`,
+      ...GEVAL_PARAMS.filter(([key]) => f.params[key].checked).map(([, name]) => `        SingleTurnParams.${name},`),
+      `    ],`, `    threshold=${threshold()},`);
+    if (f.strict.checked) lines.push(`    strict_mode=True,`);
+    lines.push(`)`);
+    f.code.textContent = lines.join("\n");
+  }
+
+  function fill(row) {
+    editing = row;
+    f.title.textContent = row ? `Edit “${row.name}”` : "New G-Eval metric";
+    f.name.value = row ? row.name : "";
+    f.criteria.value = row ? row.criteria : "";
+    f.steps.value = row ? row.evaluation_steps.join("\n") : "";
+    const picked = row ? row.params : ["input", "actual_output"];
+    for (const [key] of GEVAL_PARAMS) f.params[key].checked = picked.includes(key);
+    f.threshold.value = String(row ? row.threshold : GEVAL_DEFAULT_THRESHOLD);
+    f.strict.checked = Boolean(row && row.strict);
+    f.error.textContent = "";
+    preview();
+  }
+
+  async function save(event) {
+    event.preventDefault();
+    f.error.textContent = "";
+    const body = {
+      name: f.name.value.trim(),
+      kind: "geval",
+      description: editing ? editing.description : "",
+      criteria: f.criteria.value.trim(),
+      evaluation_steps: steps(),
+      params: params(),
+      threshold: threshold(),
+      strict: f.strict.checked,
+    };
+    if (!body.name) return void (f.error.textContent = "Give the metric a name.");
+    if (!body.criteria && !body.evaluation_steps.length) {
+      return void (f.error.textContent = "Write the criteria, the evaluation steps, or both.");
+    }
+    if (!body.params.length) return void (f.error.textContent = "Tick at least one evaluation param.");
+    f.save.disabled = true;
+    try {
+      const row = await api(editing ? `/api/custom-metrics/${editing.id}` : "/api/custom-metrics",
+        { method: editing ? "PUT" : "POST", body });
+      // Tick a new metric to run when the side panel keeps an explicit list.
+      const ticked = await settings.get("checkedMetrics", null);
+      if (!editing && Array.isArray(ticked) && !ticked.includes(row.key)) {
+        await settings.set("checkedMetrics", [...ticked, row.key]);
+      }
+      open = false;
+      await reloadMetricCatalog();
+      await settings.set("metricsChangedAt", Date.now());
+      setStatus(`Saved “${row.name}”: it is in the G-Eval section here and in the side panel.`);
+    } catch (error) {
+      f.error.textContent = error.message;
+    } finally {
+      f.save.disabled = false;
+    }
+  }
+
+  function build() {
+    const field = (label, control, hint) => el("label", { className: "geval-field" },
+      el("span", {}, label, hint ? el("span", { className: "muted small" }, ` ${hint}`) : null), control);
+    f.title = el("h3", {}, "New G-Eval metric");
+    f.name = el("input", { maxlength: "80", placeholder: "Bias Metrics", "aria-label": "Metric name" });
+    f.criteria = el("textarea", { rows: "3", maxlength: "4000",
+      placeholder: "Check if the actual output contains statements favouring one group over another based on gender, race or other social traits." });
+    f.steps = el("textarea", { rows: "4",
+      placeholder: "Check whether the 'actual output' contains biased language\nIf there is bias, return a low score\nIf there is no bias in the statement, return a high score" });
+    f.params = {};
+    const paramBoxes = GEVAL_PARAMS.map(([key, name]) => {
+      f.params[key] = el("input", { type: "checkbox", value: key });
+      return el("label", { className: "geval-param", title: `SingleTurnParams.${name}` }, f.params[key], ` ${fieldLabel(key)}`);
+    });
+    f.threshold = el("input", { type: "number", min: "0", max: "1", step: "0.05", className: "geval-threshold" });
+    f.strict = el("input", { type: "checkbox" });
+    f.code = el("pre", { className: "geval-code", "aria-label": "The same metric as DeepEval code" });
+    f.error = el("p", { className: "status-error geval-error", role: "alert" });
+    f.save = el("button", { type: "submit", className: "primary" }, "Save metric");
+    const form = el("form", { className: "geval-form" },
+      f.title,
+      el("p", { className: "muted small" },
+        "As in DeepEval's GEval: the judge scores 0–1 by following your evaluation steps (or steps it writes from the criteria) on the fields you tick."),
+      field("Name", f.name),
+      field("Criteria", f.criteria, "(what a good reply looks like)"),
+      field("Evaluation steps", f.steps, "(optional, one per line; used for scoring when given)"),
+      el("fieldset", { className: "geval-params" }, el("legend", {}, "Evaluation params (what the judge reads)"), ...paramBoxes),
+      el("div", { className: "geval-row" },
+        field("Threshold", f.threshold),
+        el("label", { className: "geval-param" }, f.strict, " Strict: pass/fail only (0 or 1)")),
+      el("details", { className: "geval-preview" }, el("summary", {}, "DeepEval code"), f.code),
+      f.error,
+      el("div", { className: "metric-card-actions" },
+        f.save,
+        el("button", { type: "button", onclick: () => { open = false; renderMetricGrid(); } }, "Cancel")));
+    form.addEventListener("input", preview);
+    form.addEventListener("change", preview);
+    form.addEventListener("submit", save);
+    f.form = form;
+    f.closed = el("div", { className: "geval-closed" },
+      el("h3", {}, "Your own G-Eval metric"),
+      el("p", { className: "metric-card-desc" },
+        "Name it, write the criteria and evaluation steps, and pick the evaluation params, as in DeepEval's GEval(...)."),
+      el("div", { className: "metric-card-actions" },
+        el("button", { type: "button", className: "primary", onclick: () => startEdit(null) }, "＋ New G-Eval metric")));
+    card = el("div", { className: "metric-card geval-builder" });
+  }
+
+  function node() {
+    if (!card) build();
+    card.classList.toggle("geval-builder-open", open);
+    card.replaceChildren(open ? f.form : f.closed);
+    return card;
+  }
+
+  function startEdit(row) {
+    if (!card) build();
+    fill(row);
+    open = true;
+    if (state.categoryFilter !== "geval") {
+      state.categoryFilter = "geval";
+      settings.set("dashCategory", "geval");
+      renderCategoryChips();
+    }
+    renderMetricGrid();
+    card.scrollIntoView({ block: "nearest" });
+    f.name.focus();
+  }
+
+  return { node, startEdit };
+})();
+
+// Edit opens the builder with the stored row; Delete removes the metric (its old runs stay).
+async function editOwnGeval(metric) {
+  const rows = await api("/api/custom-metrics");
+  const row = rows.find((r) => r.id === metric.custom_id);
+  if (!row) throw new Error("This metric is no longer saved; reload the page.");
+  gevalBuilder.startEdit(row);
+}
+
+async function deleteOwnGeval(metric) {
+  await api(`/api/custom-metrics/${metric.custom_id}`, { method: "DELETE" });
+  await reloadMetricCatalog();
+  await settings.set("metricsChangedAt", Date.now());
+  setStatus(`Deleted “${metric.title}”. Its earlier runs stay in History.`);
+}
+
+// After a metric is added, changed or removed (here or on another page).
+async function reloadMetricCatalog() {
+  await loadMetrics();
+  fillMetricSelect($("metric-select"), state.metrics, $("metric-select").value);
+  renderCategoryChips();
+  renderMetricGrid();
+  renderCounts(latestRowsCache);
 }
 
 async function renderLatest() {
@@ -1285,6 +1494,8 @@ settings.onChange((changes) => {
     renderMetricGrid();
     renderTrend();
   }
+  // A metric was added, edited or deleted (here, the side panel or Advanced tools).
+  if (changes.metricsChangedAt) reloadMetricCatalog().catch((error) => setStatus(error.message, true));
   if (changes.selectedMetric && changes.selectedMetric.newValue !== $("metric-select").value) {
     $("metric-select").value = changes.selectedMetric.newValue;
     renderTrend();

@@ -86,23 +86,32 @@ function notRun(skipped, title) {
   ];
 }
 
-function cases(rows) {
+// Failed rows mark the words that differ between reply and expected answer,
+// and say under the judge's reason how the case would pass.
+function cases(rows, metric, r) {
   if (!rows || !rows.length) return el("p", { className: "muted" }, "No cases were scored.");
   return el("div", { className: "table-scroll" }, el("table", {},
     el("thead", {}, el("tr", {}, el("th", {}, "#"), el("th", {}, "Question"), el("th", {}, "Chatbot reply"),
       el("th", {}, "Expected"), el("th", { className: "num" }, "Score"), el("th", {}, "Result"), el("th", {}, "Judge's reason"))),
-    el("tbody", {}, rows.map((row, i) => el("tr", {},
-      el("td", { className: "num" }, String(i + 1)),
-      el("td", { className: "text" }, row.input || row.question || ""),
-      el("td", { className: "text" }, row.actual_output || ""),
-      el("td", { className: "text" }, row.expected_output || "–"),
-      el("td", { className: "num" }, formatScore(row.score)),
-      statusCell(row.passed === undefined ? null : row.passed ? "pass" : "fail"),
-      el("td", { className: "text" }, row.reason || ""),
-    )))));
+    el("tbody", {}, rows.map((row, i) => {
+      const failed = row.passed === false ? failedCaseView(metric, row, r.direction, r.threshold) : null;
+      return el("tr", {},
+        el("td", { className: "num" }, String(i + 1)),
+        el("td", { className: "text" }, row.input || row.question || ""),
+        el("td", { className: "text" }, (failed && failed.actual) || row.actual_output || ""),
+        el("td", { className: "text" }, (failed && failed.expected) || row.expected_output || "–"),
+        el("td", { className: "num" }, formatScore(row.score)),
+        statusCell(row.passed === undefined ? null : row.passed ? "pass" : "fail"),
+        el("td", { className: "text" }, row.reason || "",
+          failed && failed.differences ? el("details", { className: "case-help", open: true },
+            el("summary", {}, "Differences"), failed.differences) : "",
+          failed ? el("details", { className: "case-help", open: true },
+            el("summary", {}, "How to pass"), failed.howToPass) : ""),
+      );
+    }))));
 }
 
-function metricSection(r, title) {
+function metricSection(r, title, metric) {
   return el("details", { className: "metric", id: `metric-${r.key}`, open: r.status !== "pass" },
     el("summary", {},
       el("b", {}, title(r.key)),
@@ -114,7 +123,7 @@ function metricSection(r, title) {
       r.error ? el("p", { className: "reason status-error" }, r.error) : "",
       r.reason ? el("p", { className: "reason" }, r.reason) : "",
       r.note ? el("p", { className: "note" }, r.note) : "",
-      cases(r.rows)),
+      cases(r.rows, metric, r)),
   );
 }
 
@@ -133,6 +142,7 @@ async function loadScan() {
     const chatbot = (targets.find((t) => t.id === scan.target_id) || {}).name || `Chatbot ${scan.target_id}`;
     const titles = new Map(metrics.map((m) => [m.key, m.title]));
     const title = (key) => titles.get(key) || key;
+    const byKey = new Map(metrics.map((m) => [m.key, m]));
     document.title = `${chatbot} · Scan ${scan.version}`;
     $("scan").replaceChildren(
       header(scan, chatbot, scans),
@@ -144,7 +154,7 @@ async function loadScan() {
       ...(scan.skipped && scan.skipped.length ? notRun(scan.skipped, title) : []),
       el("h2", {}, "Details"),
       el("p", { className: "muted" }, "Failed and unscored metrics are open; click any metric to show or hide its cases."),
-      ...scan.results.map((r) => metricSection(r, title)),
+      ...scan.results.map((r) => metricSection(r, title, byKey.get(r.key))),
     );
   } catch (error) {
     status.textContent = `Could not load the scan: ${error.message}`;

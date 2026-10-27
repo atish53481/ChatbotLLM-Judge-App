@@ -162,8 +162,13 @@ error that records nothing.
   Plan Quality / Adherence and Step Efficiency score only replies that called tools
   (plan/step metrics get a trace built from the calls; a trace without a plan is N/A,
   not a free pass). Pasting a cURL fills `tools_path` when the probe reply has tool calls.
-- **Text match** (BLEU, ROUGE-L, Levenshtein, Exact Match; `backend/text_match.py`):
+- **Text match** (BLEU, ROUGE-L, Exact Match; `backend/text_match.py`):
   no judge, no tokens; compare the reply's wording with the golden's expected answer.
+  Exact Match (quasi exact match), ROUGE-L (stemmed) and BLEU (BLEU-1, DeepEval's default)
+  are DeepEval's `Scorer` (`rouge-score`; `nltk` with its `punkt_tab` data, downloaded once
+  into `.venv/nltk_data` on the first BLEU run; offline without it, BLEU cases error with
+  the download command). Levenshtein was removed: DeepEval has no such scorer (old runs
+  of it stay in History).
 
 #### Paths found during scans (auto-discovery)
 
@@ -314,7 +319,23 @@ All on `ChatbotExtension/advanced/` (opened from the side panel or the dashboard
   `EvolutionConfig` / `FiltrationConfig` / `StylingConfig`; `review: true` saves drafts, which
   `MetricSpec.cases` skips until `POST /api/goldens/review` accepts them.
 - **Calibration**: `POST /api/calibration` stores a human score for one case of a stored run;
-  `GET` reports agreement; with `use_calibration` the labels are appended to G-Eval criteria.
+  `GET` reports agreement; with `use_calibration` the labels are appended to G-Eval criteria
+  (as one extra evaluation step for metrics with fixed steps, since DeepEval then scores from
+  the steps alone).
+- **G-Eval evaluation steps**: every shipped G-Eval metric (Correctness, Helpfulness, Citation
+  Quality, Robustness, Self-Check, No-Prompt-Leak, the 9 security probes, Multi-turn Jailbreak)
+  passes fixed `evaluation_steps` (`MetricSpec.evaluation_steps`, `STEPS_*` in
+  `metrics_catalog.py`; probes share `_security_steps(criteria)`), as DeepEval recommends for
+  production: steadier scores and one judge call less per case. `criteria` stays for the
+  dashboard; the steps are listed in `/api/metrics`, the metric details and the exported suite.
+  Custom G-Eval metrics use the steps typed for them, else DeepEval writes them.
+- **Your own G-Eval metrics on the dashboard**: the G-Eval category starts with a builder card
+  (name, criteria, evaluation steps one per line, evaluation params = the fields the judge
+  reads, threshold, strict) with a live `GEval(...)` code preview. It saves through
+  `/api/custom-metrics` (same store as the Advanced page), ticks the new metric to run, and
+  sets `metricsChangedAt` so the side panel and other panes reload their metrics. Your own
+  G-Eval cards get Edit and Delete; earlier runs of a deleted metric stay in History.
+  Custom G-Eval metrics are listed under G-Eval, DAG metrics under Custom.
 - **Export**: `GET /api/export/suite` returns a zip (`backend/export_suite.py`).
 - **Health**: `GET /api/health` for monitoring (200 / 503).
 

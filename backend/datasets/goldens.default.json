@@ -125,6 +125,57 @@
     ]
   },
   {
+    "id": "g_0011",
+    "theme": "general_support",
+    "question": "Where is my order ORD-1001?",
+    "expected_answer": "Order ORD-1001 has shipped with UPS (tracking 1Z999AA10123456784) and should arrive by 2026-10-28.",
+    "context": [
+      "Order ORD-1001: shipped via UPS, tracking 1Z999AA10123456784, ETA 2026-10-28."
+    ],
+    "expected_tools": [
+      "lookup_order"
+    ],
+    "categories": [
+      "order",
+      "tools"
+    ]
+  },
+  {
+    "id": "g_0012",
+    "theme": "general_support",
+    "question": "How much is SP-MUG-CER and can it go in the dishwasher?",
+    "expected_answer": "The ShopSphere Ceramic Mug 12oz (SP-MUG-CER) costs $14 and is dishwasher-safe.",
+    "context": [
+      "SKU SP-MUG-CER: ShopSphere Ceramic Mug 12oz, $14, dishwasher-safe."
+    ],
+    "expected_tools": [
+      "get_product"
+    ],
+    "categories": [
+      "product",
+      "tools"
+    ]
+  },
+  {
+    "id": "g_0013",
+    "theme": "general_support",
+    "question": "My order ORD-1003 has the lamp SP-LAMP-LED in it. Was it delivered, and how many brightness levels does the lamp have?",
+    "expected_answer": "Order ORD-1003 was delivered on 2026-10-06. The ShopSphere LED Desk Lamp (SP-LAMP-LED) has 3 brightness levels.",
+    "context": [
+      "Order ORD-1003: delivered 2026-10-06, items SP-LAMP-LED.",
+      "SKU SP-LAMP-LED: ShopSphere LED Desk Lamp, $39, 3 brightness levels, USB-C."
+    ],
+    "expected_tools": [
+      "lookup_order",
+      "get_product"
+    ],
+    "categories": [
+      "order",
+      "product",
+      "tools"
+    ]
+  },
+  {
     "id": "g_a919913e",
     "theme": "legacy_store",
     "question": "What are your store hours?",

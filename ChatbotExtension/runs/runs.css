@@ -350,3 +350,35 @@ td.detail-cell { background: var(--surface-1); padding: 8px 20px 16px; }
   .cmp-head .cmp-name + .cmp-name { display: none; }
   .bar-row { grid-template-columns: minmax(70px, 120px) minmax(0, 1fr) 56px; }
 }
+
+/* Eval Insights (Test Cases): chips and issues on the left, the judge's overview on the right. */
+.insights { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 20px; margin-bottom: 16px; align-items: start; }
+.insights-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.insights-head .section { margin: 0; font-size: 16px; }
+.insight-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.insight-chip {
+  padding: 3px 10px; border-radius: 6px; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+  background: transparent; border: 1px solid currentColor;
+}
+.insight-chip.serious { color: var(--fail); }
+.insight-chip.mild { color: var(--warn); }
+.insight-chip.params { color: var(--pass); }
+.insight-chip.none { color: var(--text-muted); }
+.insight-chip[aria-expanded="true"] { background: color-mix(in srgb, currentColor 14%, transparent); }
+.insight-issues { list-style: none; margin: 0 0 10px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.insight-issues li { padding: 8px 12px; border-radius: 6px; border-left: 3px solid var(--warn); background: var(--surface-1); font-size: 13px; }
+.insight-issues li.serious { border-left-color: var(--fail); }
+.insight-issues p { margin: 4px 0 0; }
+.insight-params { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; margin: 0 0 10px; font-size: 13px; }
+.insight-params dt { color: var(--text-muted); }
+.insight-params dd { margin: 0; overflow-wrap: anywhere; }
+.insight-overview {
+  padding: 12px 16px; border-radius: 8px; font: 12.5px/1.6 ui-monospace, Consolas, monospace;
+  background: var(--surface-1); border: 1px solid var(--border);
+}
+.insight-overview-title { margin: 0 0 6px; font-weight: 700; }
+.insight-overview ul { margin: 0; padding-left: 18px; }
+.insight-overview.empty { font-family: inherit; display: grid; place-items: center; text-align: center; min-height: 110px; }
+.insight-overview.empty .btn { margin-top: 8px; }
+.link-btn { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; text-decoration: underline; }
+@media (max-width: 900px) { .insights { grid-template-columns: minmax(0, 1fr); } }

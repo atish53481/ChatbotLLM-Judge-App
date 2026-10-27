@@ -175,3 +175,17 @@ td.num {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+
+/* Failed cases: words that differ between the actual and expected result
+   (lib/ui.js wordDiff). Missing = only the expected answer has them, changed =
+   the reply says something else there, added = only the reply has them. Each
+   kind also has its own underline, so it does not rely on colour alone. */
+b.diff { font-weight: 700; padding: 0 1px; border-radius: 2px; }
+b.diff.missing { background: #fbe3e3; color: #8a1414; text-decoration: underline dotted; }
+b.diff.changed { background: #fdf0c4; color: #6a4b00; text-decoration: underline wavy; }
+b.diff.added { background: #dff0df; color: #0b5d0b; text-decoration: underline; }
+.diff-list, .how-to-pass { margin: 0; padding-left: 18px; }
+.diff-list li, .how-to-pass li { margin: 1px 0; }
+.diff-item.missing > b { color: #8a1414; }
+.diff-item.changed > b { color: #6a4b00; }
+.diff-item.added > b { color: #0b5d0b; }

@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from backend import cancel, confident_upload, storage, traffic, usage
 from backend.dashboard import hardening
+from backend.dashboard import insights as scan_insights
 from backend.dashboard import scans as scan_history
 from backend.dashboard.compare import compare_runs
 from backend.dashboard import jobs as jobs_module
@@ -1503,6 +1504,7 @@ def api_list_metrics(target_id: int | None = None):
             # What the judge reads for this metric, and the G-Eval rubric if it has one.
             "scores_on": list(s.scores_on),
             "criteria": s.criteria,
+            "evaluation_steps": list(s.evaluation_steps),
             "presets": s.presets(),
             "ui_category": s.ui_category,
             "ui_category_label": UI_CATEGORY_LABELS[s.ui_category],
@@ -1718,6 +1720,33 @@ def api_compare_scans(job_id: int, with_: int = Query(alias="with")):
     if result is None:
         raise HTTPException(status_code=404, detail="scan not found")
     return result
+
+
+@app.get("/api/scans/{job_id}/insights")
+def api_scan_insights(job_id: int):
+    """The run's saved Eval Insights, or {status: "none"} before they are generated."""
+    if scan_history.get_scan(_conn, job_id) is None:
+        raise HTTPException(status_code=404, detail="scan not found")
+    found = scan_insights.saved(_conn, job_id)
+    return found or {"status": "none", "hyperparameters": scan_insights.hyperparameters(_conn, job_id)}
+
+
+@app.post("/api/scans/{job_id}/insights")
+def api_generate_scan_insights(job_id: int):
+    """Has the judge name the run's issues (mild / serious) and write an overview: one judge call."""
+    scan = scan_history.get_scan(_conn, job_id)
+    if scan is None:
+        raise HTTPException(status_code=404, detail="scan not found")
+    if scan["status"] in ("queued", "running"):
+        raise HTTPException(status_code=409, detail="the run is still going; insights come once it finishes")
+    try:
+        judge = build_judge(**_judge_overrides())
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    try:
+        return scan_insights.generate(_conn, job_id, judge)
+    except ValueError as e:
+        raise HTTPException(status_code=502, detail=f"the judge's answer could not be read: {e}") from e
 
 
 @app.get("/api/scans/{job_id}/cases")

@@ -21,6 +21,7 @@
     <span id="run-banner-text" class="run-banner-text"></span>
     <button type="button" id="run-banner-show" class="small-button">Show results</button>
     <button type="button" id="run-banner-close" class="small-button" aria-label="Dismiss run status" title="Dismiss">×</button>
+    <div id="run-detail" class="run-detail hidden" role="status"></div>
   </div>
   <span id="run-announce" class="sr-only" role="status"></span>
 
@@ -324,6 +325,7 @@
       <span>Run mode</span>
       <select id="run-mode">
         <option value="1">Low · 1 case per metric</option>
+        <option value="2">2 cases per metric</option>
         <option value="3">3 cases per metric</option>
         <option value="5">5 cases per metric</option>
         <option value="">High · all cases</option>
