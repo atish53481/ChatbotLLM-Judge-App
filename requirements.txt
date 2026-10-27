@@ -13,6 +13,6 @@ pypdf>=4.0
 docx2txt>=0.8
 sentence-transformers>=3.0
 chromadb>=0.5
-tiktoken>=0.7
+tiktoken>=0.14.0
 rouge-score>=0.1.2
 nltk>=3.9
