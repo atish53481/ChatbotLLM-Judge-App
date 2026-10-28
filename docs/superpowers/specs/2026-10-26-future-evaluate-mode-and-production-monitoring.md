@@ -171,28 +171,6 @@ Checked against DeepEval 4.3.1. Each is a new `MetricSpec` in `metrics_catalog.p
 
 Not in the list: JevEval (System One model metric) - skipped.
 
-**Tool Correctness options (requested 2026-10-29).** Today `SPEC_TOOL_CORRECTNESS` builds
-`ToolCorrectnessMetric(threshold, model=judge, include_reason=True, async_mode=False)` with
-DeepEval's defaults, so the score is plain code, no judge call: each `expected_tools` name is
-looked up among `tools_called` (exact name match, any order, extra calls not penalised), score =
-matched / expected; the LLM tool-selection step is skipped because no `available_tools` is
-passed (`deepeval/metrics/tool_correctness/tool_correctness.py`: `_calculate_non_exact_match_score`,
-`measure` line ~120). Expose DeepEval's own knobs as spec `settings` (Advanced tools page,
-passed through `metrics_catalog.metric_options`; defaults keep today's scores):
-
-| Setting | DeepEval argument | Effect | Needs |
-|---|---|---|---|
-| Exact match | `should_exact_match=True` | same tools, same count, same order, nothing extra; else 0 | nothing new |
-| Consider order | `should_consider_ordering=True` | weighted LCS of the two lists / expected count | nothing new |
-| Check arguments | `evaluation_params=[ToolCallParams.INPUT_PARAMETERS]` | a name match also needs matching arguments (dict comparison) | goldens' `expected_tools` with arguments: today they hold names only, so extend the golden format (`{"name", "input_parameters"}`; plain names still accepted) and the side-panel editor |
-| Check outputs | `evaluation_params=[..., ToolCallParams.OUTPUT]` | tool output must equal the expected one | expected outputs in goldens (rarely useful; low priority) |
-| Tool selection (LLM) | `available_tools=[ToolCall(name, description)]` | adds one judge call: were the right tools chosen from all on offer; final score = min(name score, selection score) | the chatbot's tool list: new optional target field "Available tools" (`name: description` per line), shared with the Tool Use metric above; off when empty |
-
-Rules: one setting per knob, stored per run in the job options so Scans / runs Overview show
-them; Exact match and Consider order are mutually exclusive (Exact wins, as in DeepEval); the
-dashboard card's `scale_hint` / `scores_on` text names the active mode; tests with the fake
-judge cover each mode's score on the same case and that only Tool selection spends judge tokens.
-
 **Levenshtein Similarity (removed 2026-10-26, may come back).** It was a no-judge
 reference metric (1 − character edits / longer text length, app's own code in
 `backend/text_match.py`). Removed so every metric in the app is DeepEval's: DeepEval
@@ -305,69 +283,3 @@ Plan:
 Phases: F1 = step 1 (bridge, import/push/pull); F2 = step 2 (after A); F3 = step 3 (after E's
 tracer decision). Rules as everywhere: additive, off by default, offline tests (fake judge, no
 Confident AI / network calls), docs in CLAUDE.md + docs/WORKFLOW.md when built.
-
-## G. Discovery assistant: find what each metric needs, else black box (requested 2026-10-29, parked)
-
-Problem: in production the app often has only a cURL of the chatbot. Metrics like Prompt Alignment
-(needs the bot's rules), Tool Correctness / Argument Correctness / Plan metrics (need tool calls)
-and Contextual Precision / Recall / Relevancy (need the bot's own retrieved chunks) then run on
-standard rules or are `unavailable`. Goal: before giving up, the app tries to find the missing
-data itself (API docs, request variants, help pages, asking the bot), shows what it found, and
-uses it after the user confirms; whatever stays missing falls back to black-box scoring as today.
-
-What exists already (reuse, do not duplicate): reply / `context_path` / `tools_path` probe on
-paste (`app._probe_reply_path`), paths found during scans (`HttpTargetClient.discovered`,
-`app._save_found_paths`, `_after_job`), system prompt read from the captured body
-(`targets/instructions.from_body`), help-page search (`autogen.find_help_pages`), bot interview
-(`autogen.INTERVIEW`), `sources_fallback` (knowledge base / cited pages).
-
-**Scope rule (non-negotiable):** only chatbots the user owns or is authorised to test (the form
-says so; the user ticks it once per chatbot). Read-only GETs on the chatbot's own origin plus normal
-chat questions; no auth bypass, no fuzzing, no brute force, no system-prompt extraction attacks
-(leaking is what No Prompt Leak measures, not a way to fill instructions). Every request respects
-`send_delay`, the 429 backoff and Stop; a fetch cap per run (e.g. 20 GETs, 8 chat messages).
-
-Steps (job kind `discover` on the JobQueue, `POST /api/targets/{id}/discover`, Stop works):
-
-1. **API docs ("Swagger").** From the cURL's origin, GET well-known spec paths: `/openapi.json`,
-   `/swagger.json`, `/v3/api-docs`, `/swagger/v1/swagger.json`, `/api-docs`, `/docs` and `/redoc`
-   (find the spec link in the HTML), `/.well-known/ai-plugin.json`, an MCP manifest if linked.
-   Parse OpenAPI 2/3 for the chat endpoint (same method + path as the cURL):
-   - response schema fields that look like sources / context / tool calls / trace / debug →
-     candidate `context_path` / `tools_path` (same name lists as `curl.find_*_path`);
-   - optional request params like `debug`, `include_sources`, `return_tool_calls`, `verbose`,
-     `trace` → candidates for step 2;
-   - other endpoints that list tools / functions / actions → candidate "Available tools".
-   Send the cURL's headers to the docs URLs only when the user allows it (cookies may be needed,
-   but they are secrets).
-2. **Request variants ("cURL technique").** Send the golden's first question with each candidate
-   flag added (from step 1, else a small fixed list), one message each; keep a variant only if
-   its response gains sources or tool calls and the reply is unchanged in kind. Show a diff; the
-   saved `body_template` changes only after the user approves.
-3. **Instructions ("information gathering").** In order: captured system prompt (exists) →
-   help / FAQ / terms pages (exists: `find_help_pages`) → the bot's own answers to plain questions
-   ("What can you help me with?", "What won't you do?", "How should I contact support?"). The judge
-   (`judges/ask.py`) drafts one checkable rule per line from those texts. Stored as
-   `inferred_instructions` with each rule's evidence (page URL or answer). `instructions.resolve`
-   order becomes: typed → request → **inferred (approved)** → standard; source `"inferred"` and the
-   run's `note` says so.
-4. **Tools.** Candidate tool list from step 1 and from the bot's answer to "What actions can you
-   take for me?" → "Available tools" (feeds Tool selection / Tool Use in C). The judge drafts
-   `expected_tools` for goldens from that list as **draft** goldens (`status: "draft"`, reviewed in
-   `/api/goldens/review`). Note: a tool *list* does not make Tool Correctness runnable; it still
-   needs the bot's actual tool calls in the response (steps 1-2) or a trace (F3 / B).
-5. **Discovery report** (side panel card per chatbot): per metric: *found* (from the bot / its
-   docs), *inferred* (judge-drafted, needs review), *black box* (missing), with the source, a
-   confidence label and what to ask the bot's team for (e.g. "return `tools_called` for test
-   accounts"). Approve / reject per item; nothing found is used unapproved.
-
-Fallback: anything not found or not approved = today's behaviour (standard rules for Prompt
-Alignment, `unavailable` with a reason for metrics that need tools or the bot's own context).
-
-Storage: target config gains `discovery` {ran_at, found: {...}, approved: [...]},
-`inferred_instructions`, `available_tools`; header values never stored in the report.
-Tests: offline, a fake chatbot server with and without OpenAPI / debug flag / tools, fake judge;
-assert caps, Stop, approval gate, and that an unapproved finding never changes a score.
-
-Phases: G1 = steps 1-2 + report (paths and request variants); G2 = step 3 (inferred
-instructions); G3 = step 4 (tools, draft expected tools; after C's "Available tools" field).

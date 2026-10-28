@@ -72,9 +72,8 @@ AGENT_RULES = [
 
 class Rules(list):
     """The instructions a run judges against, and where they came from:
-    "chatbot" (typed on the chatbot), "request" (its captured system prompt),
-    "inferred" (found by the discovery assistant, approved by the user) or
-    "default" (the standard rules above)."""
+    "chatbot" (typed on the chatbot), "request" (its captured system prompt)
+    or "default" (the standard rules above)."""
 
     def __init__(self, items=(), source: str = "chatbot"):
         super().__init__(items)
@@ -95,8 +94,7 @@ def standard_rules(config: dict) -> list[str]:
 
 def resolve(config: dict) -> Rules:
     """The chatbot's rules for Prompt Alignment: the ones typed on the chatbot,
-    else its captured system prompt, else approved inferred ones, else standard
-    rules for its kind."""
+    else its captured system prompt, else standard rules for its kind."""
     typed = config.get("instructions")
     if isinstance(typed, str):
         typed = typed.splitlines()
@@ -106,10 +104,6 @@ def resolve(config: dict) -> Rules:
     found = from_body(config.get("body_template", ""))
     if found:
         return Rules(found, "request")
-    # Rules the discovery assistant inferred and the user approved.
-    inferred = [str(v).strip() for v in config.get("inferred_instructions") or [] if str(v).strip()]
-    if inferred:
-        return Rules(inferred, "inferred")
     return Rules(standard_rules(config), "default")
 
 
@@ -119,10 +113,6 @@ def source_note(rules) -> str | None:
     if source == "request":
         return (f"Judged against the {len(rules)} instructions in the system prompt of the chatbot's "
                 "captured request. Edit them under Chatbot instructions if they are out of date.")
-    if source == "inferred":
-        return (f"Judged against {len(rules)} rules the app inferred from the chatbot's help pages and answers "
-                "(approved under Find missing metric data). Type its real instructions under Chatbot "
-                "instructions for a sharper test.")
     if source == "default":
         return (f"This chatbot has no instructions set, so it was judged against {len(rules)} standard "
                 "production rules (accuracy, safety, privacy, tone, plus RAG, agent and role rules when "
