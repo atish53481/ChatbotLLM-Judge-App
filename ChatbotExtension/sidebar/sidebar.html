@@ -94,6 +94,29 @@
       <button id="delete-target" type="button" title="Delete this chatbot">Delete</button>
     </div>
     <p id="target-theme" class="muted small"></p>
+    <details id="discovery">
+      <summary>Find missing metric data <span id="discovery-summary" class="muted small"></span></summary>
+      <div class="stack">
+        <p class="muted small">When the cURL alone does not show what some metrics need (the chatbot's rules, its
+          tool calls, its retrieved sources), the app looks for them: the chatbot's API docs (OpenAPI / Swagger), the
+          same request with a debug flag, its help pages and its own answers. At most 20 page fetches and 10 chat
+          messages (its own golden questions first); the judge drafts rules and tools. Nothing is used until you approve it, and whatever is not found
+          is scored black box.</p>
+        <label class="row small">
+          <input id="discovery-authorized" type="checkbox">
+          <span>I own this chatbot or am allowed to test it</span>
+        </label>
+        <label class="row small">
+          <input id="discovery-send-headers" type="checkbox">
+          <span title="Some API docs need a login. Off: the docs are fetched without the chatbot's cookies and keys.">Also send its cookies / keys to its API docs</span>
+        </label>
+        <div class="row">
+          <button id="discovery-run" type="button">Find missing data</button>
+          <span id="discovery-status" class="small" role="status"></span>
+        </div>
+        <div id="discovery-report" class="stack"></div>
+      </div>
+    </details>
     <details id="add-target">
       <summary id="target-form-summary">Add a chatbot</summary>
       <form id="target-form" class="stack">
@@ -360,5 +383,6 @@
   <script src="../lib/ui.js"></script>
   <script src="../lib/charts.js"></script>
   <script src="sidebar.js"></script>
+  <script src="discovery.js"></script>
 </body>
 </html>

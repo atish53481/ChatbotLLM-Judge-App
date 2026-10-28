@@ -60,6 +60,7 @@ from backend.targets.curl import (
 )
 from backend.targets.http_client import HttpTargetClient, is_stream, sse_events
 from backend.targets.shared import SharedReplies
+from backend.targets import discovery
 from backend.targets import instructions as target_instructions
 from backend.targets import presets as target_presets
 
@@ -637,6 +638,11 @@ def api_update_target(target_id: int, body: TargetCreate):
             status_code=400, detail=f"type must be one of: {', '.join(TARGET_TYPES)}"
         )
     config = _keep_stored_headers(body.config, existing)
+    # The chatbot form knows nothing of the discovery assistant's report and
+    # approved items, so a save keeps them.
+    for key in DISCOVERY_KEYS:
+        if key not in config and key in existing["config"]:
+            config[key] = existing["config"][key]
     # Build the client once so a broken config is rejected before it is stored;
     # same validation POST does.
     _client_or_400({"id": target_id, "type": body.type, "config": config})
@@ -1090,6 +1096,67 @@ def api_prepare_goldens(target_id: int, body: PrepareGoldens):
         message = learned_text + "Golden dataset ready."
     return {"theme": theme, "seeded": seeded, "documents": documents, "errors": errors,
             "can_generate": can_generate, "needs_context": needs_context, "message": message}
+
+
+# Target config keys the discovery assistant owns (backend/targets/discovery.py).
+DISCOVERY_KEYS = ("discovery", "inferred_instructions", "available_tools")
+
+
+class DiscoverRequest(BaseModel):
+    # The user confirms they own or may test this chatbot; nothing is sent without it.
+    authorized: bool = False
+    # Send the chatbot's cookies / keys to its API docs too (some docs need a login).
+    send_headers: bool = False
+    # Infer its rules and tools with the judge (spends judge tokens).
+    infer: bool = True
+
+
+class DiscoveryApply(BaseModel):
+    items: list[str] = Field(default_factory=list, max_length=20)
+
+
+@app.post("/api/targets/{target_id}/discover")
+def api_discover(target_id: int, body: DiscoverRequest):
+    """Looks for what this chatbot's metrics need that its cURL does not show
+    (API docs, request flags, its help pages and answers) and stores the report.
+    Nothing is used until the user approves items (/discovery/apply)."""
+    if not body.authorized:
+        raise HTTPException(status_code=400, detail="Confirm you own this chatbot or are allowed to test it first.")
+    target = _target_or_404(target_id)
+    config = target["config"]
+    client = _client_or_400(target)
+    judge = None
+    if body.infer:
+        try:
+            judge = build_judge(**_judge_overrides())
+        except RuntimeError:
+            judge = None  # reported in the notes: rules and tools are not inferred
+
+    def make_client(variant: dict):
+        return _client_or_400({**target, "config": variant})
+
+    # Its own questions show tools and sources best: agent-style goldens first,
+    # else any theme's goldens that expect a tool call.
+    goldens = goldens_store.load_goldens(theme=config.get("theme") or "generic") \
+        or [g for g in goldens_store.load_goldens() if g.get("expected_tools")]
+    questions = [g["question"] for g in sorted(goldens, key=lambda g: not g.get("expected_tools"))]
+    report = discovery.discover(config, client=client, make_client=make_client, judge=judge,
+                                fetch=discovery.fetch_json, find_help_pages=discovery._find_help_pages,
+                                send_headers=body.send_headers, questions=questions)
+    storage.update_target(_conn, target_id, target["name"], target["type"], {**config, "discovery": report})
+    return report
+
+
+@app.post("/api/targets/{target_id}/discovery/apply")
+def api_discovery_apply(target_id: int, body: DiscoveryApply):
+    """Uses the approved items of the last discovery report on the chatbot."""
+    target = _target_or_404(target_id)
+    if not target["config"].get("discovery"):
+        raise HTTPException(status_code=400, detail="Run Find missing metric data first.")
+    config = discovery.apply(target["config"], body.items)
+    _client_or_400({**target, "config": config})
+    storage.update_target(_conn, target_id, target["name"], target["type"], config)
+    return _public(storage.get_target(_conn, target_id))
 
 
 @app.get("/api/documents")
