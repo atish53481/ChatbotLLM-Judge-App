@@ -60,6 +60,7 @@ from backend.targets.curl import (
 )
 from backend.targets.http_client import HttpTargetClient, is_stream, sse_events
 from backend.targets.shared import SharedReplies
+from backend.targets import discovery
 from backend.targets import instructions as target_instructions
 from backend.targets import presets as target_presets
 
@@ -637,6 +638,11 @@ def api_update_target(target_id: int, body: TargetCreate):
             status_code=400, detail=f"type must be one of: {', '.join(TARGET_TYPES)}"
         )
     config = _keep_stored_headers(body.config, existing)
+    # The chatbot form knows nothing of the discovery assistant's report and
+    # approved items, so a save keeps them.
+    for key in DISCOVERY_KEYS:
+        if key not in config and key in existing["config"]:
+            config[key] = existing["config"][key]
     # Build the client once so a broken config is rejected before it is stored;
     # same validation POST does.
     _client_or_400({"id": target_id, "type": body.type, "config": config})
@@ -1092,6 +1098,67 @@ def api_prepare_goldens(target_id: int, body: PrepareGoldens):
             "can_generate": can_generate, "needs_context": needs_context, "message": message}
 
 
+# Target config keys the discovery assistant owns (backend/targets/discovery.py).
+DISCOVERY_KEYS = ("discovery", "inferred_instructions", "available_tools")
+
+
+class DiscoverRequest(BaseModel):
+    # The user confirms they own or may test this chatbot; nothing is sent without it.
+    authorized: bool = False
+    # Send the chatbot's cookies / keys to its API docs too (some docs need a login).
+    send_headers: bool = False
+    # Infer its rules and tools with the judge (spends judge tokens).
+    infer: bool = True
+
+
+class DiscoveryApply(BaseModel):
+    items: list[str] = Field(default_factory=list, max_length=20)
+
+
+@app.post("/api/targets/{target_id}/discover")
+def api_discover(target_id: int, body: DiscoverRequest):
+    """Looks for what this chatbot's metrics need that its cURL does not show
+    (API docs, request flags, its help pages and answers) and stores the report.
+    Nothing is used until the user approves items (/discovery/apply)."""
+    if not body.authorized:
+        raise HTTPException(status_code=400, detail="Confirm you own this chatbot or are allowed to test it first.")
+    target = _target_or_404(target_id)
+    config = target["config"]
+    client = _client_or_400(target)
+    judge = None
+    if body.infer:
+        try:
+            judge = build_judge(**_judge_overrides())
+        except RuntimeError:
+            judge = None  # reported in the notes: rules and tools are not inferred
+
+    def make_client(variant: dict):
+        return _client_or_400({**target, "config": variant})
+
+    # Its own questions show tools and sources best: agent-style goldens first,
+    # else any theme's goldens that expect a tool call.
+    goldens = goldens_store.load_goldens(theme=config.get("theme") or "generic") \
+        or [g for g in goldens_store.load_goldens() if g.get("expected_tools")]
+    questions = [g["question"] for g in sorted(goldens, key=lambda g: not g.get("expected_tools"))]
+    report = discovery.discover(config, client=client, make_client=make_client, judge=judge,
+                                fetch=discovery.fetch_json, find_help_pages=discovery._find_help_pages,
+                                send_headers=body.send_headers, questions=questions)
+    storage.update_target(_conn, target_id, target["name"], target["type"], {**config, "discovery": report})
+    return report
+
+
+@app.post("/api/targets/{target_id}/discovery/apply")
+def api_discovery_apply(target_id: int, body: DiscoveryApply):
+    """Uses the approved items of the last discovery report on the chatbot."""
+    target = _target_or_404(target_id)
+    if not target["config"].get("discovery"):
+        raise HTTPException(status_code=400, detail="Run Find missing metric data first.")
+    config = discovery.apply(target["config"], body.items)
+    _client_or_400({**target, "config": config})
+    storage.update_target(_conn, target_id, target["name"], target["type"], config)
+    return _public(storage.get_target(_conn, target_id))
+
+
 @app.get("/api/documents")
 def api_list_documents(theme: str | None = None):
     return storage.list_documents(_conn, theme)
@@ -1537,6 +1604,130 @@ def api_list_metrics(target_id: int | None = None):
 @app.get("/api/metrics/environments")
 def api_metric_environments():
     return [{"key": key, "label": label} for key, label in ENVIRONMENTS.items()]
+
+
+def _case_add_kind(spec) -> str | None:
+    """Which store a test case added to this metric goes to: "golden",
+    "probe", "conversation", or None when cases cannot be added here."""
+    dataset = getattr(spec, "dataset_name", "")
+    if dataset in ("conversations", "conversations_with_role"):
+        return "conversation"
+    if dataset in PROBE_DATASETS:
+        return "probe" if spec.key in probes_store.PROBE_METRICS else None
+    if dataset.startswith("goldens"):
+        return "golden"
+    return None
+
+
+def _case_view(item: dict, probe_ids: set) -> dict:
+    """One test case as the side panel lists it: what is sent, and what it is scored against."""
+    if "user_turns" in item:
+        return {"id": item.get("id"), "kind": "conversation", "question": item.get("name", ""),
+                "turns": list(item.get("user_turns", [])), "scenario": item.get("scenario", ""),
+                "chatbot_role": item.get("chatbot_role", ""),
+                "expected_answer": item.get("expected_outcome", "")}
+    return {
+        "id": item.get("id"),
+        "kind": "probe" if item.get("id") in probe_ids else "golden",
+        "question": item.get("question", ""),
+        "expected_answer": item.get("expected_answer", ""),
+        "context": list(item.get("context") or []),
+        "expected_tools": list(item.get("expected_tools") or []),
+        # A grounded golden is sent with its facts in the message.
+        "context_in_prompt": bool(item.get("context_in_prompt") and item.get("context")),
+    }
+
+
+def _cases_scope(key: str, target_id: int | None):
+    spec = get_spec(key)
+    if spec is None:
+        raise HTTPException(status_code=404, detail="metric not found")
+    config = _target_or_404(target_id)["config"] if target_id is not None else None
+    return spec, _availability(config)
+
+
+@app.get("/api/metrics/{key}/cases")
+def api_metric_cases(key: str, target_id: int | None = None):
+    """The test cases a run of this metric sends the chatbot (before the
+    cases-per-run cap), and where a new one would be added."""
+    spec, (theme, persona, probe_set, unavailable) = _cases_scope(key, target_id)
+    items = spec.cases(theme=theme, persona=persona, probe_set=probe_set)
+    probe_ids = ({p["id"] for p in probes_store.load_probes(metric=spec.key)}
+                 if spec.dataset_name in PROBE_DATASETS else set())
+    return {
+        "key": spec.key,
+        "title": spec.title,
+        "dataset": spec.dataset_name,
+        "theme": theme,
+        "probe_set": probe_set or probes_store.DEFAULT_PROBE_SET,
+        "source": spec.question_source(theme, probe_set),
+        "unavailable": unavailable(spec),
+        "add": _case_add_kind(spec),
+        "cases": [_case_view(item, probe_ids) for item in items],
+    }
+
+
+class MetricCaseCreate(BaseModel):
+    """A test case added from a metric's Test cases list (fields per store)."""
+    target_id: int | None = None
+    question: str = Field(default="", max_length=4000)
+    expected_answer: str = Field(default="", max_length=4000)
+    context: list[str] = Field(default_factory=list, max_length=20)
+    expected_tools: list[str] = Field(default_factory=list, max_length=20)
+    name: str = Field(default="", max_length=200)
+    user_turns: list[str] = Field(default_factory=list, max_length=20)
+    chatbot_role: str = Field(default="", max_length=500)
+
+
+@app.post("/api/metrics/{key}/cases")
+def api_add_metric_case(key: str, body: MetricCaseCreate):
+    """Adds a test case where this metric reads its cases: a golden in the
+    chatbot's theme, a probe in its probe set, or a conversation scenario."""
+    spec, (theme, persona, probe_set, _unavailable) = _cases_scope(key, body.target_id)
+    kind = _case_add_kind(spec)
+    question = body.question.strip()
+    if kind == "probe":
+        if not question:
+            raise HTTPException(status_code=400, detail="a test case needs a question")
+        try:
+            row = probes_store.add_probe({"metric": spec.key, "question": question,
+                                          "set": probe_set or probes_store.DEFAULT_PROBE_SET})
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return _case_view(row, {row["id"]})
+    if kind == "conversation":
+        turns = [t.strip() for t in body.user_turns if t.strip()]
+        if not turns:
+            raise HTTPException(status_code=400, detail="a scenario needs at least one user turn")
+        role = body.chatbot_role.strip() or persona.strip()
+        if spec.dataset_name == "conversations_with_role" and not role:
+            raise HTTPException(status_code=400, detail="this metric needs the chatbot's role")
+        # A theme without scenarios runs ones built from its goldens: keep them
+        # once the first scenario of its own is added (it would hide them).
+        if not conversations_store.load_conversations(theme=theme):
+            goldens = [g for g in goldens_store.load_goldens(theme=theme) if g.get("status") != "draft"]
+            for row in conversations_store.from_goldens(goldens, theme, persona):
+                conversations_store.add_conversation(row)
+        row = conversations_store.add_conversation({
+            "theme": theme, "name": body.name.strip() or turns[0][:60], "scenario": "",
+            "chatbot_role": role, "expected_outcome": body.expected_answer.strip(), "user_turns": turns,
+        })
+        return _case_view(row, set())
+    if kind == "golden":
+        expected = body.expected_answer.strip()
+        context = [c.strip() for c in body.context if c.strip()]
+        tools = [t.strip() for t in body.expected_tools if t.strip()]
+        if not question or not expected:
+            raise HTTPException(status_code=400, detail="a test case needs a question and an expected answer")
+        if spec.dataset_name == "goldens_with_context" and not context:
+            raise HTTPException(status_code=400, detail="this metric needs context (the facts the reply should rest on)")
+        if spec.dataset_name == "goldens_with_tools" and not tools:
+            raise HTTPException(status_code=400, detail="this metric needs the tools the chatbot should call")
+        if spec.dataset_name == "goldens_without_context":
+            context = []
+        row = goldens_store.add_golden(theme, question, expected, context, extra={"expected_tools": tools})
+        return _case_view(row, set())
+    raise HTTPException(status_code=400, detail=f"test cases cannot be added to {spec.title}")
 
 
 @app.post("/api/run")
