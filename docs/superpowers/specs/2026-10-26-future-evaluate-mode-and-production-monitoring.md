@@ -5,6 +5,7 @@ this up, read CLAUDE.md first and follow the `llm-judge-feature-roadmap` skill r
 (additive only, TDD, offline tests, new branch).
 
 Suggested order: **A → B (P1 → P2 → P3) → C**. D is a separate, larger project.
+F (DeepEval datasets, `evals_iterator`, tracing) builds on A and fits next to E.
 
 ---
 
@@ -216,3 +217,69 @@ retrieval) with tokens, cost and latency.
 Rules: additive only, off by default, no key ever logged or exported (same as header values),
 offline tests fake the Langfuse client (no network). Decide self-hosted vs cloud with the user
 before building.
+
+## F. DeepEval `EvaluationDataset`, `dataset.evals_iterator`, `@observe` tracing (requested 2026-10-28, parked)
+
+Today none of these are used (checked 2026-10-28): goldens are the app's own JSON
+(`goldens.json`, `conversations.json`, `security_probes.json`), the loop is `runner.run_spec`,
+scoring is `metric.measure(case)` per case. The only "trace" is `metrics_catalog._agent_trace`,
+a one-level dict built from the reply's tool calls for Plan Quality / Plan Adherence / Step
+Efficiency (`case._trace_dict`); no `@observe`, no spans.
+
+What each DeepEval piece is (DeepEval 4.3.1):
+
+| Piece | What it does | App today |
+|---|---|---|
+| `EvaluationDataset` / `Golden` / `ConversationalGolden` | holds goldens; `push(alias)` / `pull(alias)` to Confident AI; load from JSON/CSV | own JSON files + `backend/datasets/goldens.py` |
+| `dataset.evals_iterator(metrics=[...], async_config=...)` | yields each golden; your code calls the app inside the loop; DeepEval collects the traces, runs the metrics, prints/uploads one test run | `run_spec` loop: `target.chat()` then `metric.measure()` |
+| `@observe(type="agent"/"llm"/"retriever"/"tool", metrics=[...])` | decorator that records a span per function call (input, output, tokens, children) | none; tool calls read from the reply via `tools_path` |
+| `update_current_span(test_case=...)` / `update_current_trace(...)` | attach `LLMTestCase` fields to a span/trace so span-level metrics score one component (retriever, a tool, one LLM call) | none; metrics score the whole reply only |
+| `deepeval_callback = CallbackHandler(metrics=[...], metric_collection=...)` (`deepeval.integrations.langchain`) | LangChain / LangGraph callback: passed as `config={"callbacks": [deepeval_callback]}` it records chain, LLM, tool and retriever runs as DeepEval spans without `@observe`; trace-level `metrics` on the root chain, span metrics via each call's `metadata` | none; ShopSphere uses the plain OpenAI/Groq SDK, not LangChain |
+
+Plan:
+
+1. **Dataset bridge (small).** `backend/datasets/deepeval_dataset.py`: `to_dataset(theme)` builds an
+   `EvaluationDataset` from a theme's reviewed goldens (`Golden(input, expected_output, context,
+   expected_tools, additional_metadata={"golden_id"})`) and conversation scenarios
+   (`ConversationalGolden(scenario, expected_outcome, turns)`); `from_dataset(ds)` the reverse.
+   Uses: (a) Evaluate mode (A) and step 2 read from it; (b) optional push/pull of a theme to
+   Confident AI with the project key already stored (`confident_upload`), merging the "Golden
+   sets in Confident AI" idea in C; (c) import a DeepEval dataset JSON/CSV as a new theme.
+   `goldens.json` stays the source of truth; pull never overwrites a shipped theme.
+2. **`evals_iterator` engine (medium, extends A).** Third value for the job option
+   `engine: "metrics" | "evaluate" | "iterator"`. Loop:
+   `for golden in dataset.evals_iterator(metrics=specs, async_config=AsyncConfig(run_async=False))`
+   → `SharedReplies` asks the chatbot → `update_current_trace(input, output, retrieval_context,
+   tools_called, expected_output)`. Same rules as A: our `GroqJudge`, no display, no cache,
+   **no automatic upload** (uploads stay in `confident_upload.py`), results mapped back to the
+   app's rows / one run per metric, Stop between goldens, attacks / multi-sample / consistency
+   fall back to Metrics mode and the run's `note` names them. Test: same scores as Metrics mode
+   for the same goldens with the fake judge.
+3. **Traces from the chatbot (medium-large, needs the chatbot's code).** The app sees chatbots as
+   black-box HTTP, so real spans only exist when the bot is instrumented:
+   - **ShopSphere** (`01_Chatbot_Shopeasy_chatbot/`): wrap `/chat` with `@observe(type="agent")`,
+     retrieval with `@observe(type="retriever")`, each tool with `@observe(type="tool")`, each LLM
+     call with `@observe(type="llm")`; optional, on only with an env flag (like E's Langfuse keys).
+     Choose one tracer for the bot (DeepEval `@observe` or Langfuse, E) or emit both from one
+     wrapper; decide with the user.
+   - **LangChain / LangGraph chatbots** (a user's own bot, or a future LangChain version of
+     ShopSphere): no decorators needed. The bot passes
+     `deepeval_callback = CallbackHandler(metrics=[...])` in `config={"callbacks": [deepeval_callback]}`
+     on `invoke` / `ainvoke`; DeepEval builds the agent / LLM / tool / retriever spans itself.
+     Same on/off env flag; the trace reaches the judge the same two ways as below. Other
+     frameworks have their own DeepEval hook (`deepeval.integrations`: `llama_index`, `crewai`,
+     `pydantic_ai`, `google_adk`, `strands`, `openinference`); list the one used in the docs
+     when built. Needs `langchain-core` in the bot's env only, never in the judge app.
+   - **Bringing spans to the judge**: the bot returns its trace in the response (e.g. a `trace`
+     field, read like `tools_path` with a new `trace_path`), or the judge imports it (Confident AI
+     / Langfuse API, B's intake). `ChatReply` gains optional `trace`; `_agent_case(trace=True)`
+     uses it instead of the one-level `_agent_trace` when present.
+   - **Span-level metrics**: score a single component, e.g. Contextual Relevancy on the retriever
+     span, Argument Correctness on each tool span, Answer Relevancy on the final LLM span. New
+     optional `MetricSpec.span_type` ("retriever" / "tool" / "llm"); metrics without it keep
+     scoring the whole reply. Result rows add `span_name`; the Test Cases page shows the span tree.
+   - Without a trace nothing changes (today's whole-reply scoring).
+
+Phases: F1 = step 1 (bridge, import/push/pull); F2 = step 2 (after A); F3 = step 3 (after E's
+tracer decision). Rules as everywhere: additive, off by default, offline tests (fake judge, no
+Confident AI / network calls), docs in CLAUDE.md + docs/WORKFLOW.md when built.
