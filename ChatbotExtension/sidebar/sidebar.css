@@ -68,6 +68,12 @@ h3 {
   color: var(--text-secondary);
 }
 
+/* A checkbox and its text side by side, as on the Advanced page. */
+.stack label.row {
+  flex-direction: row;
+  align-items: center;
+}
+
 .stack input,
 .stack select,
 .stack textarea {

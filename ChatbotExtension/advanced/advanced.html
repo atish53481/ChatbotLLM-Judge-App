@@ -48,7 +48,7 @@
 
         <div class="card stack">
           <h3>Chatbot instructions <span class="muted small">(Prompt Alignment)</span></h3>
-          <p class="secondary small">One instruction per line, as in the chatbot's system prompt. The judge checks each one on every reply.</p>
+          <p class="secondary small">Paste the rules from the chatbot's system prompt, one rule per line. Prompt Alignment scores each reply by how many of these rules it follows. Leave empty to use the pasted request's system prompt, else standard production rules.</p>
           <textarea id="instructions" rows="5" placeholder="Answer in English.&#10;Never promise delivery dates.&#10;Keep replies under 120 words."></textarea>
           <div class="row"><button id="save-instructions" type="button" class="primary">Save instructions</button></div>
         </div>
