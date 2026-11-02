@@ -151,6 +151,24 @@ def _is_spec(data: Any) -> bool:
     return isinstance(data, dict) and ("openapi" in data or "swagger" in data) and isinstance(data.get("paths"), dict)
 
 
+def _parse_spec_text(text: str) -> dict:
+    """A user-provided OpenAPI / Swagger document as JSON or YAML text."""
+    text = text.strip()
+    if not text:
+        raise ValueError("the file is empty")
+    try:
+        data = json.loads(text)
+    except ValueError:
+        try:
+            import yaml
+            data = yaml.safe_load(text)
+        except Exception as e:  # noqa: BLE001 - any parse failure means "not a spec"
+            raise ValueError("not valid JSON or YAML") from e
+    if not _is_spec(data):
+        raise ValueError("not an OpenAPI / Swagger document")
+    return data
+
+
 def _spec_urls(config: dict) -> list[str]:
     """Spec addresses to try, deepest folder of the chat URL first, then the root."""
     url = config.get("url", "")
@@ -401,10 +419,15 @@ def coverage(config: dict, items: list[dict]) -> list[dict]:
 
 
 def discover(config: dict, *, client, make_client, judge=None, fetch=None, find_help_pages=None,
-             send_headers: bool = False, budget: Budget | None = None, questions=None) -> dict:
+             send_headers: bool = False, budget: Budget | None = None, questions=None,
+             spec_url: str = "", spec_text: str = "", help_text: str = "") -> dict:
     """Looks for what the metrics need and returns the report (nothing is changed;
     `apply` uses the items the user approves). `questions` are the chatbot's own
-    golden questions: a greeting rarely makes a bot call a tool or retrieve."""
+    golden questions: a greeting rarely makes a bot call a tool or retrieve.
+
+    `spec_url` / `spec_text` are a user-provided OpenAPI / Swagger document (URL or
+    JSON/YAML text) used instead of the usual auto-discovery when given; `help_text`
+    is extra help / FAQ / log text the judge reads to infer rules and tools."""
     fetch = fetch or fetch_json
     find_pages = find_help_pages or _find_help_pages
     budget = budget or Budget()
@@ -433,11 +456,33 @@ def discover(config: dict, *, client, make_client, judge=None, fetch=None, find_
         if seen[field] and not config.get(field):
             items.append(_item(field, label, seen[field], "found", "the chatbot's reply"))
 
-    # 2. API docs.
-    spec_url, spec = find_openapi(config, fetch=fetch, budget=budget, send_headers=send_headers)
-    api = analyze_openapi(spec, config.get("url", ""), config.get("method") or "POST") if spec else \
+    # 2. API docs: the user's link or uploaded file first, then the usual paths.
+    headers = dict(config.get("headers") or {}) if send_headers else None
+    found_spec_url, found_spec = "", None
+    provided_url = spec_url.strip()
+    provided_text = spec_text.strip()
+    if provided_url:
+        if not budget.take_fetch():
+            notes.append("Stopped at the fetch limit before reading the provided API docs link.")
+        else:
+            try:
+                found_spec = fetch(provided_url, headers)
+                if not _is_spec(found_spec):
+                    raise ValueError("that URL is not an OpenAPI / Swagger document")
+                found_spec_url = provided_url
+            except ValueError as e:
+                notes.append(f"Could not read the provided API docs link ({e}); using auto-discovery.")
+    if found_spec is None and provided_text:
+        try:
+            found_spec = _parse_spec_text(provided_text)
+            found_spec_url = "uploaded API docs"
+        except ValueError as e:
+            notes.append(f"Could not read the uploaded API docs file ({e}); using auto-discovery.")
+    if found_spec is None:
+        found_spec_url, found_spec = find_openapi(config, fetch=fetch, budget=budget, send_headers=send_headers)
+    api = analyze_openapi(found_spec, config.get("url", ""), config.get("method") or "POST") if found_spec else \
         {"tools_path": "", "context_path": "", "flags": [], "tool_endpoints": []}
-    notes.append(f"API docs found at {spec_url}." if spec else
+    notes.append(f"API docs found at {found_spec_url}." if found_spec else
                  "No API docs (OpenAPI / Swagger) found on the chatbot's site.")
 
     # 3. Request variants, for what neither the config nor the reply has.
@@ -468,7 +513,6 @@ def discover(config: dict, *, client, make_client, judge=None, fetch=None, find_
                              "ask the chatbot's team when it is filled.")
 
     # 4. Tools the API lists, then rules and tools inferred by the judge.
-    headers = dict(config.get("headers") or {}) if send_headers else None
     api_tools: list[dict] = []
     for url in api["tool_endpoints"][:2]:
         if budget.take_fetch():
@@ -494,6 +538,9 @@ def discover(config: dict, *, client, make_client, judge=None, fetch=None, find_
             pages = find_pages(config)
         except Exception:  # noqa: BLE001 - no pages is fine
             pages = []
+        provided_help = help_text.strip()
+        if provided_help:
+            pages = [("provided help / FAQ / log", provided_help)] + pages
         try:
             rules, inferred_tools = _infer(judge, answers, pages, api_tools)
         except Exception as e:  # noqa: BLE001 - a judge failure is reported, the rest is kept
@@ -509,7 +556,7 @@ def discover(config: dict, *, client, make_client, judge=None, fetch=None, find_
         items.append(_item("available_tools", "Available tools", tools, "found" if api_tools else "inferred",
                            "its API" if api_tools else "the chatbot's answers"))
 
-    return {"ran_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "api_docs": spec_url or "",
+    return {"ran_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "api_docs": found_spec_url or "",
             "items": items, "metrics": coverage(config, items), "notes": notes,
             "used": {"fetches": budget.fetches, "messages": budget.messages}, "approved": []}
 

@@ -52,7 +52,7 @@ def test_shipped_defaults_cover_every_security_metric():
     shipped = Path(__file__).parent.parent / "backend" / "datasets" / "security_probes.default.json"
     rows = json.loads(shipped.read_text(encoding="utf-8"))
     for metric in store.SECURITY_METRICS:
-        for probe_set in store.PROBE_SETS:
+        for probe_set in store.SHIPPED_PROBE_SETS:
             assert sum(r["metric"] == metric and r["set"] == probe_set for r in rows) >= 4, (metric, probe_set)
     assert len({r["id"] for r in rows}) == len(rows)
     assert all(r["metric"] in store.PROBE_METRICS for r in rows)
@@ -67,7 +67,7 @@ def test_shipped_defaults_cover_the_safety_prompt_metrics():
     shipped = Path(__file__).parent.parent / "backend" / "datasets" / "security_probes.default.json"
     rows = json.loads(shipped.read_text(encoding="utf-8"))
     for metric in store.SAFETY_PROBE_METRICS + ("harmful_content",):
-        for probe_set in store.PROBE_SETS:
+        for probe_set in store.SHIPPED_PROBE_SETS:
             assert sum(r["metric"] == metric and r["set"] == probe_set for r in rows) >= 5, (metric, probe_set)
 
 

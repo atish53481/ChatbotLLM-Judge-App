@@ -205,8 +205,10 @@
       var(--status-critical) 0 calc((var(--pass) + var(--fail)) * 1%),
       var(--pending-bg, rgba(0, 0, 0, 0.08)) 0);
 }
-.tile-counts.has-donut { flex-direction: row; align-items: center; gap: 14px; }
-.tile-counts.has-donut .tile-counts-text { display: flex; flex-direction: column; gap: 8px; }
+/* Start-aligned: centred, content wider than a narrow tile spilled past both edges. */
+.tile-counts.has-donut { flex-direction: row; align-items: center; justify-content: flex-start; gap: 14px; }
+.tile-counts.has-donut .tile-counts-text { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.tile-counts.has-donut .count-pills { flex-wrap: wrap; }
 
 @media (prefers-reduced-motion: reduce) {
   :root[data-theme="dark"] .metric-card { transition: none; }

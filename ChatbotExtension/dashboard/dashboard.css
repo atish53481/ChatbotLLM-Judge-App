@@ -79,6 +79,14 @@ body.dash {
   display: inline-flex; align-items: center; }
 .header-controls .segmented { height: 34px; box-sizing: border-box; }
 .header-controls .segmented button { height: 100%; }
+/* "Show earlier runs": a checkbox on one line, as tall as the fields beside it. */
+.header-controls label.check-toggle {
+  flex-direction: row; align-items: center; gap: 6px; height: 34px;
+  font-size: 12px; text-transform: none; letter-spacing: 0; opacity: 1; cursor: pointer;
+}
+.header-controls .check-toggle input {
+  min-width: 0; width: 16px; height: 16px; margin: 0; padding: 0; accent-color: var(--accent);
+}
 /* Secondary header actions: outlined on the dark bar, so the terracotta
    primary ("Run all visible", the active view) stays the one that stands out. */
 .header-controls .ghost {
@@ -739,24 +747,3 @@ td.scan-result { min-width: 180px; max-width: 320px; }
   .metric-card:hover { transform: none; }
 }
 
-/* Your own G-Eval metric: the builder card at the top of the G-Eval section. */
-.metric-card.geval-builder { border-style: dashed; }
-.metric-card.geval-builder-open { grid-column: 1 / -1; border-style: solid; }
-.geval-form, .geval-closed { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-.geval-form h3, .geval-closed h3 { margin: 0; font-size: 15px; }
-.geval-form p { margin: 0; }
-.geval-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary); min-width: 0; }
-.geval-field input, .geval-field textarea { width: 100%; box-sizing: border-box; font: inherit; color: var(--text-primary); }
-.geval-field textarea { resize: vertical; }
-.geval-params { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 4px; }
-.geval-params legend { font-size: 12px; color: var(--text-secondary); padding: 0 4px; }
-.geval-param { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--text-primary); }
-.geval-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 16px; }
-.geval-threshold { width: 90px; }
-.geval-preview summary { cursor: pointer; font-size: 12px; color: var(--text-secondary); }
-.geval-code {
-  margin: 6px 0 0; padding: 10px; border-radius: 4px; background: var(--surface-raised);
-  font: 12px var(--mono); white-space: pre-wrap; overflow-wrap: anywhere;
-}
-.geval-error { color: var(--status-critical); font-size: 12px; }
-.geval-error:empty { display: none; }

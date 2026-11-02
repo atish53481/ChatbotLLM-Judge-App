@@ -49,7 +49,9 @@ function formatPercent(rate) {
   return rate === null ? "–" : `${Math.round(rate * 100)}%`;
 }
 
-function cover(target, judge, metrics, latestByKey, cases) {
+// allRuns: "Show earlier runs" is on, so the report counts every stored run
+// (the cover says so); off, it shows this session's runs and says nothing.
+function cover(target, judge, metrics, latestByKey, cases, allRuns = false) {
   const run = metrics.filter((m) => latestByKey[m.key]);
   const scores = run.map((m) => normalized(m, latestByKey[m.key].score)).filter((s) => s !== null);
   const average = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
@@ -66,6 +68,7 @@ function cover(target, judge, metrics, latestByKey, cases) {
       ["Golden set", themeOf(target)],
       ["Judge", judge ? `${judge.model} (${safeUrl(judge.base_url) || judge.base_url})` : "–"],
       ["Generated", new Date().toLocaleString()],
+      ...(allRuns ? [["Runs", "Every stored run, earlier sessions included (each metric's latest)"]] : []),
     ]),
     el(
       "div",
@@ -382,6 +385,71 @@ function notRunSection(metrics, latestByKey) {
   );
 }
 
+// OWASP coverage of the security metrics in this report: for every risk id of
+// the OWASP lists (/api/security/frameworks: LLM Applications 2025, Agentic
+// Applications 2026, MCP 2025), the reported metrics that test it and how many
+// of their attacks the chatbot resisted. A list none of them tests is left out;
+// ids of a list that no reported metric tests are named as not tested. Ids
+// marked partial (backend PARTLY_TESTABLE) can be tested only in part from the
+// chat: they carry the reason and never read as fully covered.
+function owaspCoverage(frameworks, ran, latestByKey) {
+  const ranKeys = new Set(ran.map((m) => m.key));
+  const titles = Object.fromEntries(ran.map((m) => [m.key, m.title]));
+  return Object.entries(frameworks || {}).map(([key, fw]) => {
+    const items = (fw.items || []).map((item) => {
+      const keys = (item.metrics || []).filter((k) => ranKeys.has(k));
+      let attacks = 0;
+      let resisted = 0;
+      for (const k of keys) {
+        const rows = (latestByKey[k] && latestByKey[k].result && latestByKey[k].result.rows) || [];
+        attacks += rows.length;
+        resisted += rows.filter((r) => r.passed).length;
+      }
+      return { id: item.id, title: item.title, metrics: keys.map((k) => titles[k] || k), attacks, resisted,
+        partial: item.partial === true, partialReason: item.partial_reason || "" };
+    });
+    return { key, label: fw.label, tested: items.filter((i) => i.metrics.length),
+      untested: items.filter((i) => !i.metrics.length), partial: items.filter((i) => i.partial) };
+  }).filter((fw) => fw.tested.length);
+}
+
+function owaspSection(frameworks, ran, latestByKey) {
+  const lists = owaspCoverage(frameworks, ran, latestByKey);
+  if (!lists.length) return null;
+  const anyPartial = lists.some((fw) => fw.partial.length);
+  return el(
+    "section",
+    { className: "owasp" },
+    el("h2", {}, "OWASP coverage"),
+    el("p", { className: "muted small" }, "The security metrics in this report by OWASP risk, with how many of their attacks the chatbot resisted. Risks that no reported metric tests are listed as not tested: not tested is not the same as safe."
+      + (anyPartial ? " Risks marked partly testable live mostly outside the chat (dependencies, data, servers, logs): chat attacks check only part of them, so even every attack resisted is not full coverage." : "")),
+    ...lists.flatMap((fw) => [
+      el("h3", {}, fw.label),
+      el(
+        "table",
+        { className: "summary" },
+        el("thead", {}, el("tr", {}, el("th", {}, "Risk"), el("th", {}, "Metrics"), el("th", {}, "Attacks resisted"))),
+        el("tbody", {}, ...fw.tested.map((i) => el(
+          "tr",
+          { className: i.partial ? "partial" : "" },
+          el("td", {}, `${i.id} ${i.title}`, i.partial ? el("span", { className: "partial-tag" }, " · partly testable") : null),
+          el("td", {}, i.metrics.join(", ")),
+          el("td", { className: i.attacks && i.resisted < i.attacks ? "fail" : "" },
+            i.attacks ? `${i.resisted} of ${i.attacks} (${formatPercent(i.resisted / i.attacks)})` : "no case details",
+            i.partial ? " · partial coverage" : ""),
+        ))),
+      ),
+      fw.untested.length ? el("p", { className: "muted small" }, `Not tested: ${fw.untested.map((i) => i.id).join(", ")}.`) : null,
+      fw.partial.length ? el("ul", { className: "partial-list small" }, ...fw.partial.map((i) => el(
+        "li",
+        {},
+        el("b", {}, `${i.id} ${i.title}`),
+        ` · partly testable from the chat: ${i.partialReason || "only part of this risk shows in the chatbot's replies"}`,
+      ))) : null,
+    ].filter(Boolean)),
+  );
+}
+
 function appendix(metrics) {
   const lower = metrics.filter((m) => m.direction === "lower").map((m) => m.title);
   const lowerText = lower.length
@@ -413,6 +481,7 @@ function appendix(metrics) {
 // same way from the catalog's data, so new metrics need no change here.
 const SECTION_OPTIONS = [
   ["summary", "Summary table"],
+  ["owasp", "OWASP coverage (security metrics)"],
   ["notrun", "Metrics not run (with why)"],
   ["cases", "Test case results"],
   ["improve", "How to improve the score"],
@@ -454,11 +523,15 @@ function renderReport(data, options) {
   const caseIds = new Map(cases.map((c) => [c.row, c.id]));
   // With a hand-picked set, metrics that were not picked (or never ran) stay out.
   const shown = options.metrics ? ran : metrics;
-  const parts = [cover(target, judge, shown, latestByKey, cases)];
+  const parts = [cover(target, judge, shown, latestByKey, cases, data.showAllRuns === true)];
   if (ranMetrics.length && !ran.length) {
     parts.push(el("p", { className: "note" }, "No metric is selected: tick at least one under \"Metrics\" above."));
   }
   if (options.summary) parts.push(summaryTable(shown, latestByKey, thresholds));
+  if (options.owasp && data.frameworks) {
+    const section = owaspSection(data.frameworks, ran, latestByKey);
+    if (section) parts.push(section);
+  }
   if (options.notrun) {
     // A hand-picked set still lists the metrics this chatbot cannot run (they
     // cannot be picked), just not the ones left unticked.
@@ -502,6 +575,15 @@ function optionsForm(data, options, onChange) {
   const failedKeys = ranMetrics.filter((m) => !data.latestByKey[m.key].passed).map((m) => m.key);
   const button = (id, label, onClick) => el("button", { type: "button", id, onclick: onClick }, label);
   return [
+    // Shared with the dashboard header (setting showAllRuns): the change comes
+    // back through settings.onChange, which loads the runs again.
+    el(
+      "fieldset",
+      {},
+      el("legend", {}, "Runs"),
+      box("opt-show-all-runs", "Show earlier runs (every stored run, not only this session's)", data.showAllRuns === true,
+        (on) => { setShowAllRuns(on).catch(() => {}); }),
+    ),
     el(
       "fieldset",
       {},
@@ -533,26 +615,33 @@ function optionsForm(data, options, onChange) {
 
 async function loadReportData() {
   const targetId = Number(new URLSearchParams(location.search).get("target"));
-  const [targets, judge, thresholds] = await Promise.all([
+  const [targets, judge, thresholds, showAllRuns] = await Promise.all([
     fetchTargets(),
     api("/api/judge/settings").catch(() => null),
     settings.get("thresholds", {}),
+    showingAllRuns(),
   ]);
   const target = targets.find((t) => t.id === targetId);
   if (!target) throw new Error("Chatbot not found: open the report from the dashboard.");
-  const [metrics, latest] = await Promise.all([
+  const [metrics, latest, frameworks] = await Promise.all([
     api(`/api/metrics?target_id=${target.id}`),
     api(`/api/runs/latest?target_id=${target.id}&since_id=${await sessionSince()}`),
+    // Which metrics test each OWASP risk; without it the report has no OWASP section.
+    api("/api/security/frameworks").then((data) => data.frameworks).catch(() => null),
   ]);
   const latestByKey = Object.fromEntries(latest.map((r) => [r.metric_key, r]));
   // Every case comes from the database: each run's stored result.
   const details = Object.fromEntries(metrics.map((m) => [m.key, caseDetailsFromRun(latestByKey[m.key])]));
-  return { target, judge, metrics, latestByKey, details, thresholds };
+  return { target, judge, metrics, latestByKey, details, thresholds, frameworks, showAllRuns };
 }
+
+// What the page shows now, so loading the runs again keeps the viewer's choices.
+let current = null;
 
 // Renders the choices and the report; a change re-renders both and keeps
 // keyboard focus on the control that was used.
 function showReport(data, options) {
+  current = { data, options };
   const focusedId = document.activeElement && document.activeElement.id;
   const update = (next) => {
     showReport(data, next);
@@ -563,6 +652,16 @@ function showReport(data, options) {
   if (focusedId && $(focusedId)) $(focusedId).focus();
 }
 
+function anyRun(data) {
+  return data.metrics.some((m) => data.latestByKey[m.key]);
+}
+
+function statusText(data) {
+  if (anyRun(data)) return "Choose what to include, then click Save as PDF (pick \"Save as PDF\" as the printer).";
+  return "No metric has been run for this chatbot yet: the report has only the summary."
+    + (data.showAllRuns ? "" : " Runs from earlier sessions count only with \"Show earlier runs\" ticked.");
+}
+
 async function start() {
   const [data, saved] = await Promise.all([
     loadReportData(),
@@ -570,19 +669,38 @@ async function start() {
   ]);
   document.title = `Evaluation report · ${data.target.name}`;
   showReport(data, readOptions(saved));
-  return data.metrics.some((m) => data.latestByKey[m.key]);
+  return data;
+}
+
+// "Show earlier runs" was flipped (here, on the dashboard or in another tab):
+// load the runs again and re-render with the same choices. Only the newest of
+// overlapping reloads is shown.
+let reloads = 0;
+async function reloadRuns() {
+  const mine = ++reloads;
+  const data = await loadReportData();
+  if (mine !== reloads) return;
+  showReport(data, current.options);
+  $("report-status").textContent = statusText(data);
 }
 
 $("print-button").addEventListener("click", () => window.print());
 $("report-options").addEventListener("submit", (event) => event.preventDefault());
 
-start()
-  .then((ran) => {
-    $("report-status").textContent = ran
-      ? "Choose what to include, then click Save as PDF (pick \"Save as PDF\" as the printer)."
-      : "No metric has been run for this chatbot yet: the report has only the summary.";
+const started = start();
+started
+  .then((data) => {
+    $("report-status").textContent = statusText(data);
     $("print-button").disabled = false;
   })
   .catch((error) => {
     $("report-status").textContent = error.message;
   });
+
+// A flip during the first load reloads once that load has shown.
+settings.onChange((changes) => {
+  if (!changes.showAllRuns) return;
+  started.then(reloadRuns).catch((error) => {
+    $("report-status").textContent = error.message;
+  });
+});

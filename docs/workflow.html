@@ -1,0 +1,957 @@
+<!-- Source of the LLM Judge Workflow page, published at https://claude.ai/artifact/JxkuyFH5iLH8ZdzoszZ4Qv
+     (text version: docs/WORKFLOW.md). Update it with every change to the app and republish it to that
+     link: see "Keeping the docs current" in CLAUDE.md. The Artifact tool adds the document skeleton when
+     it publishes; the charset line below is for opening this file straight from disk. -->
+<meta charset="utf-8">
+<title>LLM Judge Workflow</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,500..800&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+/* Layout: one reading column; each mechanism gets its own figure plate that scrolls sideways on phones; numbered markers only where order is real (your path, the run pipeline). */
+:root {
+  --bg: #f2f4f7;
+  --surface: #ffffff;
+  --node: #edf0f5;
+  --ink: #141922;
+  --ink-2: #434c5e;
+  --ink-3: #596275;
+  --line: #bcc4d1;
+  --rule: #dce1e9;
+  --accent: #b4532f;
+  --accent-text: #9a4425;
+  --accent-soft: #f8e8e1;
+  --good: #176e4a;
+  --good-soft: #e1f2ea;
+  --bad: #a83137;
+  --bad-soft: #f9e3e4;
+  --warn: #7d560b;
+  --warn-soft: #f6ecd5;
+  --code-bg: #e8ecf2;
+  --font-display: "Archivo", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111318; --surface: #181b22; --node: #22262f; --ink: #e7e9ee; --ink-2: #b4bac6; --ink-3: #9299a7;
+    --line: #3d4453; --rule: #2a2f39; --accent: #e07a5a; --accent-text: #ef9a7c; --accent-soft: #2f2321;
+    --good: #46be93; --good-soft: #172a21; --bad: #ec6268; --bad-soft: #301d1f; --warn: #dcab45; --warn-soft: #2c2517;
+    --code-bg: #1f232c;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111318; --surface: #181b22; --node: #22262f; --ink: #e7e9ee; --ink-2: #b4bac6; --ink-3: #9299a7;
+  --line: #3d4453; --rule: #2a2f39; --accent: #e07a5a; --accent-text: #ef9a7c; --accent-soft: #2f2321;
+  --good: #46be93; --good-soft: #172a21; --bad: #ec6268; --bad-soft: #301d1f; --warn: #dcab45; --warn-soft: #2c2517;
+  --code-bg: #1f232c;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { background: var(--bg); color: var(--ink); font: 400 15.5px/1.62 var(--font-body); }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--bg); }
+a { color: var(--accent-text); }
+b { font-weight: 600; color: var(--ink); }
+code { font-family: var(--font-mono); font-size: 0.86em; background: var(--code-bg); padding: 0.08em 0.38em; border-radius: 4px; overflow-wrap: anywhere; }
+.wrap { max-width: 1120px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* masthead */
+.mast { padding-block: 52px 30px; }
+.eyebrow { margin: 0 0 14px; font: 600 12px/1.3 var(--font-body); letter-spacing: .12em; text-transform: uppercase; color: var(--accent-text); }
+h1 { margin: 0; max-width: 19ch; font: 800 clamp(32px, 5.4vw, 56px)/1.03 var(--font-display); font-stretch: 116%; letter-spacing: -0.012em; text-wrap: balance; }
+.lede { margin: 18px 0 0; max-width: 68ch; font-size: 17px; color: var(--ink-2); }
+.route { list-style: none; margin: 28px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 10px 0; }
+.route li { display: flex; align-items: center; min-width: 0; }
+.route li + li::before { content: "→"; color: var(--ink-3); padding: 0 10px; font-family: var(--font-mono); }
+.stop { display: grid; gap: 2px; padding: 9px 13px; background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; }
+.stop strong { font: 650 14px/1.25 var(--font-display); font-stretch: 108%; }
+.stop small { font-size: 12px; line-height: 1.35; color: var(--ink-3); }
+.facts { margin: 28px 0 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px 28px; border-top: 1px solid var(--rule); padding-top: 18px; }
+.facts div { min-width: 0; }
+.facts dt { font-size: 11.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); }
+.facts dd { margin: 3px 0 0; font-weight: 500; }
+
+/* section nav */
+.toc { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--bg); border-block: 1px solid var(--rule); }
+.toc .wrap { display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; padding-block: 7px; }
+.toc a { flex: none; padding: 5px 10px; border-radius: 6px; color: var(--ink-2); text-decoration: none; font-size: 13.5px; font-weight: 500; }
+.toc a:hover { background: var(--node); color: var(--ink); }
+.toc a:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* sections */
+main section { padding-block: 48px 4px; scroll-margin-top: 54px; }
+.kicker { margin: 0 0 8px; font: 600 11.5px/1.3 var(--font-body); letter-spacing: .12em; text-transform: uppercase; color: var(--accent-text); }
+h2 { margin: 0; max-width: 30ch; font: 750 clamp(23px, 3vw, 31px)/1.12 var(--font-display); font-stretch: 110%; text-wrap: balance; }
+h3 { margin: 0; font: 650 17px/1.3 var(--font-display); font-stretch: 106%; }
+.prose { max-width: 72ch; }
+.prose p { margin: 12px 0 0; color: var(--ink-2); }
+
+/* figure plates */
+.fig { margin: 22px 0 0; background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; }
+.fig-scroll { overflow-x: auto; padding: 18px; }
+.fig svg { display: block; width: 100%; height: auto; min-width: 860px; font-family: var(--font-body); }
+.fig figcaption { border-top: 1px solid var(--rule); padding: 12px 18px 14px; font-size: 14px; color: var(--ink-2); }
+.fig .t { font-size: 12.5px; font-weight: 600; fill: var(--ink); }
+.fig .ts { font-size: 11px; fill: var(--ink-3); }
+.fig .tm { font-family: var(--font-mono); font-size: 10.5px; fill: var(--ink-2); }
+.fig .tmt { font-family: var(--font-mono); font-size: 12px; font-weight: 500; fill: var(--ink); }
+.fig .band { fill: none; stroke: var(--line); stroke-width: 1; stroke-dasharray: 6 5; }
+.fig .band-label { font-size: 10.5px; font-weight: 600; letter-spacing: .08em; fill: var(--ink-3); }
+.fig .node { fill: var(--node); stroke: var(--line); stroke-width: 1; }
+.fig .node.acc { stroke: var(--accent); stroke-width: 1.6; }
+.fig .node.dash { stroke-dasharray: 4 3; }
+.fig .node.good { fill: var(--good-soft); stroke: var(--good); }
+.fig .node.bad { fill: var(--bad-soft); stroke: var(--bad); }
+.fig .node.warn { fill: var(--warn-soft); stroke: var(--warn); }
+.fig .inner { fill: var(--surface); stroke: var(--line); stroke-width: 1; }
+.fig .edge { fill: none; stroke: var(--ink-3); stroke-width: 1.4; }
+.fig .edge.acc { stroke: var(--accent); stroke-width: 1.8; }
+.fig .edge.dash { stroke-dasharray: 4 4; }
+.fig .zoom { fill: none; stroke: var(--line); stroke-width: 1; stroke-dasharray: 2 4; }
+.fig .rule { stroke: var(--rule); stroke-width: 1; }
+.fig .el { font-size: 11px; fill: var(--ink-2); paint-order: stroke; stroke: var(--surface); stroke-width: 4px; stroke-linejoin: round; }
+.fig .el.m { font-family: var(--font-mono); font-size: 10.5px; }
+.fig .el.acc { fill: var(--accent-text); }
+.fig .mk { fill: var(--ink-3); }
+.fig .mk.acc { fill: var(--accent); }
+.swatch { display: inline-block; width: 22px; height: 12px; margin: 0 2px -1px; border-radius: 3px; border: 1.6px solid var(--accent); background: var(--node); }
+
+/* notes under figures */
+.notes { margin: 20px 0 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 18px 30px; }
+.notes div { min-width: 0; }
+.notes dt { font-weight: 600; }
+.notes dd { margin: 4px 0 0; color: var(--ink-2); font-size: 14.5px; }
+
+/* your path */
+.journey { list-style: none; margin: 26px 0 0; padding: 0; }
+.journey > li { position: relative; display: grid; grid-template-columns: 40px minmax(0, 1fr); column-gap: 18px; padding-bottom: 28px; }
+.journey > li::before { content: ""; position: absolute; left: 19px; top: 46px; bottom: 6px; width: 2px; background: var(--rule); }
+.journey > li:last-child { padding-bottom: 0; }
+.journey > li:last-child::before { display: none; }
+.step-no { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; background: var(--surface); border: 1.5px solid var(--accent); color: var(--accent-text); font: 750 16px/1 var(--font-display); font-variant-numeric: tabular-nums; }
+.step-body { min-width: 0; display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 8px 32px; padding-top: 8px; }
+.step-body h3 { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.step-body p { margin: 0; color: var(--ink-2); font-size: 14.8px; }
+.tag { font: 600 10.5px/1 var(--font-body); letter-spacing: .08em; text-transform: uppercase; padding: 4px 7px; border-radius: 4px; background: var(--node); color: var(--ink-3); }
+.calls { display: flex; flex-wrap: wrap; gap: 6px; align-content: start; margin: 0; padding: 0; list-style: none; }
+.calls li { font: 500 12px/1.35 var(--font-mono); background: var(--code-bg); color: var(--ink-2); border-radius: 5px; padding: 4px 8px; overflow-wrap: anywhere; }
+@media (max-width: 760px) { .step-body { grid-template-columns: minmax(0, 1fr); } }
+
+/* metric kinds */
+.kinds { margin: 20px 0 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+.kinds div { min-width: 0; background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 12px 14px; }
+.kinds dt { font-weight: 600; }
+.kinds dt span { color: var(--ink-3); font-weight: 400; }
+.kinds dd { margin: 4px 0 0; font-size: 14px; color: var(--ink-2); }
+
+/* pass and fail */
+.verdict-wrap { margin: 24px 0 0; display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 24px 40px; align-items: start; }
+@media (max-width: 880px) { .verdict-wrap { grid-template-columns: minmax(0, 1fr); } }
+.table-scroll { overflow-x: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+.verdict th, .verdict td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--rule); font-size: 14px; white-space: nowrap; }
+.verdict thead th { font-size: 12.5px; font-weight: 600; color: var(--ink-2); vertical-align: bottom; }
+.verdict thead th span { display: block; font: 500 11.5px/1.4 var(--font-mono); color: var(--ink-3); }
+.verdict tbody th { font-family: var(--font-mono); font-weight: 500; }
+.verdict td.s { font-family: var(--font-mono); }
+.verdict td.f { background: var(--bad-soft); color: var(--bad); font-weight: 600; }
+.verdict tfoot th, .verdict tfoot td { border-bottom: 0; }
+.verdict tfoot tr:first-child th, .verdict tfoot tr:first-child td { border-top: 2px solid var(--rule); color: var(--ink-3); }
+.verdict tfoot tr:first-child td { font-family: var(--font-mono); }
+.pill { display: inline-block; font: 600 12px/1 var(--font-body); padding: 5px 9px; border-radius: 999px; }
+.pill.pass { background: var(--good-soft); color: var(--good); }
+.pill.fail { background: var(--bad-soft); color: var(--bad); }
+.example-note { margin: 8px 2px 0; font-size: 12.5px; color: var(--ink-3); }
+.rules { margin: 0; padding: 0; list-style: none; display: grid; gap: 14px; }
+.rules li { display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 12px; }
+.rules strong { font: 650 14.5px/1.45 var(--font-display); font-stretch: 106%; }
+.rules span { color: var(--ink-2); font-size: 14.5px; }
+
+/* results */
+.flow { margin: 24px 0 0; display: grid; gap: 14px; }
+.flow-row { display: grid; grid-template-columns: minmax(0, 1fr) 30px minmax(0, 1.1fr) 30px minmax(0, 1.45fr); }
+.flow-cell { min-width: 0; background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 16px; }
+.flow-cell.store { background: var(--node); }
+.flow-arrow { display: grid; place-items: center; color: var(--ink-3); font-family: var(--font-mono); }
+.flow-arrow::before { content: "→"; }
+.cell-kicker { margin: 0 0 6px; font: 600 11px/1.3 var(--font-body); letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); }
+.flow-cell h3 { font-size: 16px; }
+.flow-cell p { margin: 6px 0 0; font-size: 14px; color: var(--ink-2); }
+.flow-cell ul { margin: 4px 0 0; padding-left: 18px; font-size: 14px; color: var(--ink-2); }
+.flow-cell ul.api { list-style: none; padding: 0; display: grid; gap: 4px; }
+.flow-cell ul.api li { font: 500 12px/1.4 var(--font-mono); overflow-wrap: anywhere; }
+@media (max-width: 880px) {
+  .flow-row { grid-template-columns: minmax(0, 1fr); }
+  .flow-arrow { height: 28px; }
+  .flow-arrow::before { content: "↓"; }
+}
+
+/* metric catalog */
+.catalog { margin: 24px 0 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+@media (max-width: 960px) { .catalog { grid-template-columns: repeat(2, minmax(0, 1fr)); } .cat.custom { grid-column: 1 / -1; } }
+@media (max-width: 620px) { .catalog { grid-template-columns: minmax(0, 1fr); } }
+.cat { min-width: 0; background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 16px 16px; display: grid; gap: 9px; align-content: start; }
+.cat-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.count { font: 750 24px/1 var(--font-display); font-stretch: 110%; color: var(--accent-text); font-variant-numeric: tabular-nums; }
+.ds { margin: 0; font: 500 11.5px/1.45 var(--font-mono); color: var(--ink-3); overflow-wrap: anywhere; }
+.cat ul { margin: 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 5px; }
+.cat li { font-size: 12.5px; line-height: 1.3; padding: 4px 7px; border-radius: 5px; background: var(--node); }
+.cat p.why { margin: 0; font-size: 13.5px; color: var(--ink-2); }
+
+/* code map */
+.change { margin: 22px 0 0; }
+.change th, .change td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--rule); vertical-align: top; font-size: 14px; }
+.change thead th { font-size: 11.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
+.change td:first-child { font-weight: 500; width: 34%; min-width: 180px; }
+.change td:last-child { color: var(--ink-2); min-width: 260px; }
+.change tbody tr:last-child td { border-bottom: 0; }
+
+footer { margin-top: 56px; border-top: 1px solid var(--rule); padding-block: 22px 56px; color: var(--ink-3); font-size: 13px; }
+footer p { margin: 0; max-width: 80ch; }
+</style>
+
+<header class="wrap mast">
+  <p class="eyebrow">LLM Judge · how it works</p>
+  <h1>From a pasted cURL to a scored scan</h1>
+  <p class="lede">LLM Judge replays a request captured from a chatbot's own website, asks it the questions in a golden set, and has a separate judge model score every reply with DeepEval metrics. This page follows that path through the code, from the start script to the scan you read afterwards.</p>
+  <ol class="route" aria-label="The path in five steps">
+    <li><span class="stop"><strong>Captured request</strong><small>Copy as cURL, {{message}}</small></span></li>
+    <li><span class="stop"><strong>Test cases</strong><small>goldens, scenarios, probes</small></span></li>
+    <li><span class="stop"><strong>Chatbot replies</strong><small>one per question</small></span></li>
+    <li><span class="stop"><strong>Judge scores</strong><small>DeepEval, separate model</small></span></li>
+    <li><span class="stop"><strong>Scans</strong><small>pass or fail, history, reports</small></span></li>
+  </ol>
+  <dl class="facts">
+    <div><dt>Address</dt><dd><code>127.0.0.1:8765</code>, this PC only</dd></div>
+    <div><dt>Metrics</dt><dd>76 in 8 groups (32 from DeepTeam), plus your own</dd></div>
+    <div><dt>Judge</dt><dd>Any OpenAI-compatible API, Groq by default</dd></div>
+    <div><dt>Data</dt><dd>SQLite <code>judge.db</code> and JSON datasets</dd></div>
+  </dl>
+</header>
+
+<nav class="toc" aria-label="Sections">
+  <div class="wrap">
+    <a href="#pieces">Pieces</a>
+    <a href="#path">Your path</a>
+    <a href="#data">Test data</a>
+    <a href="#scan">A scan</a>
+    <a href="#metric">One metric</a>
+    <a href="#replies">Shared replies</a>
+    <a href="#verdict">Pass and fail</a>
+    <a href="#results">Results</a>
+    <a href="#side-paths">Side paths</a>
+    <a href="#catalog">Metrics</a>
+    <a href="#code-map">Code map</a>
+  </div>
+</nav>
+
+<main class="wrap">
+
+<section id="pieces" aria-labelledby="pieces-h">
+  <p class="kicker">The pieces</p>
+  <h2 id="pieces-h">Everything runs on your PC except the chatbot and the judge</h2>
+  <div class="prose">
+    <p>The app has two halves: a web app with no build step (<code>ChatbotExtension/</code>, named from when it was a Chrome extension) and a FastAPI backend that serves it and does all the work. A run never happens in the browser. The page queues a job, and a worker thread inside the backend sends the questions and collects the scores, so closing the page does not stop it.</p>
+  </div>
+  <figure class="fig">
+    <div class="fig-scroll">
+      <svg viewBox="0 0 1040 548" role="img" aria-label="System map. The browser pages call the backend API on 127.0.0.1:8765. The API queues jobs, the job queue runs the runner, and the runner asks the chatbot under test through the chatbot client and scores each reply through the judge, which calls the judge model. The runner reads cases from the JSON datasets and records each run in SQLite. Finished scans can be uploaded to Confident AI.">
+        <defs>
+          <marker id="f1-a" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="mk" d="M0 0L10 5L0 10z"/></marker>
+          <marker id="f1-b" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="mk acc" d="M0 0L10 5L0 10z"/></marker>
+        </defs>
+        <rect class="band" x="16" y="16" width="1008" height="100" rx="12"/>
+        <rect class="band" x="16" y="136" width="728" height="396" rx="12"/>
+        <rect class="band" x="800" y="136" width="224" height="396" rx="12"/>
+        <text class="band-label" x="32" y="37">BROWSER · SAME ORIGIN</text>
+        <text class="tm" x="1008" y="37" text-anchor="end">http://127.0.0.1:8765/app/</text>
+        <text class="band-label" x="728" y="158" text-anchor="end">THIS PC · FASTAPI + UVICORN</text>
+        <text class="band-label" x="816" y="158">INTERNET</text>
+
+        <path class="edge" d="M94 118 V194" marker-start="url(#f1-a)" marker-end="url(#f1-a)"/>
+        <path class="edge" d="M156 226 H218" marker-end="url(#f1-a)"/>
+        <path class="edge" d="M344 226 H406" marker-end="url(#f1-a)"/>
+        <path class="edge" d="M532 226 H594" marker-end="url(#f1-a)"/>
+        <path class="edge" d="M532 326 H594" marker-end="url(#f1-a)"/>
+        <path class="edge acc" d="M728 226 H814" marker-end="url(#f1-b)"/>
+        <path class="edge acc" d="M728 326 H814" marker-end="url(#f1-b)"/>
+        <path class="edge" d="M94 256 V410" marker-start="url(#f1-a)" marker-end="url(#f1-a)"/>
+        <path class="edge" d="M282 256 V410" marker-end="url(#f1-a)"/>
+        <path class="edge" d="M488 356 V410" marker-end="url(#f1-a)"/>
+        <path class="edge" d="M430 356 V384 H322 V410" marker-end="url(#f1-a)"/>
+        <path class="edge dash" d="M188 472 V500 H814" marker-end="url(#f1-a)"/>
+
+        <rect class="node" x="32" y="48" width="180" height="56" rx="8"/>
+        <text class="t" x="46" y="71">Side panel</text>
+        <text class="ts" x="46" y="89">chatbots · test data · runs</text>
+        <rect class="node" x="231" y="48" width="180" height="56" rx="8"/>
+        <text class="t" x="245" y="71">Dashboard</text>
+        <text class="ts" x="245" y="89">cards · chat · scan history</text>
+        <rect class="node" x="430" y="48" width="180" height="56" rx="8"/>
+        <text class="t" x="444" y="71">Result pages</text>
+        <text class="ts" x="444" y="89">scan · test runs · regressions</text>
+        <rect class="node" x="629" y="48" width="180" height="56" rx="8"/>
+        <text class="t" x="643" y="71">Report</text>
+        <text class="ts" x="643" y="89">pick metrics, Save as PDF</text>
+        <rect class="node" x="828" y="48" width="180" height="56" rx="8"/>
+        <text class="t" x="842" y="71">Advanced tools</text>
+        <text class="ts" x="842" y="89">A/B · simulate · calibrate</text>
+
+        <rect class="node" x="32" y="196" width="124" height="60" rx="8"/>
+        <text class="t" x="46" y="221">API routes</text>
+        <text class="tm" x="46" y="239">app.py</text>
+        <rect class="node" x="220" y="196" width="124" height="60" rx="8"/>
+        <text class="t" x="234" y="221">Job queue</text>
+        <text class="tm" x="234" y="239">jobs.py</text>
+        <rect class="node" x="408" y="196" width="124" height="160" rx="8"/>
+        <text class="t" x="422" y="221">Runner</text>
+        <text class="tm" x="422" y="239">runner.py</text>
+        <line class="rule" x1="420" y1="252" x2="520" y2="252"/>
+        <text class="ts" x="422" y="272">· load cases</text>
+        <text class="ts" x="422" y="291">· ask the chatbot</text>
+        <text class="ts" x="422" y="310">· judge each reply</text>
+        <text class="ts" x="422" y="329">· record the run</text>
+        <rect class="node" x="596" y="196" width="132" height="60" rx="8"/>
+        <text class="t" x="610" y="221">Chatbot client</text>
+        <text class="tm" x="610" y="239">http_client.py</text>
+        <rect class="node" x="596" y="296" width="132" height="60" rx="8"/>
+        <text class="t" x="610" y="321">Judge</text>
+        <text class="tm" x="610" y="339">judge.py</text>
+        <rect class="node" x="32" y="412" width="312" height="60" rx="8"/>
+        <text class="t" x="46" y="437">SQLite · judge.db</text>
+        <text class="ts" x="46" y="455">chatbots · runs · jobs · documents · settings</text>
+        <rect class="node" x="408" y="412" width="320" height="60" rx="8"/>
+        <text class="t" x="422" y="437">JSON datasets</text>
+        <text class="ts" x="422" y="455">goldens · scenarios · probes · custom metrics</text>
+        <rect class="node acc" x="816" y="196" width="192" height="60" rx="8"/>
+        <text class="t" x="830" y="221">Chatbot under test</text>
+        <text class="ts" x="830" y="239">its own web API</text>
+        <rect class="node acc" x="816" y="296" width="192" height="60" rx="8"/>
+        <text class="t" x="830" y="321">Judge model</text>
+        <text class="ts" x="830" y="339">any OpenAI-compatible API</text>
+        <rect class="node dash" x="816" y="476" width="192" height="48" rx="8"/>
+        <text class="t" x="830" y="497">Confident AI</text>
+        <text class="ts" x="830" y="513">optional · needs a key</text>
+
+        <text class="el" x="106" y="161">fetch /api/* · JSON</text>
+        <text class="el" x="106" y="177">a running job is polled every second</text>
+        <text class="el" x="187" y="219" text-anchor="middle">queues</text>
+        <text class="el" x="375" y="219" text-anchor="middle">runs</text>
+        <text class="el" x="563" y="219" text-anchor="middle">asks</text>
+        <text class="el" x="563" y="319" text-anchor="middle">scores</text>
+        <text class="el acc" x="772" y="219" text-anchor="middle">replays</text>
+        <text class="el acc" x="772" y="319" text-anchor="middle">calls</text>
+        <text class="el" x="102" y="337">chatbots, scans</text>
+        <text class="el" x="290" y="337">jobs, progress</text>
+        <text class="el" x="376" y="378" text-anchor="middle">records run</text>
+        <text class="el" x="496" y="389">reads cases</text>
+        <text class="el" x="640" y="494" text-anchor="middle">uploads finished scans (optional)</text>
+      </svg>
+    </div>
+    <figcaption>The web app calls only its own backend. There is no CORS and the backend accepts only <code>127.0.0.1</code> or <code>localhost</code> as host, which keeps the chatbots' stored keys and cookies on this PC. Two kinds of traffic leave it, drawn in orange: questions to the chatbot under test and test cases to the judge model. Confident AI gets finished scans only when a key is saved, and Langfuse only when both of its keys are saved.</figcaption>
+  </figure>
+  <dl class="notes">
+    <div><dt>Panes stay in step</dt><dd>The side panel, dashboard and result pages share settings through <code>localStorage</code> (<code>llmJudge:*</code>) and the browser's <code>storage</code> event: the chatbot picked, thresholds, Run mode, the last run.</dd></div>
+    <div><dt>The judge is its own model</dt><dd>It must never be the chatbot under test. <code>GroqJudge</code> wraps it as a DeepEval model: at most 4 calls in flight (<code>JUDGE_CONCURRENCY</code>), 90 s per call, retries on rate limits, every token counted.</dd></div>
+    <div><dt>The chatbot is called like its own site calls it</dt><dd>The client replays the captured request with the question in place of <code>{{message}}</code>, retries HTTP 429 and 503 three times, keeps the chatbot's Delay between messages, and reads the reply from a JSON path, a stream of <code>data:</code> events, or the raw text.</dd></div>
+    <div><dt>What starts with the backend</dt><dd>On import it opens <code>judge.db</code> (migrations; jobs left unfinished become <code>interrupted</code>), starts the job worker thread, and refreshes the daily red-team probes in the background when the last refresh is over 24 hours old.</dd></div>
+  </dl>
+</section>
+
+<section id="path" aria-labelledby="path-h">
+  <p class="kicker">Your path</p>
+  <h2 id="path-h">From double-click to the first scores, in eight steps</h2>
+  <ol class="journey">
+    <li>
+      <span class="step-no">1</span>
+      <div class="step-body">
+        <h3>Start the app</h3>
+        <p>Double-click <code>start-llm-judge.bat</code>. If a backend already answers on port 8765, it only opens the browser. Otherwise <code>run-backend.bat</code> builds <code>.venv</code> on the first run, stops an older LLM Judge backend still holding the port, runs <code>update-packages.bat</code> (upgrade, including <code>deepteam</code>; smoke tests; roll back if they fail) and starts uvicorn. When the installed deepteam is newer than the saved catalog, the backend reads it again the first time it loads the DeepTeam catalog, before building any metric (<code>deepteam_sync.load_catalog</code>, a few seconds, no judge call), so new vulnerabilities and their test cases arrive with that start. The browser opens once <code>/app/</code> answers, and everything the backend prints also goes to <code>logs\llm-judge-YYYY-MM-DD.log</code>.</p>
+        <ul class="calls" aria-label="Calls"><li>GET / → /app/</li><li>uvicorn backend.dashboard.app:app</li></ul>
+      </div>
+    </li>
+    <li>
+      <span class="step-no">2</span>
+      <div class="step-body">
+        <h3>The page loads <span class="tag">automatic</span></h3>
+        <p>The side panel and the dashboard open side by side. The panel puts the shipped golden answers, scenarios and probes back, and starts a fresh session so scores begin empty while older runs stay under History (tick <b>Show earlier runs</b> on the dashboard or the report to count them again). Then it loads the judge settings, the metric catalog and your chatbots.</p>
+        <ul class="calls" aria-label="Calls"><li>POST /api/goldens/reset</li><li>POST /api/session/start</li><li>GET /api/status</li><li>GET /api/metrics</li><li>GET /api/targets</li></ul>
+      </div>
+    </li>
+    <li>
+      <span class="step-no">3</span>
+      <div class="step-body">
+        <h3>Connect a judge</h3>
+        <p>In <b>Judge settings</b>, pick a provider (Groq, Command Code, OpenAI, NVIDIA or any OpenAI-compatible API), paste its key and model, press Test, then Save. A <code>JUDGE_API_KEY</code> in <code>.env</code> works too. Without a judge, runs are refused with HTTP 503.</p>
+        <ul class="calls" aria-label="Calls"><li>POST /api/judge/settings/test</li><li>PUT /api/judge/settings</li></ul>
+      </div>
+    </li>
+    <li>
+      <span class="step-no">4</span>
+      <div class="step-body">
+        <h3>Add the chatbot</h3>
+        <p>On the chatbot's website, open DevTools → Network, send it a message and copy that request as cURL (bash). Pasted into <b>Add a chatbot</b>, the app finds the message you sent, puts <code>{{message}}</code> in its place, sends the request once and finds where the reply is, plus any tool calls or sources. To judge a model instead, fill the form from its OpenAI-compatible API. Test, then Save chatbot.</p>
+        <ul class="calls" aria-label="Calls"><li>POST /api/targets/parse-curl</li><li>POST /api/targets/parse-llm</li><li>POST /api/targets/test</li><li>POST /api/targets</li></ul>
+      </div>
+    </li>
+    <li>
+      <span class="step-no">5</span>
+      <div class="step-body">
+        <h3>Build its test data</h3>
+        <p>A new chatbot gets a golden set of its own. Answer yes to <b>Build test data for every metric</b> and the app asks the chatbot what it does (an MCP server: its tool list), looks for its FAQ and help pages (up to 12 fetches), and has the judge write golden answers, conversation scenarios, Context goldens from those pages, tool tests for Tool Correctness and security probes fitted to it, then lists any metric still without test cases and why. <b>Build all test data</b> runs it again and fills only what is missing. Answer no to type your own.</p>
+        <ul class="calls" aria-label="Calls"><li>POST /api/targets/{id}/prepare-all</li><li>GET /api/targets/{id}/prepare-all</li><li>POST /api/documents</li><li>POST /api/documents/url</li><li>POST /api/goldens</li></ul>
+      </div>
+    </li>
+    <li>
+      <span class="step-no">6</span>
+      <div class="step-body">
+        <h3>Fill in what metrics need <span class="tag">optional</span></h3>
+        <p>Some metrics need the bot's rules, tool calls or retrieved sources, which a cURL may not show. <b>Find missing metric data</b>, after you confirm you may test the bot, reads its OpenAPI docs, tries the request with a debug flag, reads its help pages and asks up to 10 of its own questions, with at most 20 fetches in all. You can also give it the docs yourself: an OpenAPI / Swagger link or file, and help, FAQ or log text or a file. Nothing is used until you tick what it found and apply it; the rest is scored black box.</p>
+        <ul class="calls" aria-label="Calls"><li>POST /api/targets/{id}/discovery/extract</li><li>POST /api/targets/{id}/discover</li><li>POST /api/targets/{id}/discovery/apply</li></ul>
+      </div>
+    </li>
+    <li>
+      <span class="step-no">7</span>
+      <div class="step-body">
+        <h3>Run the judge</h3>
+        <p>Tick metrics under <b>Metrics to run</b>. Each has a threshold, and <b>Thresholds for</b> applies a preset for Local Development, PR, Staging or Production. Pick <b>Run mode</b> (1, 2, 3, 5 or all cases per metric) and <b>Parallel metrics</b>, then press <b>Run judge</b>, or <b>Run all visible</b> on the dashboard. The scan keeps running if you close the page; <b>Stop</b> ends every queued and running scan.</p>
+        <ul class="calls" aria-label="Calls"><li>POST /api/jobs</li><li>GET /api/jobs/{id} every 1 s</li><li>POST /api/jobs/cancel-all</li></ul>
+      </div>
+    </li>
+    <li>
+      <span class="step-no">8</span>
+      <div class="step-body">
+        <h3>Read the results</h3>
+        <p>The side panel shows Latest scores, and a browser notification says when the scan ends. The dashboard has a card per metric, the score trend and the last run case by case. <b>History</b> lists every scan and opens the scan page, the test-run pages (Overview, Test Cases, Compare, Eval Insights), Regressions and the PDF report, and sends a scan to Confident AI.</p>
+        <ul class="calls" aria-label="Calls"><li>GET /api/runs/latest</li><li>GET /api/targets/{id}/scans</li><li>GET /api/scans/{id}</li><li>GET /api/scans/{id}/insights</li></ul>
+      </div>
+    </li>
+  </ol>
+</section>
+
+<section id="data" aria-labelledby="data-h">
+  <p class="kicker">Test data</p>
+  <h2 id="data-h">Every metric reads one dataset</h2>
+  <div class="prose">
+    <p>A test case is a question, a multi-turn scenario or a red-team probe, plus whatever the metric needs to score the reply: an expected answer, context facts, expected tools. The cases live in three JSON files next to the code, and each chatbot points at a theme, its own golden set. In the side panel, <b>Test cases</b> on a metric lists exactly what a run will send, and <b>Add</b> puts a new case in the store that metric reads.</p>
+  </div>
+  <figure class="fig">
+    <div class="fig-scroll">
+      <svg viewBox="0 0 1040 540" role="img" aria-label="Where test cases come from. Shipped defaults, your own edits, the chatbot interview and help pages or documents feed goldens.json. Shipped scenarios, your own and judge-written ones feed conversations.json. Shipped probe sets, your own probes and daily OWASP and DeepTeam probes feed security_probes.json. Each file serves the datasets that the metrics read.">
+        <defs>
+          <marker id="f3-a" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="mk" d="M0 0L10 5L0 10z"/></marker>
+        </defs>
+        <text class="band-label" x="16" y="20">WHERE CASES COME FROM</text>
+        <text class="band-label" x="372" y="20">STORED IN</text>
+        <text class="band-label" x="640" y="20">WHICH METRICS READ THEM</text>
+        <line class="rule" x1="16" y1="226" x2="1024" y2="226"/>
+        <line class="rule" x1="16" y1="382" x2="1024" y2="382"/>
+
+        <path class="edge" d="M316 52 H336 M316 96 H336 M316 140 H336 M316 184 H336 M336 52 V184"/>
+        <path class="edge" d="M336 118 H370" marker-end="url(#f3-a)"/>
+        <path class="edge" d="M592 118 H638" marker-end="url(#f3-a)"/>
+        <path class="edge" d="M316 260 H336 M316 304 H336 M316 348 H336 M336 260 V348"/>
+        <path class="edge" d="M336 304 H370" marker-end="url(#f3-a)"/>
+        <path class="edge" d="M592 304 H638" marker-end="url(#f3-a)"/>
+        <path class="edge" d="M316 416 H336 M316 460 H336 M316 504 H336 M336 416 V504"/>
+        <path class="edge" d="M336 460 H370" marker-end="url(#f3-a)"/>
+        <path class="edge" d="M592 460 H638" marker-end="url(#f3-a)"/>
+
+        <rect class="node" x="16" y="34" width="300" height="36" rx="6"/>
+        <text x="30" y="57"><tspan class="t">Shipped</tspan><tspan class="tm" dx="8">goldens.default.json</tspan></text>
+        <rect class="node" x="16" y="78" width="300" height="36" rx="6"/>
+        <text x="30" y="101"><tspan class="t">You</tspan><tspan class="ts" dx="8">Add a golden answer · Test cases → Add</tspan></text>
+        <rect class="node acc" x="16" y="122" width="300" height="36" rx="6"/>
+        <text x="30" y="145"><tspan class="t">Chatbot interview</tspan><tspan class="ts" dx="8">judge writes goldens</tspan></text>
+        <rect class="node acc" x="16" y="166" width="300" height="36" rx="6"/>
+        <text x="30" y="189"><tspan class="t">Pages + documents</tspan><tspan class="ts" dx="8">Synthesizer · Context</tspan></text>
+        <rect class="node" x="372" y="86" width="220" height="64" rx="8"/>
+        <text class="tmt" x="386" y="110">goldens.json</text>
+        <text class="ts" x="386" y="127">one golden set per theme</text>
+        <text class="ts" x="386" y="142">shipped themes reset on load</text>
+        <rect class="node" x="640" y="34" width="384" height="176" rx="8"/>
+        <text x="656" y="56"><tspan class="tmt">goldens</tspan><tspan class="ts" dx="8">14 metrics</tspan></text>
+        <text class="ts" x="656" y="73">Answer Relevancy, Correctness, Helpfulness, agent, text match</text>
+        <text x="656" y="96"><tspan class="tmt">goldens_with_context</tspan><tspan class="ts" dx="8">7 metrics</tspan></text>
+        <text class="ts" x="656" y="113">Faithfulness, Hallucination, Summarization, Contextual ×3…</text>
+        <text x="656" y="136"><tspan class="tmt">goldens_with_tools</tspan><tspan class="ts" dx="8">1 metric</tspan></text>
+        <text class="ts" x="656" y="153">Tool Correctness, from each golden's expected tools</text>
+        <text x="656" y="176"><tspan class="tmt">goldens_without_context</tspan><tspan class="ts" dx="8">1 metric</tspan></text>
+        <text class="ts" x="656" y="193">Self-Check Consistency</text>
+
+        <rect class="node" x="16" y="242" width="300" height="36" rx="6"/>
+        <text x="30" y="265"><tspan class="t">Shipped</tspan><tspan class="tm" dx="8">conversations.default.json</tspan></text>
+        <rect class="node" x="16" y="286" width="300" height="36" rx="6"/>
+        <text x="30" y="309"><tspan class="t">You</tspan><tspan class="ts" dx="8">Add a scenario · Generate from goldens</tspan></text>
+        <rect class="node acc" x="16" y="330" width="300" height="36" rx="6"/>
+        <text x="30" y="353"><tspan class="t">Chatbot interview</tspan><tspan class="ts" dx="8">judge writes scenarios</tspan></text>
+        <rect class="node" x="372" y="272" width="220" height="64" rx="8"/>
+        <text class="tmt" x="386" y="296">conversations.json</text>
+        <text class="ts" x="386" y="313">user turns + expected outcome</text>
+        <text class="ts" x="386" y="328">none saved? built from goldens</text>
+        <rect class="node" x="640" y="242" width="384" height="124" rx="8"/>
+        <text x="656" y="264"><tspan class="tmt">conversations</tspan><tspan class="ts" dx="8">7 metrics</tspan></text>
+        <text class="ts" x="656" y="281">Completeness, Knowledge Retention, Turn Relevancy, Turn RAG ×4</text>
+        <text x="656" y="304"><tspan class="tmt">conversations_with_role</tspan><tspan class="ts" dx="8">1 metric</tspan></text>
+        <text class="ts" x="656" y="321">Role Adherence (the scenario names the chatbot's role)</text>
+        <text class="ts" x="656" y="348">Turns are sent one by one, each with the conversation so far.</text>
+
+        <rect class="node" x="16" y="398" width="300" height="36" rx="6"/>
+        <text x="30" y="421"><tspan class="t">Shipped</tspan><tspan class="ts" dx="8">generic, e-commerce, DeepTeam</tspan></text>
+        <rect class="node" x="16" y="442" width="300" height="36" rx="6"/>
+        <text x="30" y="465"><tspan class="t">You</tspan><tspan class="ts" dx="8">Test cases → Add, in its probe set</tspan></text>
+        <rect class="node acc" x="16" y="486" width="300" height="36" rx="6"/>
+        <text x="30" y="509"><tspan class="t">OWASP · DeepTeam</tspan><tspan class="ts" dx="8">judge writes, daily</tspan></text>
+        <rect class="node" x="372" y="428" width="220" height="64" rx="8"/>
+        <text class="tmt" x="386" y="452">security_probes.json</text>
+        <text class="ts" x="386" y="469">+ the daily “latest” set</text>
+        <text class="ts" x="386" y="484">the chatbot's probe set picks</text>
+        <rect class="node" x="640" y="398" width="384" height="126" rx="8"/>
+        <text x="656" y="420"><tspan class="tmt">security_probes</tspan><tspan class="ts" dx="8">42 metrics</tspan></text>
+        <text class="ts" x="656" y="437">9 probe metrics, Multi-turn Jailbreak, 32 DeepTeam</text>
+        <text x="656" y="460"><tspan class="tmt">safety_probes</tspan><tspan class="ts" dx="8">2 metrics</tspan></text>
+        <text class="ts" x="656" y="477">Bias, Toxicity: probes first, then the goldens</text>
+        <text x="656" y="500"><tspan class="tmt">prompt_leak_probes</tspan><tspan class="ts" dx="8">1 metric</tspan></text>
+        <text class="ts" x="656" y="517">No-Prompt-Leak</text>
+      </svg>
+    </div>
+    <figcaption>Golden answers, scenarios and probes start from the shipped defaults, which come back on every panel load; a chatbot's own theme is kept. Sources outlined in orange <span class="swatch" aria-hidden="true"></span> are written by the judge and spend judge tokens: they run only after you press Generate with AI, or once a day in the background for the latest probes.</figcaption>
+  </figure>
+  <dl class="notes">
+    <div><dt>Drafts wait for review</dt><dd>Goldens generated with review on are saved as drafts. Runs skip them until you accept them (<code>POST /api/goldens/review</code>).</dd></div>
+    <div><dt>Probe sets per chatbot</dt><dd>A chatbot's Security probes setting picks generic, e-commerce or latest. Latest is rewritten daily from OWASP pages and the installed DeepTeam's own vulnerability text, 10 probes per metric, and falls back to the shipped set when offline. The daily refresh covers the app's 13 probe metrics plus the DeepTeam metrics some chatbot ran in the last 30 days (13 judge calls a day on a fresh install; <code>JUDGE_PROBE_REFRESH_ALL=1</code> for all 45).</dd></div>
+    <div><dt>DeepTeam test cases</dt><dd>Every panel load adds up to 10 cases per DeepTeam metric to the generic set: DeepTeam's template examples, spread over the vulnerability's subtypes and labelled with the DeepTeam version. A set with none of its own (e-commerce) uses them too. An example that is only a payload (a bare URL or command) is worded as a request first, so the chatbot gets a message, not just a link.</dd></div>
+    <div><dt>Every golden edit is logged</dt><dd>Writes to <code>goldens.json</code> append what changed, and the function that changed it, to <code>goldens_changes.log</code>.</dd></div>
+  </dl>
+</section>
+
+<section id="scan" aria-labelledby="scan-h">
+  <p class="kicker">A scan</p>
+  <h2 id="scan-h">One click queues one job, and the backend runs it to the end</h2>
+  <div class="prose">
+    <p>A scan is a job: the metrics you ticked, for one chatbot, with the options set at that moment. Jobs run one at a time in the order they were queued, so a second scan waits behind the first. Inside a job, <b>Parallel metrics</b> decides how many metrics run at once (1 to 8, default 2).</p>
+  </div>
+  <figure class="fig">
+    <div class="fig-scroll">
+      <svg viewBox="0 0 1040 352" role="img" aria-label="Scan lifecycle. Run judge posts to /api/jobs and the job is queued. The worker picks it up and runs its metrics side by side. It ends done, error or cancelled, or becomes interrupted if the backend restarts. When any job ends, the after-job hook drops the shared replies, may send the scan to Confident AI, saves newly found tool or source paths and queues a follow-up scan for the metrics they enable.">
+        <defs>
+          <marker id="f4-a" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="mk" d="M0 0L10 5L0 10z"/></marker>
+          <marker id="f4-b" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="mk acc" d="M0 0L10 5L0 10z"/></marker>
+        </defs>
+        <path class="edge" d="M152 98 H254" marker-end="url(#f4-a)"/>
+        <path class="edge" d="M376 98 H454" marker-end="url(#f4-a)"/>
+        <path class="edge" d="M736 98 H776 V46 H814" marker-end="url(#f4-a)"/>
+        <path class="edge" d="M736 98 H814" marker-end="url(#f4-a)"/>
+        <path class="edge" d="M736 98 H776 V150 H814" marker-end="url(#f4-a)"/>
+        <path class="edge" d="M1000 46 H1012 M1000 98 H1012 M1000 150 H1012"/>
+        <path class="edge" d="M1012 46 V202" marker-end="url(#f4-a)"/>
+        <path class="edge" d="M336 122 V232 H454" marker-end="url(#f4-a)"/>
+        <path class="edge" d="M556 166 V204" marker-end="url(#f4-a)"/>
+        <path class="edge acc" d="M712 300 H316 V124" marker-end="url(#f4-b)"/>
+
+        <rect class="node" x="16" y="74" width="136" height="48" rx="8"/>
+        <text class="t" x="30" y="95">Run judge</text>
+        <text class="ts" x="30" y="111">panel or dashboard</text>
+        <text class="ts" x="16" y="146">Metrics that can't run (not applicable,</text>
+        <text class="ts" x="16" y="161">no cases) are kept as skipped, with why.</text>
+
+        <rect class="node" x="256" y="74" width="120" height="48" rx="24"/>
+        <text class="t" x="270" y="95">queued</text>
+        <text class="ts" x="270" y="111">waits its turn</text>
+
+        <rect class="node" x="456" y="30" width="280" height="136" rx="12"/>
+        <text class="t" x="470" y="52">running</text>
+        <text class="ts" x="470" y="68">one job at a time, oldest first</text>
+        <rect class="inner" x="470" y="80" width="252" height="28" rx="6"/>
+        <text class="tm" x="482" y="98">metric 1 → run_spec()</text>
+        <rect class="inner" x="470" y="116" width="252" height="28" rx="6"/>
+        <text class="tm" x="482" y="134">metric 2 → run_spec()</text>
+        <text class="ts" x="470" y="158">side by side: Parallel metrics (default 2)</text>
+
+        <rect class="node good" x="816" y="26" width="184" height="40" rx="20"/>
+        <text x="830" y="51"><tspan class="t">done</tspan><tspan class="ts" dx="8">all metrics returned</tspan></text>
+        <rect class="node bad" x="816" y="78" width="184" height="40" rx="20"/>
+        <text x="830" y="103"><tspan class="t">error</tspan><tspan class="ts" dx="8">judge or chatbot gone</tspan></text>
+        <rect class="node warn" x="816" y="130" width="184" height="40" rx="20"/>
+        <text x="830" y="155"><tspan class="t">cancelled</tspan><tspan class="ts" dx="8">Stop pressed</tspan></text>
+
+        <rect class="node" x="456" y="206" width="200" height="52" rx="26"/>
+        <text class="t" x="470" y="228">interrupted</text>
+        <text class="ts" x="470" y="245">the backend restarted mid-job</text>
+
+        <rect class="node" x="712" y="206" width="312" height="132" rx="10"/>
+        <text class="t" x="726" y="228">When a job ends</text>
+        <text class="tm" x="726" y="244">app._after_job()</text>
+        <text class="ts" x="726" y="266">· drops the job's shared replies</text>
+        <text class="ts" x="726" y="285">· sends it to Confident AI / Langfuse, if set</text>
+        <text class="ts" x="726" y="304">· saves tool / source paths seen in replies</text>
+        <text class="ts" x="726" y="323">· queues a follow-up scan for metrics they enable</text>
+
+        <text class="el m" x="203" y="90" text-anchor="middle">POST /api/jobs</text>
+        <text class="el" x="415" y="90" text-anchor="middle">picked up</text>
+        <text class="el" x="344" y="186">on restart</text>
+        <text class="el" x="1004" y="192" text-anchor="end">every end state</text>
+        <text class="el acc" x="514" y="292" text-anchor="middle">follow-up scan: same options, newly enabled metrics</text>
+      </svg>
+    </div>
+    <figcaption>The orange loop is auto-discovery. A pasted cURL shows one reply, which may have called no tools and cited nothing, so every scan keeps looking: when replies list tool calls or sources at a path the chatbot has none saved for, the path is saved (never over one you typed, and saving the chatbot form later keeps it) and one follow-up scan runs the metrics it switched on. A saved path is never found again, so it cannot loop, and a stopped job queues nothing.</figcaption>
+  </figure>
+  <dl class="notes">
+    <div><dt>Progress</dt><dd><code>GET /api/jobs/{id}</code> returns the results so far and, per running metric, its phase (chat or judge), cases done of total and the question being asked. Pages poll it every second, and a reopened page finds a running job again (<code>/api/jobs?active=1</code>).</dd></div>
+    <div><dt>Stop</dt><dd><code>POST /api/jobs/cancel-all</code> stops every job of every chatbot. Queued jobs end at once. A running one stops at its next chatbot message, judge call or retry wait (<code>backend/cancel.py</code>), and a stopped metric records nothing, so a half run never skews the trend.</dd></div>
+    <div><dt>Errors stay inside the result</dt><dd>A broken dataset, an empty one or a chatbot failure comes back as that metric's <code>status: "error"</code> with a message. Only a missing judge or a deleted chatbot ends the whole job.</dd></div>
+  </dl>
+</section>
+
+<section id="metric" aria-labelledby="metric-h">
+  <p class="kicker">One metric</p>
+  <h2 id="metric-h">Inside a run: five stages, with a loop per case</h2>
+  <div class="prose">
+    <p><code>runner.run_spec</code> runs one metric for one chatbot. Run mode sets N, the number of cases to score. Cases a metric cannot use are left out and replaced by the next ones in the reserve, so N means N scored cases wherever the set has that many.</p>
+  </div>
+  <figure class="fig">
+    <div class="fig-scroll">
+      <svg viewBox="0 0 1040 392" role="img" aria-label="One metric run in five stages: load cases, cap to Run mode with the rest in reserve, score each case, backfill left-out cases from the reserve, and record the run. For each case: ask the chatbot through shared replies, find sources if the reply had none, build the test case, have the judge score it (again when the consistency check is on) and write the case row. Cases that cannot be scored are left out and refilled.">
+        <defs>
+          <marker id="f5-a" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="mk" d="M0 0L10 5L0 10z"/></marker>
+          <marker id="f5-b" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="mk acc" d="M0 0L10 5L0 10z"/></marker>
+        </defs>
+        <path class="zoom" d="M432 120 L16 156 M608 120 L1024 156"/>
+        <rect class="band" x="16" y="156" width="1008" height="220" rx="12"/>
+        <text class="band-label" x="32" y="178">EACH CASE · ITS OWN THREAD · AT MOST 4 IN FLIGHT</text>
+
+        <path class="edge" d="M192 84 H222" marker-end="url(#f5-a)"/>
+        <path class="edge" d="M400 84 H430" marker-end="url(#f5-a)"/>
+        <path class="edge" d="M608 84 H638" marker-end="url(#f5-a)"/>
+        <path class="edge" d="M816 84 H846" marker-end="url(#f5-a)"/>
+        <path class="edge" d="M728 48 C728 20 520 20 520 46" marker-end="url(#f5-a)"/>
+        <path class="edge" d="M204 234 H234" marker-end="url(#f5-a)"/>
+        <path class="edge" d="M404 234 H434" marker-end="url(#f5-a)"/>
+        <path class="edge" d="M604 234 H634" marker-end="url(#f5-a)"/>
+        <path class="edge" d="M804 234 H834" marker-end="url(#f5-a)"/>
+        <path class="edge acc" d="M764 204 C764 180 676 180 676 202" marker-end="url(#f5-b)"/>
+        <path class="edge dash" d="M120 264 V324 H234" marker-end="url(#f5-a)"/>
+        <path class="edge dash" d="M320 264 V302" marker-end="url(#f5-a)"/>
+        <path class="edge dash" d="M520 264 V302" marker-end="url(#f5-a)"/>
+        <path class="edge dash" d="M720 264 V302" marker-end="url(#f5-a)"/>
+
+        <rect class="node" x="16" y="48" width="176" height="72" rx="8"/>
+        <text class="t" x="30" y="71">1 · Load cases</text>
+        <text class="ts" x="30" y="89">from the metric's dataset</text>
+        <text class="ts" x="30" y="105">can't apply → run error</text>
+        <rect class="node" x="224" y="48" width="176" height="72" rx="8"/>
+        <text class="t" x="238" y="71">2 · Cap to Run mode</text>
+        <text class="ts" x="238" y="89">first N cases are sent</text>
+        <text class="ts" x="238" y="105">the rest wait in reserve</text>
+        <rect class="node acc" x="432" y="48" width="176" height="72" rx="8"/>
+        <text class="t" x="446" y="71">3 · Score each case</text>
+        <text class="ts" x="446" y="89">up to 4 cases at a time</text>
+        <text class="ts" x="446" y="105">shown in the lane below</text>
+        <rect class="node" x="640" y="48" width="176" height="72" rx="8"/>
+        <text class="t" x="654" y="71">4 · Backfill</text>
+        <text class="ts" x="654" y="89">left-out cases replaced</text>
+        <text class="ts" x="654" y="105">until N are scored</text>
+        <rect class="node" x="848" y="48" width="176" height="72" rx="8"/>
+        <text class="t" x="862" y="71">5 · Record the run</text>
+        <text class="ts" x="862" y="89">one row in runs</text>
+        <text class="ts" x="862" y="105">+ the full result_json</text>
+
+        <rect class="node" x="36" y="204" width="168" height="60" rx="8"/>
+        <text class="t" x="50" y="229">Ask the chatbot</text>
+        <text class="tm" x="50" y="247">SharedReplies → HTTP</text>
+        <rect class="node dash" x="236" y="204" width="168" height="60" rx="8"/>
+        <text class="t" x="250" y="229">Find sources</text>
+        <text class="ts" x="250" y="247">only if the reply had none</text>
+        <rect class="node" x="436" y="204" width="168" height="60" rx="8"/>
+        <text class="t" x="450" y="229">Build test case</text>
+        <text class="tm" x="450" y="247">LLMTestCase</text>
+        <rect class="node acc" x="636" y="204" width="168" height="60" rx="8"/>
+        <text class="t" x="650" y="229">Judge scores</text>
+        <text class="tm" x="650" y="247">metric.measure()</text>
+        <rect class="node" x="836" y="204" width="168" height="60" rx="8"/>
+        <text class="t" x="850" y="229">Case row</text>
+        <text class="ts" x="850" y="247">score · passed · reason</text>
+        <rect class="node dash" x="236" y="304" width="568" height="40" rx="8"/>
+        <text class="ts" x="520" y="329" text-anchor="middle">Left out as not applicable (no tool called, no context, no plan) · refilled in step 4</text>
+
+        <text class="el" x="624" y="18" text-anchor="middle">scores the replacements</text>
+        <text class="el acc" x="720" y="176" text-anchor="middle">re-scored when consistency is on</text>
+      </svg>
+    </div>
+    <figcaption>Cases of all runs share 4 slots (<code>JUDGE_CONCURRENCY</code>), which is also the judge's cap on calls in flight, so running metrics side by side never raises the load on the judge or the chatbot. Conversations, attacks and chatbots with a send delay run their cases one at a time. With the consistency check on, the judge scores each reply twice; when the scores differ by more than 0.15 a third scoring breaks the tie and the median is kept.</figcaption>
+  </figure>
+  <dl class="kinds" aria-label="What Ask the chatbot sends, by metric kind">
+    <div><dt>Single question <span>· 33 metrics</span></dt><dd>The golden's question, or the prompt the metric builds from it: Summarization sends the text to summarize, and grounded goldens send their facts with the question.</dd></div>
+    <div><dt>Conversation <span>· 8</span></dt><dd>Each user turn of a scenario in order, with the conversation so far in the body's history slot. Turn RAG metrics read each turn's own sources.</dd></div>
+    <div><dt>Several samples <span>· 2</span></dt><dd>Robustness sends the question with a typo and as a casual rewording; Self-Check asks the same question several times. Always fresh replies.</dd></div>
+    <div><dt>Attack <span>· 1</span></dt><dd>Multi-turn Jailbreak: the judge writes each escalating user turn (4 by default) and the rubric scores the whole transcript.</dd></div>
+  </dl>
+  <dl class="notes">
+    <div><dt>Where context comes from</dt><dd>The chatbot's own sources (Retrieved context path) win. Without them, a chatbot can have the app find some: passages from its uploaded documents (BM25, top 3) or up to 3 public pages its reply links to. The golden's context is the last resort. Each row's <code>context_source</code> says which was used.</dd></div>
+    <div><dt>What a run records</dt><dd>One <code>runs</code> row: average score, passed, cases run, judge model, tokens and calls, chatbot calls, duration, latency p50 / p95, judge cost. Its <code>result_json</code> holds every case row (input, actual output, expected output, context, score, passed, reason, latency) and notes such as a judge model change since the last run.</dd></div>
+  </dl>
+</section>
+
+<section id="replies" aria-labelledby="replies-h">
+  <p class="kicker">Shared replies</p>
+  <h2 id="replies-h">Each question is sent once per scan</h2>
+  <div class="prose">
+    <p>In DeepEval, a test case is one reply that many metrics score. A scan works the same way: the job's metrics share one chatbot client, so the reply that Answer Relevancy scored for a question is the same reply Correctness scored.</p>
+  </div>
+  <figure class="fig">
+    <div class="fig-scroll">
+      <svg viewBox="0 0 1040 312" role="img" aria-label="Three metrics ask for the reply to the same golden question Q1. SharedReplies sends one HTTP request to the chatbot and gives all three the same reply. Self-Check, Robustness and Multi-turn Jailbreak bypass it and send every message.">
+        <defs>
+          <marker id="f6-a" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="mk" d="M0 0L10 5L0 10z"/></marker>
+          <marker id="f6-b" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="mk acc" d="M0 0L10 5L0 10z"/></marker>
+        </defs>
+        <path class="edge" d="M236 50 C302 50 304 96 370 96" marker-start="url(#f6-a)" marker-end="url(#f6-a)"/>
+        <path class="edge" d="M236 114 H370" marker-start="url(#f6-a)" marker-end="url(#f6-a)"/>
+        <path class="edge" d="M236 178 C302 178 304 132 370 132" marker-start="url(#f6-a)" marker-end="url(#f6-a)"/>
+        <path class="edge acc" d="M632 104 H818" marker-end="url(#f6-b)"/>
+        <path class="edge" d="M818 128 H634" marker-end="url(#f6-a)"/>
+        <path class="edge" d="M236 260 H922 V146" marker-end="url(#f6-a)"/>
+
+        <rect class="node" x="16" y="28" width="220" height="44" rx="8"/>
+        <text class="t" x="30" y="55">Answer Relevancy</text>
+        <rect class="node" x="16" y="92" width="220" height="44" rx="8"/>
+        <text class="t" x="30" y="119">Correctness (G-Eval)</text>
+        <rect class="node" x="16" y="156" width="220" height="44" rx="8"/>
+        <text class="t" x="30" y="183">PII Leakage</text>
+        <rect class="node" x="372" y="60" width="260" height="108" rx="8"/>
+        <text class="tmt" x="386" y="85">SharedReplies</text>
+        <text class="tm" x="386" y="101">targets/shared.py</text>
+        <text class="ts" x="386" y="124">one entry per message + history</text>
+        <text class="ts" x="386" y="142">the first asker sends; the rest wait</text>
+        <text class="ts" x="386" y="159">a failure isn't kept: the next one retries</text>
+        <rect class="node acc" x="820" y="84" width="204" height="60" rx="8"/>
+        <text class="t" x="834" y="109">Chatbot under test</text>
+        <text class="ts" x="834" y="127">asked Q1 once</text>
+        <rect class="node" x="16" y="228" width="220" height="64" rx="8"/>
+        <text class="t" x="30" y="252">Fresh-reply metrics</text>
+        <text class="ts" x="30" y="270">Self-Check, Robustness,</text>
+        <text class="ts" x="30" y="285">Multi-turn Jailbreak</text>
+
+        <text class="el" x="248" y="41">asks Q1 first: sends it</text>
+        <text class="el" x="303" y="107" text-anchor="middle">asks Q1</text>
+        <text class="el" x="248" y="199">asks Q1 later: waits</text>
+        <text class="el acc" x="725" y="96" text-anchor="middle">one HTTP request</text>
+        <text class="el" x="725" y="146" text-anchor="middle">one reply, with its latency</text>
+        <text class="el" x="580" y="252" text-anchor="middle">.fresh: every message is sent, nothing shared</text>
+      </svg>
+    </div>
+    <figcaption>Whichever metric needs the reply to Q1 first sends it; the job's other metrics get that same reply, waiting if it is still on its way. Metrics that need several different replies use <code>.fresh</code> and bypass the cache. The cache belongs to one job and is dropped when the job ends.</figcaption>
+  </figure>
+</section>
+
+<section id="verdict" aria-labelledby="verdict-h">
+  <p class="kicker">Pass and fail</p>
+  <h2 id="verdict-h">A run passes only when every case passes</h2>
+  <div class="prose">
+    <p>The app follows DeepEval's rules rather than averaging. The average score is shown on every card and chart, but it never decides a result.</p>
+  </div>
+  <div class="verdict-wrap">
+    <div>
+      <div class="table-scroll">
+        <table class="verdict">
+          <caption class="sr-only">Example: three test cases scored by three metrics, each with its own threshold</caption>
+          <thead>
+            <tr>
+              <th scope="col">Case</th>
+              <th scope="col">Answer Relevancy<span>≥ 0.7</span></th>
+              <th scope="col">Faithfulness<span>≥ 0.8</span></th>
+              <th scope="col">Correctness<span>≥ 0.6</span></th>
+              <th scope="col">Test case</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">Q1</th><td class="s">0.92</td><td class="s">0.88</td><td class="s">0.74</td><td><span class="pill pass">passed</span></td></tr>
+            <tr><th scope="row">Q2</th><td class="s">0.95</td><td class="s f">0.71 ✗</td><td class="s">0.66</td><td><span class="pill fail">failed</span></td></tr>
+            <tr><th scope="row">Q3</th><td class="s">0.86</td><td class="s">0.93</td><td class="s">0.81</td><td><span class="pill pass">passed</span></td></tr>
+          </tbody>
+          <tfoot>
+            <tr><th scope="row">Average</th><td>0.91</td><td>0.84</td><td>0.74</td><td>shown only</td></tr>
+            <tr><th scope="row">Metric run</th><td><span class="pill pass">pass</span></td><td><span class="pill fail">fail</span></td><td><span class="pill pass">pass</span></td><td><span class="pill fail">scan failed</span></td></tr>
+          </tfoot>
+        </table>
+      </div>
+      <p class="example-note">Example numbers. Faithfulness averages 0.84, above its 0.8 threshold, and still fails because Q2 scored 0.71. The scan reads “2 of 3 test cases passed · 2 of 3 metrics passed”.</p>
+    </div>
+    <ul class="rules">
+      <li><strong>Case</strong><span>Passes when DeepEval's <code>is_successful()</code> says so: the score meets that metric's threshold. Strict mode raises the threshold to 1.</span></li>
+      <li><strong>Metric run</strong><span>Passes only when every case passes. A latency limit (Advanced tools) can fail it too, when 95% of replies take longer than the limit.</span></li>
+      <li><strong>Test case</strong><span>Passes only when every metric that scored it passes it.</span></li>
+      <li><strong>Scan</strong><span>Passed when every metric passed, failed when at least one failed, incomplete when a metric errored, nothing was scored or the scan was stopped.</span></li>
+    </ul>
+  </div>
+</section>
+
+<section id="results" aria-labelledby="results-h">
+  <p class="kicker">Results</p>
+  <h2 id="results-h">Two records feed every view</h2>
+  <div class="prose">
+    <p>Every finished metric run is a row in <code>runs</code>; every scan is a row in <code>jobs</code>. The quick views read runs and start empty on each panel load, since they pass <code>since_id</code>, the session start. History reads scans and keeps everything until you delete it. When a scan ends or anything is deleted, every open page reloads these views.</p>
+  </div>
+  <div class="flow">
+    <div class="flow-row">
+      <div class="flow-cell store">
+        <p class="cell-kicker">Recorded per metric run</p>
+        <h3><code>runs</code> table</h3>
+        <p>Average score, passed, judge model, tokens, latency, cost, and the whole result with every case row as <code>result_json</code>.</p>
+      </div>
+      <div class="flow-arrow" aria-hidden="true"></div>
+      <div class="flow-cell">
+        <p class="cell-kicker">Read through</p>
+        <ul class="api"><li>GET /api/runs/latest</li><li>GET /api/history</li></ul>
+        <p>Newest run per metric, and every run of one metric in order.</p>
+      </div>
+      <div class="flow-arrow" aria-hidden="true"></div>
+      <div class="flow-cell">
+        <p class="cell-kicker">Shown on</p>
+        <ul>
+          <li><b>Side panel</b>: Latest scores</li>
+          <li><b>Dashboard</b>: metric cards, score trend, last run case by case</li>
+          <li><b>Report</b>: each metric's latest run, then Save as PDF from the print dialog</li>
+        </ul>
+      </div>
+    </div>
+    <div class="flow-row">
+      <div class="flow-cell store">
+        <p class="cell-kicker">Recorded per scan</p>
+        <h3><code>jobs</code> table</h3>
+        <p>The metrics asked for, the options (Run mode, parallel metrics, DeepEval options), status, each metric's result, skipped metrics and paths found.</p>
+      </div>
+      <div class="flow-arrow" aria-hidden="true"></div>
+      <div class="flow-cell">
+        <p class="cell-kicker">Read through <code>scans.py</code></p>
+        <ul class="api"><li>GET /api/targets/{id}/scans</li><li>GET /api/scans/{id}</li><li>GET /api/scans/{id}/compare?with=</li><li>GET /api/scans/{id}/cases?with=</li><li>GET, POST /api/scans/{id}/insights</li><li>POST /api/scans/{id}/confident</li></ul>
+      </div>
+      <div class="flow-arrow" aria-hidden="true"></div>
+      <div class="flow-cell">
+        <p class="cell-kicker">Shown on</p>
+        <ul>
+          <li><b>Dashboard History</b>: scans numbered 1, 2, 3… per chatbot, compared metric by metric with the scan before, each with its own Delete</li>
+          <li><b>Scan page</b>: one scan in full, with every metric's cases</li>
+          <li><b>Test runs</b>: Evaluation, Overview, Test Cases, Compare, and Eval Insights (the judge groups failed and weak cases into issues)</li>
+          <li><b>Regressions</b>: two scans case by case, improved or regressed</li>
+          <li><b>Confident AI</b>: Send, then View in Confident AI</li><li><b>Langfuse</b>: Send, then View in Langfuse (one trace per scan, a span per metric and per case)</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <dl class="notes">
+    <div><dt>Deleting</dt><dd>History's Delete all removes a chatbot's runs and finished jobs; each row's Delete removes one finished scan (<code>DELETE /api/scans/{id}</code>) and is greyed out while that scan is queued or running.</dd></div>
+    <div><dt>Other tables</dt><dd><code>targets</code> (chatbots), <code>documents</code> (uploads and their generation status), <code>meta</code> (judge settings, saved keys, insights, price), <code>human_labels</code> (calibration) and <code>pairwise_runs</code> (A/B tests).</dd></div>
+  </dl>
+</section>
+
+<section id="side-paths" aria-labelledby="side-h">
+  <p class="kicker">Side paths</p>
+  <h2 id="side-h">Tools that work outside a scan</h2>
+  <dl class="notes">
+    <div><dt>Chat</dt><dd><code>POST /api/chat</code> talks to the chatbot from the dashboard, sending the last 40 turns. Nothing is scored.</dd></div>
+    <div><dt>Judge this answer</dt><dd><code>POST /api/judge</code> scores one reply on the spot (<code>judge_one</code>) and stores nothing. Metrics that need an expected answer or context take it from the matching golden, or say what is missing.</dd></div>
+    <div><dt>A/B test</dt><dd><code>POST /api/pairwise</code> queues a pairwise job in the same queue: the judge compares two chatbots on each golden, in both orders.</dd></div>
+    <div><dt>Simulate</dt><dd><code>POST /api/simulate</code> has the judge play the user for a few turns, scores the talk with conversational metrics, and can save it as a scenario.</dd></div>
+    <div><dt>Calibrate</dt><dd><code>POST /api/calibration</code> stores your own score for a case of a stored run. With calibration on, these labels join the G-Eval criteria as examples.</dd></div>
+    <div><dt>Export</dt><dd><code>GET /api/export/suite</code> returns a zip of a chatbot's test suite for CI. Header values such as keys and cookies are never exported. Security metrics go in with the probes this chatbot's probe set sends (<code>probes.json</code>, run by <code>test_red_team</code>), and Bias and Toxicity send their adversarial probes before the goldens, as in the app; the multi-turn attack and attack enhancers stay in the app.</dd></div>
+  </dl>
+</section>
+
+<section id="catalog" aria-labelledby="catalog-h">
+  <p class="kicker">Metrics</p>
+  <h2 id="catalog-h">76 metrics in eight groups, plus your own</h2>
+  <div class="prose">
+    <p>Each metric is one <code>MetricSpec</code> in <code>backend/metrics_catalog.py</code>: the DeepEval metric it builds, the dataset it reads, what it needs, a default threshold and a preset per environment. Bias, for example, needs 0.4 locally, 0.6 on a PR, 0.7 in staging and 0.8 in production. Every shipped metric is higher-is-better; DeepEval 4 scores bias, toxicity and PII leakage 1 for clean.</p>
+  </div>
+  <div class="catalog">
+    <article class="cat">
+      <div class="cat-head"><h3>Quality</h3><span class="count">7</span></div>
+      <p class="ds">goldens · goldens_with_context · goldens_without_context</p>
+      <ul><li>Faithfulness</li><li>Answer Relevancy</li><li>Hallucination</li><li>Summarization</li><li>Prompt Alignment</li><li>Robustness</li><li>Self-Check Consistency</li></ul>
+      <p class="why">Prompt Alignment checks the bot's rules: typed on the chatbot, else the captured system prompt, else standard production rules.</p>
+    </article>
+    <article class="cat">
+      <div class="cat-head"><h3>Retrieval</h3><span class="count">3</span></div>
+      <p class="ds">goldens_with_context</p>
+      <ul><li>Contextual Precision</li><li>Contextual Recall</li><li>Contextual Relevancy</li></ul>
+      <p class="why">Grade the chatbot's own retrieval, or the golden's context. Sources the app finds itself never count here.</p>
+    </article>
+    <article class="cat">
+      <div class="cat-head"><h3>Safety</h3><span class="count">3</span></div>
+      <p class="ds">safety_probes · goldens</p>
+      <ul><li>Bias</li><li>Toxicity</li><li>PII Leakage</li></ul>
+      <p class="why">Bias and Toxicity send adversarial probes first, then the goldens.</p>
+    </article>
+    <article class="cat">
+      <div class="cat-head"><h3>Security</h3><span class="count">42</span></div>
+      <p class="ds">security_probes</p>
+      <ul><li>Prompt Injection</li><li>Jailbreak</li><li>Encoded Injection</li><li>Data Exfiltration</li><li>Social Engineering</li><li>Domain Misuse</li><li>Non-Advice</li><li>Role Violation</li><li>Harmful Content</li><li>Multi-turn Jailbreak (linear, crescendo, tree, sequential break, Bad Likert Judge)</li><li>32 DeepTeam vulnerabilities: BFLA, BOLA, RBAC, SSRF, SQL and Shell Injection, Tool Metadata Poisoning, Goal Theft, Excessive Agency, Illegal Activity, Misinformation and more (unticked until you tick them, in the side panel and the dashboard)</li></ul>
+      <p class="why">Each case's context is the Chatbot role. A score of 1.0 means the reply resisted the attack. Red-team coverage maps them to OWASP LLM01–10, ASI01–10 (agentic) and MCP01–10, and the PDF report has an OWASP coverage section. A DeepTeam disguise the judge could not write is left out and noted, never sent under the attack's name. Each DeepTeam metric can be scored by DeepTeam's own judge instead (Scorer: pass/fail per case), and for an agent with a tool calls path every probe metric also judges the tools it called. OWASP ids that chatting can only partly check are marked as such.</p>
+    </article>
+    <article class="cat">
+      <div class="cat-head"><h3>G-Eval</h3><span class="count">4</span></div>
+      <p class="ds">goldens · goldens_with_context · prompt_leak_probes</p>
+      <ul><li>Correctness</li><li>Helpfulness</li><li>Citation Quality</li><li>No-Prompt-Leak</li></ul>
+      <p class="why">Fixed evaluation steps, so the judge never writes its own and scores stay steadier.</p>
+    </article>
+    <article class="cat">
+      <div class="cat-head"><h3>Conversational</h3><span class="count">8</span></div>
+      <p class="ds">conversations · conversations_with_role</p>
+      <ul><li>Conversation Completeness</li><li>Knowledge Retention</li><li>Role Adherence</li><li>Turn Relevancy</li><li>Turn Faithfulness</li><li>Turn Contextual Precision</li><li>Turn Contextual Recall</li><li>Turn Contextual Relevancy</li></ul>
+      <p class="why">Turn RAG metrics read each turn's sources, or the scenario's own context.</p>
+    </article>
+    <article class="cat">
+      <div class="cat-head"><h3>Agent</h3><span class="count">6</span></div>
+      <p class="ds">goldens · goldens_with_tools</p>
+      <ul><li>Task Completion</li><li>Tool Correctness</li><li>Argument Correctness</li><li>Plan Quality</li><li>Plan Adherence</li><li>Step Efficiency</li></ul>
+      <p class="why">Task Completion always runs. Tool Correctness needs expected tools; the other four score only replies that called tools.</p>
+    </article>
+    <article class="cat">
+      <div class="cat-head"><h3>Text match</h3><span class="count">3</span></div>
+      <p class="ds">goldens</p>
+      <ul><li>BLEU</li><li>ROUGE-L</li><li>Exact Match</li></ul>
+      <p class="why">No judge and no tokens: DeepEval's <code>Scorer</code> compares the reply's wording with the expected answer.</p>
+    </article>
+    <article class="cat custom">
+      <div class="cat-head"><h3>Your own</h3><span class="count">+</span></div>
+      <p class="ds">custom_metrics.json</p>
+      <ul><li>G-Eval, single- or multi-turn</li><li>DeepEval DAG</li></ul>
+      <p class="why">Made in the side panel's G-Eval group or on Advanced tools. Kept across sessions: panel loads don't reset them.</p>
+    </article>
+  </div>
+</section>
+
+<section id="code-map" aria-labelledby="code-h">
+  <p class="kicker">Code map</p>
+  <h2 id="code-h">Where each part lives</h2>
+  <div class="table-scroll change">
+    <table>
+      <thead><tr><th scope="col">To change</th><th scope="col">Edit</th></tr></thead>
+      <tbody>
+        <tr><td>A metric: add it, retune it, change what it needs</td><td><code>backend/metrics_catalog.py</code>, one <code>MetricSpec</code></td></tr>
+        <tr><td>How a case is sent, scored and recorded</td><td><code>backend/dashboard/runner.py</code> (<code>run_spec</code>)</td></tr>
+        <tr><td>The job queue, parallel metrics, Stop</td><td><code>backend/dashboard/jobs.py</code>, <code>backend/cancel.py</code></td></tr>
+        <tr><td>Calling the chatbot and reading its reply</td><td><code>backend/targets/http_client.py</code>; cURL parsing in <code>backend/targets/curl.py</code></td></tr>
+        <tr><td>The judge model or provider</td><td>Side panel Judge settings, or <code>.env</code>: <code>JUDGE_MODEL</code>, <code>JUDGE_BASE_URL</code>, <code>JUDGE_API_KEY</code></td></tr>
+        <tr><td>Default goldens, scenarios and probes</td><td><code>backend/datasets/*.default.json</code></td></tr>
+        <tr><td>Test data written for a new chatbot</td><td><code>backend/datasets/autogen.py</code>; documents in <code>backend/rag/</code></td></tr>
+        <tr><td>Scans, compare, regressions</td><td><code>backend/dashboard/scans.py</code></td></tr>
+        <tr><td>The HTTP API (92 routes)</td><td><code>backend/dashboard/app.py</code></td></tr>
+        <tr><td>The web app</td><td><code>ChatbotExtension/</code>, no build step; files are served with <code>no-cache</code>, so a reload shows edits</td></tr>
+        <tr><td>Check nothing broke</td><td><code>.venv\Scripts\python -m pytest</code>, the offline suite CI runs, which spends no judge tokens</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+</main>
+
+<footer class="wrap">
+  <p>Live page: <a href="https://claude.ai/artifact/JxkuyFH5iLH8ZdzoszZ4Qv">claude.ai/artifact/JxkuyFH5iLH8ZdzoszZ4Qv</a>. Source: <code>docs/workflow.html</code> in the repository; the text version is <code>docs/WORKFLOW.md</code>. Both are updated with every change to the app (“Keeping the docs current” in <code>CLAUDE.md</code>). Last drawn from the code on 2 November 2026. Numbers in the pass-and-fail table are examples; every other count comes from the code.</p>
+</footer>

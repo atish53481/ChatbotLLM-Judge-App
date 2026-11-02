@@ -89,6 +89,15 @@ tr.regressed td:first-child { border-left: 3px solid var(--status-critical); }
 tr.fixed td:first-child { border-left: 3px solid var(--success-text); }
 
 .coverage-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+.framework-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+.framework-list li { display: grid; gap: 4px; overflow-wrap: anywhere; }
+.framework-list li button { justify-self: start; }
+/* An OWASP id the chat can test only in part: the reason, marked with an amber rule. */
+.framework-list .partial-note {
+  margin: 0; padding-left: 8px;
+  border-left: 3px solid var(--series-4);
+  color: var(--text-secondary);
+}
 .meter { height: 6px; border-radius: 3px; background: var(--grid); overflow: hidden; }
 .meter > span { display: block; height: 100%; background: var(--success-text); }
 .meter.low > span { background: var(--status-critical); }

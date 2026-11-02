@@ -598,7 +598,7 @@ function overviewView() {
   if (state.radarCat && !cats.includes(state.radarCat)) state.radarCat = "";
   const radarResults = state.radarCat ? scored.filter((r) => state.categories.get(r.key) === state.radarCat) : scored;
   return [
-    head("Overview", `${state.target.name} · test run v${scan.version}`, confidentControl(scan), copy,
+    head("Overview", `${state.target.name} · test run v${scan.version}`, confidentControl(scan), langfuseControl(scan), copy,
       el("a", { className: "btn", href: "#cases" }, "View test cases →")),
     el("div", { className: "grid grid-3" },
       el("div", { className: "card" }, el("p", { className: "card-title" }, "Test Run Properties"),
@@ -697,6 +697,34 @@ function confidentControl(scan) {
         setTimeout(hideTip, 5000);
       }
     } }, failed ? "↻ Retry send to Confident AI" : "↗ Send to Confident AI");
+  return button;
+}
+
+// Langfuse (optional): open the run's trace once sent, else send it now when keys
+// are saved in the side panel; without keys nothing is shown but "off".
+function langfuseControl(scan) {
+  const sent = scan.langfuse && scan.langfuse.url;
+  if (sent) return el("a", { className: "btn", href: scan.langfuse.url, target: "_blank", rel: "noopener" }, "View in Langfuse ↗");
+  if (!state.langfuseKeys) {
+    return el("span", { className: "small muted", title: "Add Langfuse keys under Langfuse in the side panel" }, "Langfuse: off");
+  }
+  const failed = scan.langfuse && scan.langfuse.error;
+  const button = el("button", { type: "button", className: "btn", title: failed ? `Last try failed: ${failed}` : "Send this run to Langfuse as one trace",
+    onclick: async () => {
+      button.disabled = true;
+      button.textContent = "Sending…";
+      try {
+        const res = await api(`/api/scans/${scan.job_id}/langfuse`, { method: "POST", body: {} });
+        scan.langfuse = { url: res.url, trace_id: res.trace_id };
+        render();
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = "↗ Send to Langfuse";
+        button.title = error.message;
+        showTip({ clientX: button.getBoundingClientRect().left, clientY: button.getBoundingClientRect().bottom }, ["Not sent", error.message]);
+        setTimeout(hideTip, 5000);
+      }
+    } }, failed ? "↻ Retry send to Langfuse" : "↗ Send to Langfuse");
   return button;
 }
 
@@ -1118,6 +1146,8 @@ async function init() {
     state.categories = new Map(metrics.map((m) => [m.key, m.ui_category || m.group]));
     const confident = await api("/api/confident/settings").catch(() => null);
     state.confidentKey = Boolean(confident && confident.has_key);
+    const langfuse = await api("/api/langfuse/settings").catch(() => null);
+    state.langfuseKeys = Boolean(langfuse && langfuse.has_keys);
     const targetId = params.get("target") || (targets[0] && targets[0].id);
     fillSelect($("target"), targets.map((t) => ({ value: t.id, label: t.name })), targetId);
     await selectTarget(targetId, params.get("job"), params.get("with"));

@@ -87,6 +87,8 @@ th, td { text-align: left; vertical-align: top; padding: 6px 8px; border-bottom:
 th { font-size: 0.8rem; color: var(--text-muted); font-weight: 600; }
 td.num, th.num { text-align: right; white-space: nowrap; }
 td.text { min-width: 180px; max-width: 360px; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Conversation transcripts: the speaker labels read like a chat. */
+td.text .speaker { font-weight: 700; }
 
 details.metric { border: 1px solid var(--border); border-radius: 10px; margin: 10px 0; background: var(--surface-raised);
                  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05); }

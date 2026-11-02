@@ -194,6 +194,86 @@ def test_custom_dag_spec_builds(monkeypatch):
     assert spec.ui_category == "custom" and spec.evaluation_steps == ()
 
 
+MULTI_ROW = {
+    "name": "Stays on task", "kind": "geval", "turns": "multi",
+    "criteria": "Across the conversation, does the assistant keep helping with what the user asked for?",
+    "params": ["content", "scenario"], "threshold": 0.6,
+}
+
+
+def test_custom_geval_defaults_to_single_turn():
+    row = custom_store.add_metric(GEVAL_ROW)
+    assert row["turns"] == "single" and row["dataset"] == "goldens"
+    assert custom_spec({k: v for k, v in row.items() if k != "turns"}).kind == "single"
+
+
+def test_custom_multi_turn_geval_is_a_conversational_geval_on_scenarios(monkeypatch):
+    monkeypatch.setenv("JUDGE_API_KEY", "fake-key")
+    from deepeval.metrics import ConversationalGEval
+    from deepeval.test_case import MultiTurnParams
+
+    from backend.judges.judge import build_judge
+
+    row = custom_store.add_metric(MULTI_ROW)
+    assert row["turns"] == "multi" and row["dataset"] == "conversations"
+    spec = custom_spec(row)
+    assert spec.kind == "conversation" and spec.ui_category == "geval"
+    assert spec.title == "Stays on task (Conversational G-Eval)"
+    assert spec.scores_on == ("turns", "scenario")
+    metric = spec.build_metric(build_judge(), 0.6)
+    assert isinstance(metric, ConversationalGEval)
+    assert {MultiTurnParams.CONTENT, MultiTurnParams.SCENARIO} <= set(metric.evaluation_params)
+    scenario = {"name": "Refund", "scenario": "User wants a refund.", "expected_outcome": "Refund explained.",
+                "context": ["Refunds take 5 days."]}
+    turns = [{"role": "user", "content": "Refund?"},
+             {"role": "assistant", "content": "Sure.", "retrieval_context": ["Policy page"]}]
+    case = spec.build_case(scenario, turns)
+    assert [t.content for t in case.turns] == ["Refund?", "Sure."]
+    assert case.scenario == "User wants a refund." and case.expected_outcome == "Refund explained."
+    assert case.turns[1].retrieval_context is None  # not ticked, so not sent
+
+
+def test_custom_multi_turn_fields_pick_the_scenarios_and_turn_context():
+    spec = custom_spec(custom_store.add_metric(
+        {**MULTI_ROW, "params": ["content", "chatbot_role", "context", "retrieval_context"]}))
+    assert spec.dataset_name == "conversations_with_role"
+    turns = [{"role": "user", "content": "Hi"}, {"role": "assistant", "content": "Hello"}]
+    case = spec.build_case({"chatbot_role": "Shop helper", "context": ["Facts"]}, turns)
+    assert case.chatbot_role == "Shop helper" and case.context == ["Facts"]
+    assert case.turns[1].retrieval_context == ["Facts"]  # no turn context, so the scenario's
+
+
+@pytest.mark.parametrize("bad, message", [
+    ({**MULTI_ROW, "params": ["input"]}, "params"),
+    ({**MULTI_ROW, "turns": "both"}, "turns"),
+    ({**GEVAL_ROW, "params": ["scenario"]}, "params"),
+    ({**MULTI_ROW, "kind": "dag", "dag": DAG_ROW["dag"]}, "single-turn"),
+])
+def test_custom_multi_turn_rejects_bad_rows(bad, message):
+    with pytest.raises(ValueError, match=message):
+        custom_store.add_metric(bad)
+
+
+def test_custom_multi_turn_metric_runs_the_conversation(tmp_path, monkeypatch):
+    conn, target_id = _db(tmp_path)
+    spec = custom_spec(custom_store.add_metric(MULTI_ROW))
+    scenario = {"id": "c1", "name": "Order", "scenario": "Track an order.", "user_turns": ["Order 7?", "Where?"]}
+    monkeypatch.setattr(spec, "cases", lambda **_kw: [scenario])
+    measured = []
+    metric = MagicMock(score=0.9, reason="kept on task")
+    metric.measure.side_effect = measured.append
+    metric.is_successful.return_value = True
+    monkeypatch.setattr(spec, "build_metric", lambda judge, threshold=0.6: metric)
+    target = MagicMock()
+    target.chat.side_effect = [SimpleNamespace(reply="Found it."), SimpleNamespace(reply="In transit.")]
+
+    result = run_spec(spec, judge=object(), target=target, target_id=target_id, conn=conn)
+
+    assert result["status"] == "pass" and result["score"] == 0.9
+    assert [t.content for t in measured[0].turns] == ["Order 7?", "Found it.", "Where?", "In transit."]
+    assert measured[0].scenario == "Track an order."
+
+
 def test_get_spec_and_all_specs_include_custom_metrics():
     row = custom_store.add_metric(GEVAL_ROW)
     assert get_spec(row["key"]).title == "Polite tone (G-Eval)"
@@ -229,6 +309,10 @@ def test_api_lists_and_edits_custom_metrics(client):
     assert client.put(f"/api/custom-metrics/{row['id']}", json={**GEVAL_ROW, "threshold": 0.9}).json()["threshold"] == 0.9
     assert client.delete(f"/api/custom-metrics/{row['id']}").status_code == 200
     assert client.delete(f"/api/custom-metrics/{row['id']}").status_code == 404
+    multi = client.post("/api/custom-metrics", json=MULTI_ROW)
+    assert multi.status_code == 200, multi.text
+    metrics = {m["key"]: m for m in client.get("/api/metrics").json()}
+    assert metrics[multi.json()["key"]]["kind"] == "conversation"
 
 
 def test_api_prompt_alignment_runs_without_typed_instructions(client):

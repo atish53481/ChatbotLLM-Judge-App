@@ -25,9 +25,15 @@ DEFAULT_CUSTOM_METRICS_PATH = os.path.join(_DIR, "custom_metrics.default.json")
 _LOCK = threading.RLock()
 
 KINDS = ("geval", "dag")
+# "single" scores one reply (GEval on a golden); "multi" scores a whole
+# conversation (ConversationalGEval on a conversation scenario).
+TURNS = ("single", "multi")
 # Test-case fields a custom metric may score (DeepEval SingleTurnParams values).
 PARAMS = ("input", "actual_output", "expected_output", "context", "retrieval_context")
+# The same for a conversation (DeepEval MultiTurnParams values).
+MULTI_PARAMS = ("content", "role", "scenario", "expected_outcome", "chatbot_role", "context", "retrieval_context")
 DATASETS = ("goldens", "goldens_with_context")
+MULTI_DATASETS = ("conversations", "conversations_with_role")
 KEY_PREFIX = "custom_"
 
 
@@ -98,18 +104,28 @@ def clean(fields: dict) -> dict:
     kind = fields.get("kind", "geval")
     if kind not in KINDS:
         raise ValueError(f"kind must be one of: {', '.join(KINDS)}")
-    params = list(fields.get("params") or ["input", "actual_output"])
-    if not params or any(p not in PARAMS for p in params):
-        raise ValueError(f"params must be from: {', '.join(PARAMS)}")
+    turns = fields.get("turns") or "single"
+    if turns not in TURNS:
+        raise ValueError(f"turns must be one of: {', '.join(TURNS)}")
+    if turns == "multi" and kind != "geval":
+        raise ValueError("a DAG metric is single-turn only")
+    allowed = MULTI_PARAMS if turns == "multi" else PARAMS
+    params = list(fields.get("params") or (["content", "role"] if turns == "multi" else ["input", "actual_output"]))
+    if not params or any(p not in allowed for p in params):
+        raise ValueError(f"params must be from: {', '.join(allowed)}")
     try:
         threshold = float(fields.get("threshold", 0.7))
     except (TypeError, ValueError):
         raise ValueError("threshold must be a number between 0 and 1") from None
     if not 0 <= threshold <= 1:
         raise ValueError("threshold must be a number between 0 and 1")
-    dataset = fields.get("dataset") or ("goldens_with_context" if {"context", "retrieval_context"} & set(params)
-                                         else "goldens")
-    if dataset not in DATASETS:
+    if turns == "multi":
+        # Scenarios without a chatbot role cannot be scored on one.
+        dataset = "conversations_with_role" if "chatbot_role" in params else "conversations"
+    else:
+        dataset = fields.get("dataset") or ("goldens_with_context" if {"context", "retrieval_context"} & set(params)
+                                             else "goldens")
+    if dataset not in (MULTI_DATASETS if turns == "multi" else DATASETS):
         raise ValueError(f"dataset must be one of: {', '.join(DATASETS)}")
     criteria = str(fields.get("criteria", "")).strip()
     steps = [str(s).strip() for s in fields.get("evaluation_steps") or [] if str(s).strip()]
@@ -123,6 +139,7 @@ def clean(fields: dict) -> dict:
     return {
         "name": name[:80],
         "kind": kind,
+        "turns": turns,
         "description": str(fields.get("description", "")).strip()[:300],
         "criteria": criteria,
         "evaluation_steps": steps,

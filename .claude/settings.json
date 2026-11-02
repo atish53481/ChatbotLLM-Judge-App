@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/docs_guard.py\"",
+            "timeout": 30,
+            "statusMessage": "Checking the workflow docs match the code"
+          }
+        ]
+      }
+    ]
+  }
+}

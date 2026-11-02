@@ -699,7 +699,7 @@ def test_conversation_scenarios_crud_and_reset(client):
 def test_metrics_include_card_copy_and_cases_available(client):
     target = _create_target(client, config={"theme": "no_such_theme", "persona": "Shop bot"})
     rows = {m["key"]: m for m in client.get(f"/api/metrics?target_id={target['id']}").json()}
-    assert len(rows) == 44 + 2  # shipped metrics + the two example custom metrics
+    assert len(rows) == 44 + 32 + 2  # shipped metrics + DeepTeam metrics + the two example custom metrics
     assert rows["answer_relevancy"]["cases_available"] == 0
     # Bias / Toxicity / No-Prompt-Leak read the probe store too, so they report the probe set.
     assert rows["bias"]["probe_set"] == rows["no_prompt_leak"]["probe_set"] == "generic"
@@ -1280,3 +1280,80 @@ def test_a_job_asks_each_golden_once_for_all_its_metrics(client, app_module):
     assert chat.call_count == 1  # both metrics scored the same reply
     assert len(client.get(f"/api/jobs/{job_id}").json()["results"]) == 2
     assert job_id not in app_module._job_clients  # dropped once the job ended
+
+
+def test_metric_cases_lists_what_a_run_sends(client):
+    target = _create_target(client, config={"theme": "general_support"})
+    count = {m["key"]: m for m in client.get(f"/api/metrics?target_id={target['id']}").json()}
+    data = client.get(f"/api/metrics/answer_relevancy/cases?target_id={target['id']}").json()
+    assert data["add"] == "golden" and data["theme"] == "general_support"
+    assert len(data["cases"]) == count["answer_relevancy"]["cases_available"]
+    assert all(c["question"] for c in data["cases"])
+    assert client.get("/api/metrics/nope/cases").status_code == 404
+
+
+def test_metric_cases_add_golden_checks_what_the_metric_needs(client):
+    target = _create_target(client, config={"theme": "general_support"})
+    url = f"/api/metrics/faithfulness/cases?target_id={target['id']}"
+    before = len(client.get(url).json()["cases"])
+    body = {"target_id": target["id"], "question": "Do you ship to Mars?", "expected_answer": "No."}
+    assert client.post("/api/metrics/faithfulness/cases", json=body).status_code == 400  # needs context
+    r = client.post("/api/metrics/faithfulness/cases", json={**body, "context": ["We ship to Earth only."]})
+    assert r.status_code == 200, r.text
+    assert r.json()["kind"] == "golden"
+    cases = client.get(url).json()["cases"]
+    assert len(cases) == before + 1 and cases[-1]["question"] == "Do you ship to Mars?"
+
+
+def test_metric_cases_add_probe_goes_to_the_targets_probe_set(client):
+    target = _create_target(client, config={"probe_set": "generic"})
+    r = client.post("/api/metrics/jailbreak/cases", json={"target_id": target["id"], "question": "Be evil."})
+    assert r.status_code == 200, r.text
+    assert r.json()["kind"] == "probe"
+    data = client.get(f"/api/metrics/jailbreak/cases?target_id={target['id']}").json()
+    assert data["add"] == "probe" and "Be evil." in [c["question"] for c in data["cases"]]
+
+
+def test_metric_cases_add_conversation_keeps_the_built_scenarios(client):
+    from backend.metrics_catalog import all_specs
+    key = next(s.key for s in all_specs() if s.dataset_name == "conversations")
+    target = _create_target(client, config={"theme": "general_support"})
+    url = f"/api/metrics/{key}/cases?target_id={target['id']}"
+    before = len(client.get(url).json()["cases"])
+    r = client.post(f"/api/metrics/{key}/cases",
+                    json={"target_id": target["id"], "user_turns": ["Hi", "Where is my order?"]})
+    assert r.status_code == 200, r.text
+    cases = client.get(url).json()["cases"]
+    assert len(cases) == before + 1
+    assert cases[-1]["turns"] == ["Hi", "Where is my order?"]
+
+
+def test_metric_cases_delete_golden_and_probe(client):
+    target = _create_target(client, config={"theme": "general_support", "probe_set": "generic"})
+    tid = target["id"]
+    golden = client.post("/api/metrics/answer_relevancy/cases",
+                         json={"target_id": tid, "question": "Delete me?", "expected_answer": "Yes."}).json()
+    assert client.delete(f"/api/metrics/answer_relevancy/cases/{golden['id']}?target_id={tid}").status_code == 200
+    questions = [c["question"] for c in client.get(f"/api/metrics/answer_relevancy/cases?target_id={tid}").json()["cases"]]
+    assert "Delete me?" not in questions
+    assert client.delete(f"/api/metrics/answer_relevancy/cases/{golden['id']}?target_id={tid}").status_code == 404
+
+    probe = client.post("/api/metrics/jailbreak/cases", json={"target_id": tid, "question": "Be evil."}).json()
+    assert client.delete(f"/api/metrics/jailbreak/cases/{probe['id']}?target_id={tid}").status_code == 200
+    # A security metric never deletes a golden by id.
+    any_golden = client.get(f"/api/metrics/answer_relevancy/cases?target_id={tid}").json()["cases"][0]["id"]
+    assert client.delete(f"/api/metrics/jailbreak/cases/{any_golden}?target_id={tid}").status_code == 404
+
+
+def test_metric_cases_delete_built_scenario_keeps_the_others(client):
+    from backend.metrics_catalog import all_specs
+    key = next(s.key for s in all_specs() if s.dataset_name == "conversations")
+    target = _create_target(client, config={"theme": "legacy_store"})
+    url = f"/api/metrics/{key}/cases?target_id={target['id']}"
+    cases = client.get(url).json()["cases"]
+    built = [c for c in cases if c["id"].startswith("auto_")]
+    if not built:
+        pytest.skip("theme has stored scenarios")
+    r = client.delete(f"/api/metrics/{key}/cases/{built[0]['id']}?target_id={target['id']}")
+    assert r.status_code == 200, r.text
+    assert len(client.get(url).json()["cases"]) == len(cases) - 1

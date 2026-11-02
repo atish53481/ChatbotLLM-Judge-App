@@ -153,7 +153,11 @@
       <!-- Coverage ----------------------------------------------------------->
       <section id="section-coverage" class="adv-section hidden">
         <h2>Red-team coverage</h2>
-        <p class="secondary">The latest run of every adversarial metric, by risk category and OWASP Top 10 for LLM Applications (2025). Untested is not the same as safe.</p>
+        <p class="secondary">The latest run of every adversarial metric, by OWASP list (LLM Applications 2025, Agentic Applications 2026, MCP 2025) and by risk category. Untested is not the same as safe. Risks marked partly testable live mostly outside the chat (dependencies, data, servers, logs): chat attacks check only part of them, so even every attack resisted is not full coverage.</p>
+        <p id="deepteam-version" class="secondary small"></p>
+        <h3>By OWASP list</h3>
+        <div id="framework-grid" class="stack"></div>
+        <h3>By risk category</h3>
         <div id="coverage-grid" class="coverage-grid"></div>
       </section>
 

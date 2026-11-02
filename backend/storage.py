@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 _LOCK = threading.RLock()
@@ -259,13 +259,13 @@ def _legacy_to_template(config: dict) -> dict:
 
 
 def _migrate_targets(conn: sqlite3.Connection) -> None:
-    """Only cURL-style HTTP chatbots remain: legacy HTTP configs are rewritten,
-    and the retired sample (mock) and web-page (dom) chatbots are removed."""
-    retired = [r["id"] for r in conn.execute("SELECT id FROM targets WHERE type != 'http'")]
+    """Only cURL-style HTTP chatbots and MCP servers remain: legacy HTTP configs
+    are rewritten, and the retired sample (mock) and web-page (dom) chatbots are removed."""
+    retired = [r["id"] for r in conn.execute("SELECT id FROM targets WHERE type NOT IN ('http', 'mcp')")]
     for target_id in retired:
         conn.execute("DELETE FROM runs WHERE target_id = ?", (target_id,))
         conn.execute("DELETE FROM targets WHERE id = ?", (target_id,))
-    for row in conn.execute("SELECT id, config_json FROM targets").fetchall():
+    for row in conn.execute("SELECT id, config_json FROM targets WHERE type = 'http'").fetchall():
         config = json.loads(row["config_json"])
         migrated = _legacy_to_template(config)
         if migrated is not config:
@@ -475,6 +475,16 @@ def max_run_id(conn: sqlite3.Connection) -> int:
     with _LOCK:
         row = conn.execute("SELECT COALESCE(MAX(id), 0) FROM runs").fetchone()
     return int(row[0])
+
+
+def recent_metric_keys(conn: sqlite3.Connection, days: int, now: datetime | None = None) -> set[str]:
+    """Keys of the metrics run for any chatbot in the last `days` days (the
+    daily probe refresh leaves out DeepTeam metrics nobody runs). Run stamps
+    are UTC "YYYY-MM-DDTHH:MM:SSZ" (runner._now_iso), so they compare as text."""
+    since = ((now or datetime.now(timezone.utc)) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    with _LOCK:
+        rows = conn.execute("SELECT DISTINCT metric_key FROM runs WHERE ts >= ?", (since,)).fetchall()
+    return {row[0] for row in rows}
 
 
 def delete_run(conn: sqlite3.Connection, run_id: int) -> bool:

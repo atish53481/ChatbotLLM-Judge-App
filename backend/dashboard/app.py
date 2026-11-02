@@ -1,11 +1,14 @@
 """FastAPI backend: the control panel behind the Chrome sidebar and dashboard."""
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import re
 import shutil
+import tempfile
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -17,7 +20,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from backend import cancel, confident_upload, storage, traffic, usage
+from backend import cancel, confident_upload, langfuse_upload, storage, traffic, usage
 from backend.dashboard import hardening
 from backend.dashboard import insights as scan_insights
 from backend.dashboard import scans as scan_history
@@ -30,19 +33,22 @@ from backend.dashboard.runner import (
 )
 from backend.datasets import attack_enhancers
 from backend.datasets import autogen
+from backend.datasets import deepteam_sync
 from backend.datasets import conversations as conversations_store
 from backend.datasets import custom_metrics as custom_store
 from backend.datasets import goldens as goldens_store
 from backend.datasets import simulator
 from backend.datasets import security_probes as probes_store
+from backend.datasets import prepare_all
+from backend.datasets import probe_refresh
 from backend.judges.judge import JUDGE_CONCURRENCY, build_judge, judge_config
 from backend.metrics_catalog import (
-    DEFAULT_THEME, ENVIRONMENTS, GROUPS, PROBE_DATASETS, SPECS_BY_KEY, UI_CATEGORIES,
+    ATTACK_STRATEGIES, DEFAULT_THEME, ENVIRONMENTS, GROUPS, PROBE_DATASETS, SPECS_BY_KEY, UI_CATEGORIES,
     UI_CATEGORY_LABELS, all_specs, ask, get_spec as _catalog_spec, metric_options,
 )
-from backend.rag.enhance import enhance_document
+from backend.rag.enhance import enhance_document, extract_text
 from backend.export_suite import build_suite, zip_suite
-from backend.redteam_coverage import coverage_report
+from backend.redteam_coverage import coverage_report, frameworks as security_frameworks
 from backend.rag.fetch import fetch_page_text
 from backend.datasets.autogen import find_help_pages
 from backend.rag.generation_options import EVOLUTION_NAMES
@@ -59,13 +65,15 @@ from backend.targets.curl import (
     prepare_url,
 )
 from backend.targets.http_client import HttpTargetClient, is_stream, sse_events
+from backend.targets.mcp_client import TOOLS_PATH as MCP_TOOLS_PATH
+from backend.targets.mcp_client import McpError, McpTargetClient
 from backend.targets.shared import SharedReplies
 from backend.targets import discovery
 from backend.targets import instructions as target_instructions
 from backend.targets import presets as target_presets
 
 DB_PATH = os.getenv("JUDGE_DB_PATH", "judge.db")
-TARGET_TYPES = ("http",)
+TARGET_TYPES = ("http", "mcp")
 SUPPORTED_DOCUMENT_EXTENSIONS = {".pdf", ".txt", ".docx", ".md", ".markdown", ".mdx"}
 DOCUMENTS_DIR = Path(__file__).resolve().parent.parent / "datasets" / "documents"
 # The web app's pages, served at /app/ (same origin as the API, so no CORS).
@@ -152,7 +160,8 @@ def _run_job_metric(job: dict, metric_key: str, on_progress) -> dict:
         target = _job_client(job, row)
     except HTTPException as e:
         raise JobFailed(str(e.detail)) from e
-    options, config = job["options"], row["config"]
+    options, config = job["options"], _runtime_config(row)
+    spec = _spec_for_target(spec, target)
     try:
         return run_spec(
             spec, judge, target, job["target_id"], _conn,
@@ -191,9 +200,13 @@ def _run_pairwise_job(job: dict, on_progress) -> dict:
     if not items:
         return {"key": "pairwise", "status": "error", "error": f"No goldens in theme {theme!r}.",
                 "score": None, "rows": []}
-    result = run_pairwise(judge, target_a, target_b, items, prompt=ask,
-                          criteria=options.get("criteria", ""), on_progress=on_progress,
-                          names=(row_a["name"], row_b["name"]))
+    try:
+        result = run_pairwise(judge, target_a, target_b, items, prompt=ask,
+                              criteria=options.get("criteria", ""), on_progress=on_progress,
+                              names=(row_a["name"], row_b["name"]))
+    finally:
+        _close_client(target_a)
+        _close_client(target_b)
     result["theme"] = theme
     if result["status"] == "done":
         result["id"] = storage.add_pairwise_run(_conn, row_a["id"], row_b["id"], result)
@@ -246,7 +259,9 @@ def _after_job(job_id: int) -> None:
     on as one follow-up scan with the same settings (no loop: a saved path is
     never found again)."""
     with _job_clients_lock:
-        _job_clients.pop(job_id, None)  # the job's shared replies are done with
+        client = _job_clients.pop(job_id, None)  # the job's shared replies are done with
+    _close_client(client)  # an MCP server's process or session ends with its job
+    _auto_send_to_langfuse(job_id)  # handed to another thread: never holds up the next run
     _auto_send_to_confident(job_id)
     with _found_lock:
         entry = _found.pop(job_id, None)
@@ -256,7 +271,10 @@ def _after_job(job_id: int) -> None:
     job = storage.get_job(_conn, job_id)
     if not entry["keys"] or job["status"] == "cancelled":
         return  # a stopped job starts nothing new
-    options = {**job["options"], "auto_discovered": {"from_job": job_id, "paths": entry["paths"]}}
+    # The same settings, but not what belonged to that scan alone: the metrics it
+    # could not run (the follow-up runs them) and its Confident AI and Langfuse uploads.
+    options = {k: v for k, v in job["options"].items() if k not in ("skipped", "confident", "langfuse")}
+    options["auto_discovered"] = {"from_job": job_id, "paths": entry["paths"]}
     follow_up = jobs.submit(job["target_id"], entry["keys"], options)
     traffic.log("== job %s: queued job %s with %d metrics the found paths switched on",
                 job_id, follow_up, len(entry["keys"]))
@@ -316,6 +334,10 @@ class GoldenCreate(BaseModel):
         return [t.strip() for t in self.expected_tools if t.strip()]
 
 
+# Enhancers a run may tick (was 10 when the app had 8 of its own).
+MAX_ENHANCEMENTS = max(10, len(attack_enhancers.ENHANCERS))
+
+
 class RunRequest(BaseModel):
     target_id: int
     metric_key: str
@@ -330,7 +352,8 @@ class RunRequest(BaseModel):
     # The metric's tunable settings (e.g. Turn Relevancy's window_size); see /api/metrics.
     settings: dict = Field(default_factory=dict)
     # Red-team probes only: enhanced variants to add (see /api/security/enhancers).
-    enhancements: list[str] = Field(default_factory=list, max_length=10)
+    # Every enhancer may be ticked at once (the app's own + DeepTeam's attacks).
+    enhancements: list[str] = Field(default_factory=list, max_length=MAX_ENHANCEMENTS)
     enhancement_options: dict = Field(default_factory=dict)
     # Fail the run when 95% of chatbot replies are not back within this many seconds.
     max_latency_s: float | None = Field(default=None, gt=0, le=600)
@@ -363,10 +386,71 @@ class ChatRequest(BaseModel):
     history: list[ChatTurn] = Field(default_factory=list, max_length=40)
 
 
+AGENT_IS_JUDGE_NOTE = (
+    "The judge model also chose the MCP server's tools (no agent model set), so it judged tool choices it "
+    "made itself: read the agent metrics with that in mind, or set an agent model on the chatbot.")
+
+
+def _agent_factory(agent_model: str):
+    """The model that picks an MCP server's tools: the chatbot's agent_model on
+    the judge's provider (same base URL and key), else the judge model."""
+    def build():
+        return build_judge(**{**_judge_overrides(), **({"model": agent_model} if agent_model else {})})
+    return build
+
+
 def _build_target(row: dict) -> ChatbotClient:
     if row["type"] == "http":
         return HttpTargetClient(row["config"])
+    if row["type"] == "mcp":
+        agent_model = str(row["config"].get("agent_model") or "").strip()
+        client = McpTargetClient(row["config"], judge_factory=_agent_factory(agent_model))
+        if not agent_model or agent_model == judge_config(**_judge_overrides())["model"]:
+            client.run_note = AGENT_IS_JUDGE_NOTE  # the judge must never be the chatbot under test
+        return client
     raise ValueError(f"unknown target type {row['type']!r}")
+
+
+def _close_client(client) -> None:
+    """Ends what a client keeps open (an MCP server process or session); HTTP
+    chatbots keep nothing."""
+    close = getattr(client, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:  # noqa: BLE001 - closing never fails a request
+            pass
+
+
+def _runtime_config(row: dict) -> dict:
+    """A target's config as the runner sees the chatbot: an MCP server always
+    reports its tool calls (McpTargetClient.tools_path), so the agent and
+    tool-aware metrics apply to it."""
+    config = row["config"]
+    if row.get("type") == "mcp" and not config.get("tools_path"):
+        return {**config, "tools_path": MCP_TOOLS_PATH}
+    return config
+
+
+def _spec_for_target(spec, target):
+    """The spec whose metrics also carry the target's run note (an MCP server
+    whose tools the judge chose), shown with every run of it. Other targets
+    and stand-in specs are left as they are."""
+    note = getattr(target, "run_note", None)
+    if not isinstance(note, str) or not note or not dataclasses.is_dataclass(spec):
+        return spec
+    build = spec.build_metric
+
+    def build_metric(*args, **kwargs):
+        metric = build(*args, **kwargs)
+        own = getattr(metric, "run_note", None)
+        try:
+            metric.run_note = f"{own} {note}" if isinstance(own, str) and own else note
+        except Exception:  # noqa: BLE001 - a metric that keeps no note just shows none
+            pass
+        return metric
+
+    return dataclasses.replace(spec, build_metric=build_metric)
 
 
 def _client_or_400(row: dict) -> ChatbotClient:
@@ -388,7 +472,30 @@ def _public(row: dict) -> dict:
     config = dict(row["config"])
     if config.get("headers"):
         config["headers"] = {name: "***" for name in config["headers"]}
+    if row.get("type") == "mcp" and isinstance(config.get("env"), dict) and config["env"]:
+        config["env"] = {name: "***" for name in config["env"]}  # an MCP server's keys
     return {**row, "config": config}
+
+
+MASKED = "***"
+
+
+def _keep_stored_secrets(config: dict, existing: dict | None, target_type: str) -> dict:
+    """Header values (and an MCP server's env values) are only ever sent back
+    masked: an edit that sends none keeps the stored ones. For an MCP server a
+    value sent back as "***" also keeps the stored value of that name."""
+    config = _keep_stored_headers(config, existing)
+    if target_type != "mcp" or existing is None:
+        return config
+    stored_config = existing["config"]
+    if "env" not in config and stored_config.get("env"):
+        config = {**config, "env": stored_config["env"]}
+    for field in ("env", "headers"):
+        sent, stored = config.get(field), stored_config.get(field) or {}
+        if isinstance(sent, dict) and isinstance(stored, dict):
+            config = {**config, field: {name: stored[name] if value == MASKED and name in stored else value
+                                        for name, value in sent.items()}}
+    return config
 
 
 def _keep_stored_headers(config: dict, existing: dict | None) -> dict:
@@ -436,6 +543,8 @@ def _saved_chatbot(url: str, method: str) -> dict | None:
     so re-pasting a cURL updates it instead of adding a duplicate."""
     for target in reversed(storage.list_targets(_conn)):
         config = target["config"]
+        if target["type"] != "http":
+            continue  # an MCP server is never a captured request
         if config.get("url") == url and (config.get("method") or "POST").upper() == method.upper():
             return {"id": target["id"], "name": target["name"],
                     "instructions": config.get("instructions") or []}
@@ -492,13 +601,45 @@ def api_test_target(body: TargetTest):
             status_code=400, detail=f"type must be one of: {', '.join(TARGET_TYPES)}"
         )
     existing = storage.get_target(_conn, body.target_id) if body.target_id else None
-    config = _keep_stored_headers(body.config, existing)
+    config = _keep_stored_secrets(body.config, existing, body.type)
     client = _client_or_400({"id": body.target_id or 0, "type": body.type, "config": config})
     try:
         reply = client.chat(body.message)
     except Exception as e:  # noqa: BLE001 - any chatbot failure is shown in the form
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    finally:
+        _close_client(client)
     return {"ok": True, "reply": reply.reply}
+
+
+class McpToolsRequest(BaseModel):
+    config: dict = Field(default_factory=dict)
+    # Editing a saved MCP server: its stored env / header values stand in for masked ones.
+    target_id: int | None = None
+
+
+@app.post("/api/targets/mcp/tools")
+def api_mcp_tools(body: McpToolsRequest):
+    """Connects to an MCP server with an unsaved config and lists its tools
+    (no judge needed). Errors are 400s with a plain message."""
+    existing = storage.get_target(_conn, body.target_id) if body.target_id else None
+    if existing is not None and existing["type"] != "mcp":
+        existing = None
+    config = _keep_stored_secrets(body.config, existing, "mcp")
+    try:
+        client = McpTargetClient(config)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"invalid MCP server config: {e}") from e
+    try:
+        tools = client.list_tools()
+    except McpError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001 - never a traceback, never a header or env value
+        raise HTTPException(status_code=400, detail=f"Could not read the MCP server's tools "
+                                                    f"({type(e).__name__}).") from e
+    finally:
+        _close_client(client)
+    return {"tools": tools, "server": {**client.server_info, "instructions": client.server_instructions}}
 
 
 # Judge settings saved from the side panel (meta table) override .env.
@@ -637,11 +778,21 @@ def api_update_target(target_id: int, body: TargetCreate):
         raise HTTPException(
             status_code=400, detail=f"type must be one of: {', '.join(TARGET_TYPES)}"
         )
-    config = _keep_stored_headers(body.config, existing)
+    config = _keep_stored_secrets(body.config, existing, body.type)
+    # A chatbot's own probe set (written by Build all test data) is not in the
+    # form's list of sets: a save that sends none keeps it.
+    if not config.get("probe_set") and probes_store.is_target_set(existing["config"].get("probe_set")):
+        config = {**config, "probe_set": existing["config"]["probe_set"]}
     # The chatbot form knows nothing of the discovery assistant's report and
     # approved items, so a save keeps them.
     for key in DISCOVERY_KEYS:
         if key not in config and key in existing["config"]:
+            config[key] = existing["config"][key]
+    # Paths a scan found in the replies (_save_found_paths) are empty in a form
+    # loaded before they were found, or refilled from a pasted cURL whose one reply
+    # showed none: a save that leaves them empty keeps the found ones.
+    for key in _FOUND_LABELS:
+        if not config.get(key) and existing["config"].get(key):
             config[key] = existing["config"][key]
     # Build the client once so a broken config is rejected before it is stored;
     # same validation POST does.
@@ -654,6 +805,9 @@ def api_update_target(target_id: int, body: TargetCreate):
 def api_delete_target(target_id: int):
     _target_or_404(target_id)
     storage.delete_target(_conn, target_id)
+    probes_store.clear_target_probes(target_id)  # its own probe set (Build all test data)
+    with _builds_lock:
+        _builds.pop(target_id, None)
     return {"deleted": target_id}
 
 
@@ -750,12 +904,24 @@ def _send_to_confident(job_id: int, key: str) -> dict:
     theme = ((target or {}).get("config") or {}).get("theme") or DEFAULT_THEME
     titles = {s.key: s.title for s in all_specs()}
     sent = confident_upload.upload(scan, name, theme, titles, api_key=key)
-    job = storage.get_job(_conn, job_id)
-    storage.update_job(_conn, job_id, options={**job["options"], "confident": {
+    _keep_on_job(job_id, "confident", {
         "id": sent["id"], "link": sent["link"],
-        "sent_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}})
+        "sent_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
     traffic.log("== job %s: sent %d test cases to Confident AI", job_id, sent["test_cases"])
     return sent
+
+
+# Confident AI and Langfuse results are written to a finished job's options from
+# different threads (a Langfuse send runs off the job worker), so each write
+# re-reads the options under this lock and changes only its own key.
+_job_options_lock = threading.Lock()
+
+
+def _keep_on_job(job_id: int, key: str, value) -> None:
+    with _job_options_lock:
+        job = storage.get_job(_conn, job_id)
+        if job is not None:
+            storage.update_job(_conn, job_id, options={**(job["options"] or {}), key: value})
 
 
 def _auto_send_to_confident(job_id: int) -> None:
@@ -769,7 +935,7 @@ def _auto_send_to_confident(job_id: int) -> None:
     try:
         _send_to_confident(job_id, key)
     except Exception as error:  # noqa: BLE001 - the run itself is fine either way
-        storage.update_job(_conn, job_id, options={**job["options"], "confident": {"error": str(error)[:300]}})
+        _keep_on_job(job_id, "confident", {"error": str(error)[:300]})
         traffic.log("== job %s: sending to Confident AI failed: %s", job_id, str(error)[:200])
 
 
@@ -790,6 +956,179 @@ def api_send_scan_to_confident(job_id: int):
         raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:  # noqa: BLE001 - Confident AI's own message, never the key
         raise HTTPException(status_code=502, detail=f"Confident AI: {str(error)[:300]}")
+
+
+# --- Langfuse: optional trace of each test run in Langfuse (cloud or self-hosted) ----
+# The keys are saved here (side panel) or read from LANGFUSE_PUBLIC_KEY and
+# LANGFUSE_SECRET_KEY (with LANGFUSE_HOST) in .env; they are never sent back to the
+# browser, only their last characters. Without both keys nothing is ever sent.
+_LANGFUSE_PUBLIC_META = "langfuse_public_key"
+_LANGFUSE_SECRET_META = "langfuse_secret_key"
+_LANGFUSE_HOST_META = "langfuse_host"
+_LANGFUSE_AUTO_META = "langfuse_auto"
+
+
+def _langfuse_host() -> str:
+    """The host saved here, else LANGFUSE_HOST, else Langfuse Cloud."""
+    host = storage.get_meta(_conn, _LANGFUSE_HOST_META) or langfuse_upload.env_settings()["host"]
+    try:
+        return langfuse_upload.normalize_host(host)
+    except ValueError:
+        return host  # a bad LANGFUSE_HOST is shown as it is; sending says what is wrong
+
+
+def _langfuse_config() -> dict | None:
+    """{"public_key", "secret_key", "host", "source": "panel" | "env"}, or None without
+    both keys. Keys saved in the side panel win over the ones in .env."""
+    saved = (storage.get_meta(_conn, _LANGFUSE_PUBLIC_META), storage.get_meta(_conn, _LANGFUSE_SECRET_META))
+    env = langfuse_upload.env_settings()
+    if all(saved):
+        public, secret, source = saved[0], saved[1], "panel"
+    elif env["public_key"] and env["secret_key"]:
+        public, secret, source = env["public_key"], env["secret_key"], "env"
+    else:
+        return None
+    return {"public_key": public, "secret_key": secret, "host": _langfuse_host(), "source": source}
+
+
+class LangfuseSettings(BaseModel):
+    # Empty keys keep the saved ones; host None keeps the saved host ("" = Langfuse
+    # Cloud again); auto None keeps the current choice.
+    public_key: str = Field(default="", max_length=500)
+    secret_key: str = Field(default="", max_length=500)
+    host: str | None = Field(default=None, max_length=500)
+    clear_keys: bool = False
+    auto: bool | None = None
+
+
+@app.get("/api/langfuse/settings")
+def api_get_langfuse_settings():
+    config = _langfuse_config()
+    return {"has_keys": config is not None, "key_source": config["source"] if config else None,
+            "public_key_hint": _key_hint(config["public_key"]) if config else "",
+            "secret_key_hint": _key_hint(config["secret_key"]) if config else "",
+            "host": _langfuse_host(),
+            "auto": config is not None and storage.get_meta(_conn, _LANGFUSE_AUTO_META) == "1"}
+
+
+@app.put("/api/langfuse/settings")
+def api_put_langfuse_settings(body: LangfuseSettings):
+    public, secret, auto = body.public_key.strip(), body.secret_key.strip(), body.auto
+    if public.startswith("sk-lf-") or secret.startswith("pk-lf-"):
+        raise HTTPException(status_code=400, detail="These keys look swapped: the public key starts with "
+                                                    "pk-lf- and the secret key with sk-lf-.")
+    host = None
+    if body.host is not None and not body.clear_keys:
+        try:
+            host = langfuse_upload.normalize_host(body.host) if body.host.strip() else ""
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error))
+    if body.clear_keys:
+        for meta in (_LANGFUSE_PUBLIC_META, _LANGFUSE_SECRET_META, _LANGFUSE_HOST_META):
+            storage.set_meta(_conn, meta, None)
+    elif public or secret:
+        missing = [what for what, new, meta in (("public key (pk-lf-…)", public, _LANGFUSE_PUBLIC_META),
+                                                ("secret key (sk-lf-…)", secret, _LANGFUSE_SECRET_META))
+                   if not new and not storage.get_meta(_conn, meta)]
+        if missing:
+            raise HTTPException(status_code=400, detail=f"Paste the {missing[0]} too: Langfuse needs both keys.")
+        if public:
+            storage.set_meta(_conn, _LANGFUSE_PUBLIC_META, public)
+        if secret:
+            storage.set_meta(_conn, _LANGFUSE_SECRET_META, secret)
+        auto = True if auto is None else auto  # new keys mean "send my runs"
+    if host is not None:
+        storage.set_meta(_conn, _LANGFUSE_HOST_META, host or None)
+    if auto is not None:
+        storage.set_meta(_conn, _LANGFUSE_AUTO_META, "1" if auto else None)
+    return api_get_langfuse_settings()
+
+
+def _attack_labels(results: list[dict], settings: dict) -> dict:
+    """metric key -> the multi-turn attack its cases ran, for the attack metrics."""
+    labels = {}
+    for result in results:
+        spec = get_spec(result.get("key") or "")
+        if spec is not None and getattr(spec, "kind", "single") == "attack":
+            default = ((getattr(spec, "settings", None) or {}).get("strategy") or {}).get("default", "linear")
+            strategy = ((settings or {}).get(result["key"]) or {}).get("strategy") or default
+            labels[result["key"]] = ATTACK_STRATEGIES.get(strategy, strategy)
+    return labels
+
+
+def _send_to_langfuse(job_id: int, config: dict) -> dict:
+    """Sends one finished scan as a Langfuse trace and keeps its link with the job."""
+    scan = scan_history.get_scan(_conn, job_id)
+    job = storage.get_job(_conn, job_id)
+    if scan is None or job is None:
+        raise langfuse_upload.LangfuseError("this scan no longer exists")
+    target = storage.get_target(_conn, scan["target_id"])
+    name = target["name"] if target else f"chatbot {scan['target_id']}"
+    theme = ((target or {}).get("config") or {}).get("theme") or DEFAULT_THEME
+    options = job["options"] or {}
+    settings = options.get("settings") or {}
+    sent = langfuse_upload.upload(
+        scan, name, theme, {s.key: s.title for s in all_specs()},
+        public_key=config["public_key"], secret_key=config["secret_key"], host=config["host"],
+        settings=settings, attacks=_attack_labels(scan["results"], settings),
+        enhancements={key: label for key, (label, _) in attack_enhancers.ENHANCERS.items()},
+        parallel=options.get("metric_concurrency") or jobs_module.METRIC_CONCURRENCY)
+    sent["sent_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _keep_on_job(job_id, "langfuse", {k: sent[k] for k in ("trace_id", "url", "sent_at", "warning") if k in sent})
+    traffic.log("== job %s: sent the scan to Langfuse as one trace (%d spans, %d scores)",
+                job_id, sent["spans"], sent["scores"])
+    return sent
+
+
+def _send_to_langfuse_or_keep_error(job_id: int, config: dict) -> None:
+    try:
+        _send_to_langfuse(job_id, config)
+    except Exception as error:  # noqa: BLE001 - the run itself is fine either way
+        message = langfuse_upload.safe_message(error, config["public_key"], config["secret_key"])
+        _keep_on_job(job_id, "langfuse", {"error": message[:300]})
+        traffic.log("== job %s: sending to Langfuse failed: %s", job_id, message[:200])
+
+
+def _in_background(work) -> None:
+    """Langfuse sends run off the job worker, so a slow or unreachable Langfuse never
+    holds up the next run. Tests swap this for an inline call."""
+    threading.Thread(target=work, daemon=True, name="llm-judge-langfuse").start()
+
+
+def _auto_send_to_langfuse(job_id: int) -> None:
+    """After a finished (not stopped) scan, when the user turned auto-send on."""
+    try:
+        config = _langfuse_config()
+        if config is None or storage.get_meta(_conn, _LANGFUSE_AUTO_META) != "1":
+            return
+        job = storage.get_job(_conn, job_id)
+        if job is None or job["status"] != "done" or (job["options"] or {}).get("kind") == "pairwise":
+            return
+        _in_background(lambda: _send_to_langfuse_or_keep_error(job_id, config))
+    except Exception as error:  # noqa: BLE001 - never stops the job's other follow-ups
+        traffic.log("== job %s: could not start the Langfuse send: %s", job_id, type(error).__name__)
+
+
+class LangfuseSend(BaseModel):
+    """Empty on purpose: a JSON body forces the CORS preflight, like every other POST."""
+
+
+@app.post("/api/scans/{job_id}/langfuse")
+def api_send_scan_to_langfuse(job_id: int, _body: LangfuseSend):
+    """Sends one finished test run to Langfuse as a trace and returns its link."""
+    config = _langfuse_config()
+    if config is None:
+        raise HTTPException(status_code=400, detail="No Langfuse keys: add them in the side panel (Langfuse).")
+    job = storage.get_job(_conn, job_id)
+    if job is None or scan_history.get_scan(_conn, job_id) is None:
+        raise HTTPException(status_code=404, detail="scan not found")
+    if job["status"] in ("queued", "running"):
+        raise HTTPException(status_code=409, detail="this run is still going; send it when it finishes")
+    try:
+        return _send_to_langfuse(job_id, config)
+    except Exception as error:  # noqa: BLE001 - Langfuse's own message, never a key
+        message = langfuse_upload.safe_message(error, config["public_key"], config["secret_key"])
+        raise HTTPException(status_code=502, detail=f"Langfuse: {message[:300]}")
 
 
 @app.post("/api/session/start")
@@ -994,11 +1333,15 @@ def _learn_chatbot(target: dict, theme: str, judge, pages: list, persona: str,
                    errors: list[str]) -> tuple[int, int] | None:
     """Asks the chatbot what it does, then has the judge write golden answers and
     conversation scenarios that fit it (and its help pages). Returns how many."""
+    client = None
     try:
-        answers = autogen.interview(_client_or_400(target))
+        client = _client_or_400(target)
+        answers = autogen.interview(client)
     except HTTPException as e:
         answers = []
         errors.append(f"Could not reach the chatbot: {e.detail}")
+    finally:
+        _close_client(client)
     if not answers and not pages:
         errors.append("The chatbot did not answer and no help pages were found, so no golden answers "
                       "were written for it.")
@@ -1098,6 +1441,140 @@ def api_prepare_goldens(target_id: int, body: PrepareGoldens):
             "can_generate": can_generate, "needs_context": needs_context, "message": message}
 
 
+# --- Build all test data (backend/datasets/prepare_all.py) --------------------
+# target id -> {"status", "steps": {key: {status, detail}}, "error"}: one build
+# at a time per chatbot, in memory (a restart forgets it; the data stays).
+_builds: dict[int, dict] = {}
+_builds_lock = threading.Lock()
+# How long a build waits for its Context goldens before reporting.
+DOCUMENT_WAIT_S = 30 * 60
+DOCUMENT_POLL_S = 2.0
+
+
+class PrepareAll(BaseModel):
+    # AI generation spends judge tokens and sends the chatbot messages, so it
+    # runs only once the user says yes.
+    generate: bool = False
+
+
+def _metrics_summary(row: dict) -> dict:
+    """How many metrics have test cases for this chatbot, and which have none and why."""
+    theme, persona, probe_set, unavailable = _availability(_runtime_config(row))
+    ready, missing = 0, []
+    for spec in all_specs():
+        reason = _skip_reason(spec, theme, persona, probe_set, unavailable)
+        if reason:
+            missing.append({"key": spec.key, "title": spec.title, "reason": reason})
+        else:
+            ready += 1
+    return {"ready": ready, "missing": missing}
+
+
+def _build_view(target_id: int) -> dict:
+    with _builds_lock:
+        state = _builds.get(target_id)
+        status = state["status"] if state else "idle"
+        steps = [{"key": key, "label": label, "status": "pending", "detail": "",
+                  **((state or {}).get("steps", {}).get(key) or {})} for key, label in prepare_all.STEPS]
+        error = state.get("error") if state else None
+    row = storage.get_target(_conn, target_id)
+    view = {"status": status, "steps": steps,
+            "metrics": _metrics_summary(row) if row else {"ready": 0, "missing": []}}
+    if error:
+        view["error"] = error
+    return view
+
+
+def _wait_documents(ids: list[int]) -> list[dict]:
+    """The documents' rows once each is ready or failed (or the wait is over)."""
+    deadline = time.monotonic() + DOCUMENT_WAIT_S
+    while True:
+        docs = [d for d in (storage.get_document(_conn, i) for i in ids) if d]
+        if all(d["status"] in ("ready", "error") for d in docs) or time.monotonic() > deadline:
+            return docs
+        time.sleep(DOCUMENT_POLL_S)
+
+
+def _run_build(target_id: int, judge) -> None:
+    def report(step: str, status: str, detail: str) -> None:
+        with _builds_lock:
+            _builds[target_id]["steps"][step] = {"status": status, "detail": detail}
+
+    client = None
+    try:
+        target = storage.get_target(_conn, target_id)
+        if target is None:
+            raise RuntimeError("the chatbot was deleted")
+        theme = _own_theme(target)  # its goldens persist in a theme of its own
+        if theme != target["config"].get("theme"):
+            storage.update_target(_conn, target_id, target["name"], target["type"],
+                                  {**target["config"], "theme": theme})
+            target = storage.get_target(_conn, target_id)
+        client = _client_or_400(target)
+        known = {d["filename"] for d in storage.list_documents(_conn, theme) if d["status"] != "error"}
+        outcome = prepare_all.build_testdata(
+            target, theme=theme, judge=judge, client=client, report=report, known_documents=known,
+            queue_document=lambda th, source, stem, text: _queue_text_document(th, source, stem, text, judge),
+            wait_documents=_wait_documents, find_pages=find_help_pages)
+        # What the build found, saved on the chatbot (re-read: it may have been edited meanwhile).
+        latest = storage.get_target(_conn, target_id)
+        if latest is not None:
+            config = dict(latest["config"])
+            if latest["type"] != "mcp" or outcome["help_pages"]:  # its site was searched (as prepare-goldens does)
+                config["docs_searched"] = True
+                if outcome["help_pages"] and not config.get("help_url"):
+                    config["help_url"] = outcome["help_pages"][0]
+            own_set = probes_store.target_set(target_id)
+            if probes_store.load_probes(probe_set=own_set):
+                config["probe_set"] = own_set  # runs now send the probes fitted to it
+            if config != latest["config"]:
+                storage.update_target(_conn, target_id, latest["name"], latest["type"], config)
+        with _builds_lock:
+            _builds[target_id]["status"] = "done"
+    except Exception as e:  # noqa: BLE001 - shown as the build's error, never raised
+        detail = e.detail if isinstance(e, HTTPException) else f"{type(e).__name__}: {e}"
+        traffic.log("== test-data build for chatbot %s failed: %s", target_id, detail)
+        with _builds_lock:
+            _builds[target_id].update(status="error", error=str(detail))
+    finally:
+        _close_client(client)
+
+
+@app.post("/api/targets/{target_id}/prepare-all")
+def api_prepare_all(target_id: int, body: PrepareAll):
+    """Builds test data for every metric of this chatbot in the background
+    (backend/datasets/prepare_all.py): golden answers and scenarios, Context
+    goldens, Tool Correctness cases, fitted probes. Nothing is written or
+    spent without generate: true. One build at a time per chatbot: while one
+    runs this returns its status."""
+    target = _target_or_404(target_id)
+    if not body.generate:
+        raise HTTPException(status_code=400, detail="Building test data sends the chatbot messages and spends "
+                                                    "judge tokens: confirm with generate: true.")
+    with _builds_lock:
+        running = _builds.get(target_id, {}).get("status") == "running"
+    if running:
+        return _build_view(target_id)
+    try:
+        judge = build_judge(**_judge_overrides())
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    _client_or_400(target)  # a broken config is refused before anything starts
+    with _builds_lock:
+        if _builds.get(target_id, {}).get("status") == "running":
+            return _build_view(target_id)
+        _builds[target_id] = {"status": "running", "steps": {}, "error": None}
+    _start_job(lambda: _run_build(target_id, judge))
+    return _build_view(target_id)
+
+
+@app.get("/api/targets/{target_id}/prepare-all")
+def api_prepare_all_status(target_id: int):
+    """Where this chatbot's test-data build is, and which metrics have test cases."""
+    _target_or_404(target_id)
+    return _build_view(target_id)
+
+
 # Target config keys the discovery assistant owns (backend/targets/discovery.py).
 DISCOVERY_KEYS = ("discovery", "inferred_instructions", "available_tools")
 
@@ -1109,6 +1586,12 @@ class DiscoverRequest(BaseModel):
     send_headers: bool = False
     # Infer its rules and tools with the judge (spends judge tokens).
     infer: bool = True
+    # User-provided API docs (used instead of auto-discovery when given): a link
+    # to an OpenAPI / Swagger document, or the JSON/YAML text of an uploaded one.
+    spec_url: str = Field(default="", max_length=2000)
+    spec_text: str = Field(default="", max_length=2_000_000)
+    # User-provided help / FAQ / log text the judge reads to infer rules and tools.
+    help_text: str = Field(default="", max_length=1_000_000)
 
 
 class DiscoveryApply(BaseModel):
@@ -1123,6 +1606,9 @@ def api_discover(target_id: int, body: DiscoverRequest):
     if not body.authorized:
         raise HTTPException(status_code=400, detail="Confirm you own this chatbot or are allowed to test it first.")
     target = _target_or_404(target_id)
+    if target["type"] == "mcp":
+        raise HTTPException(status_code=400, detail="An MCP server lists its own tools; Find missing metric data "
+                                                    "is for HTTP chatbots.")
     config = target["config"]
     client = _client_or_400(target)
     judge = None
@@ -1142,7 +1628,8 @@ def api_discover(target_id: int, body: DiscoverRequest):
     questions = [g["question"] for g in sorted(goldens, key=lambda g: not g.get("expected_tools"))]
     report = discovery.discover(config, client=client, make_client=make_client, judge=judge,
                                 fetch=discovery.fetch_json, find_help_pages=discovery._find_help_pages,
-                                send_headers=body.send_headers, questions=questions)
+                                send_headers=body.send_headers, questions=questions,
+                                spec_url=body.spec_url, spec_text=body.spec_text, help_text=body.help_text)
     storage.update_target(_conn, target_id, target["name"], target["type"], {**config, "discovery": report})
     return report
 
@@ -1157,6 +1644,35 @@ def api_discovery_apply(target_id: int, body: DiscoveryApply):
     _client_or_400({**target, "config": config})
     storage.update_target(_conn, target_id, target["name"], target["type"], config)
     return _public(storage.get_target(_conn, target_id))
+
+
+# Help / FAQ / log documents the discovery assistant's judge can read.
+_HELP_DOC_EXTENSIONS = {".txt", ".md", ".markdown", ".log", ".pdf", ".docx"}
+
+
+@app.post("/api/targets/{target_id}/discovery/extract")
+def api_discovery_extract(target_id: int, file: UploadFile = File(...)):
+    """Text of an uploaded help / FAQ / log document (PDF, DOCX or plain text),
+    so Find missing metric data can read it to infer the chatbot's rules and tools."""
+    _target_or_404(target_id)
+    safe_filename = Path(file.filename or "document").name
+    extension = Path(safe_filename).suffix.lower()
+    if extension not in _HELP_DOC_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unsupported file type {extension!r}: supported types are "
+            f"{', '.join(sorted(_HELP_DOC_EXTENSIONS))}",
+        )
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = Path(tmp) / f"help{extension}"
+        with dest.open("wb") as f:
+            shutil.copyfileobj(file.file, f)
+        try:
+            text = extract_text(dest)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"filename": safe_filename, "text": text}
+
 
 
 @app.get("/api/documents")
@@ -1368,10 +1884,11 @@ class CustomMetricFields(BaseModel):
     """One of the user's own metrics (backend/datasets/custom_metrics.py)."""
     name: str = Field(min_length=1, max_length=80)
     kind: Literal["geval", "dag"] = "geval"
+    turns: Literal["single", "multi"] = "single"
     description: str = Field(default="", max_length=300)
     criteria: str = Field(default="", max_length=4000)
     evaluation_steps: list[str] = Field(default_factory=list, max_length=20)
-    params: list[str] = Field(default_factory=lambda: ["input", "actual_output"], max_length=5)
+    params: list[str] = Field(default_factory=list, max_length=7)
     strict: bool = False
     threshold: float = Field(default=0.7, ge=0, le=1)
     dataset: str = ""
@@ -1553,7 +2070,7 @@ def api_list_metrics(target_id: int | None = None):
     a threshold per environment (Local / PR / Staging / Production), the card
     copy, and how many cases each metric would run for the given target (its
     theme and persona)."""
-    config = _target_or_404(target_id)["config"] if target_id is not None else None
+    config = _runtime_config(_target_or_404(target_id)) if target_id is not None else None
     theme, persona, probe_set, unavailable = _availability(config)
     custom_ids = {row["key"]: row["id"] for row in custom_store.load_metrics()}
     return [
@@ -1578,6 +2095,8 @@ def api_list_metrics(target_id: int | None = None):
             "scale_hint": s.scale_hint,
             "question": s.question,
             "dataset": s.dataset_name,
+            # "deepteam": one of the DeepTeam vulnerability metrics (not ticked by default).
+            "source": "deepteam" if s.key in probes_store.DEEPTEAM_METRICS else "app",
             "cases_available": 0 if unavailable(s) else _cases_available(s, theme, persona, probe_set),
             # Why this metric cannot run for this chatbot (None when it can).
             "unavailable": unavailable(s),
@@ -1592,6 +2111,10 @@ def api_list_metrics(target_id: int | None = None):
             "improve": s.improve,
             # Knobs the user may tune per run, and target fields the metric reads.
             "settings": s.settings,
+            # DeepTeam metrics: who may score them (the app's rubric or DeepTeam's own),
+            # and whether the probe metrics also judge the tools an agent reports.
+            "scorer_options": getattr(s, "scorer_options", []),
+            "reads_reported_tools": getattr(s, "reads_reported_tools", False),
             "needs_target": list(s.needs_target),
             # The user's own metric (editable at /api/custom-metrics), else None.
             "custom_id": custom_ids.get(s.key),
@@ -1606,17 +2129,182 @@ def api_metric_environments():
     return [{"key": key, "label": label} for key, label in ENVIRONMENTS.items()]
 
 
+def _case_add_kind(spec) -> str | None:
+    """Which store a test case added to this metric goes to: "golden",
+    "probe", "conversation", or None when cases cannot be added here."""
+    dataset = getattr(spec, "dataset_name", "")
+    if dataset in ("conversations", "conversations_with_role"):
+        return "conversation"
+    if dataset in PROBE_DATASETS:
+        return "probe" if spec.key in probes_store.PROBE_METRICS else None
+    if dataset.startswith("goldens"):
+        return "golden"
+    return None
+
+
+def _case_view(item: dict, probe_ids: set) -> dict:
+    """One test case as the side panel lists it: what is sent, and what it is scored against."""
+    if "user_turns" in item:
+        return {"id": item.get("id"), "kind": "conversation", "question": item.get("name", ""),
+                "turns": list(item.get("user_turns", [])), "scenario": item.get("scenario", ""),
+                "chatbot_role": item.get("chatbot_role", ""),
+                "expected_answer": item.get("expected_outcome", "")}
+    return {
+        "id": item.get("id"),
+        "kind": "probe" if item.get("id") in probe_ids else "golden",
+        "question": item.get("question", ""),
+        "expected_answer": item.get("expected_answer", ""),
+        "context": list(item.get("context") or []),
+        "expected_tools": list(item.get("expected_tools") or []),
+        # A grounded golden is sent with its facts in the message.
+        "context_in_prompt": bool(item.get("context_in_prompt") and item.get("context")),
+    }
+
+
+def _probe_ids(spec, probe_set: str) -> set:
+    """Ids of this metric's probes: the shared store's, plus the chatbot's own
+    set (its own file) when it has one."""
+    ids = {p["id"] for p in probes_store.load_probes(metric=spec.key)}
+    if probes_store.is_target_set(probe_set):
+        ids |= {p["id"] for p in probes_store.load_probes(probe_set=probe_set) if p["metric"] == spec.key}
+    return ids
+
+
+def _cases_scope(key: str, target_id: int | None):
+    spec = get_spec(key)
+    if spec is None:
+        raise HTTPException(status_code=404, detail="metric not found")
+    config = _runtime_config(_target_or_404(target_id)) if target_id is not None else None
+    return spec, _availability(config)
+
+
+@app.get("/api/metrics/{key}/cases")
+def api_metric_cases(key: str, target_id: int | None = None):
+    """The test cases a run of this metric sends the chatbot (before the
+    cases-per-run cap), and where a new one would be added."""
+    spec, (theme, persona, probe_set, unavailable) = _cases_scope(key, target_id)
+    items = spec.cases(theme=theme, persona=persona, probe_set=probe_set)
+    probe_ids = _probe_ids(spec, probe_set) if spec.dataset_name in PROBE_DATASETS else set()
+    return {
+        "key": spec.key,
+        "title": spec.title,
+        "dataset": spec.dataset_name,
+        "theme": theme,
+        "probe_set": probe_set or probes_store.DEFAULT_PROBE_SET,
+        "source": spec.question_source(theme, probe_set),
+        "unavailable": unavailable(spec),
+        "add": _case_add_kind(spec),
+        "cases": [_case_view(item, probe_ids) for item in items],
+    }
+
+
+class MetricCaseCreate(BaseModel):
+    """A test case added from a metric's Test cases list (fields per store)."""
+    target_id: int | None = None
+    question: str = Field(default="", max_length=4000)
+    expected_answer: str = Field(default="", max_length=4000)
+    context: list[str] = Field(default_factory=list, max_length=20)
+    expected_tools: list[str] = Field(default_factory=list, max_length=20)
+    name: str = Field(default="", max_length=200)
+    user_turns: list[str] = Field(default_factory=list, max_length=20)
+    chatbot_role: str = Field(default="", max_length=500)
+
+
+@app.post("/api/metrics/{key}/cases")
+def api_add_metric_case(key: str, body: MetricCaseCreate):
+    """Adds a test case where this metric reads its cases: a golden in the
+    chatbot's theme, a probe in its probe set, or a conversation scenario."""
+    spec, (theme, persona, probe_set, _unavailable) = _cases_scope(key, body.target_id)
+    kind = _case_add_kind(spec)
+    question = body.question.strip()
+    if kind == "probe":
+        if not question:
+            raise HTTPException(status_code=400, detail="a test case needs a question")
+        try:
+            row = probes_store.add_probe({"metric": spec.key, "question": question,
+                                          "set": probe_set or probes_store.DEFAULT_PROBE_SET})
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return _case_view(row, {row["id"]})
+    if kind == "conversation":
+        turns = [t.strip() for t in body.user_turns if t.strip()]
+        if not turns:
+            raise HTTPException(status_code=400, detail="a scenario needs at least one user turn")
+        role = body.chatbot_role.strip() or persona.strip()
+        if spec.dataset_name == "conversations_with_role" and not role:
+            raise HTTPException(status_code=400, detail="this metric needs the chatbot's role")
+        # A theme without scenarios runs ones built from its goldens: keep them
+        # once the first scenario of its own is added (it would hide them).
+        if not conversations_store.load_conversations(theme=theme):
+            goldens = [g for g in goldens_store.load_goldens(theme=theme) if g.get("status") != "draft"]
+            for row in conversations_store.from_goldens(goldens, theme, persona):
+                conversations_store.add_conversation(row)
+        row = conversations_store.add_conversation({
+            "theme": theme, "name": body.name.strip() or turns[0][:60], "scenario": "",
+            "chatbot_role": role, "expected_outcome": body.expected_answer.strip(), "user_turns": turns,
+        })
+        return _case_view(row, set())
+    if kind == "golden":
+        expected = body.expected_answer.strip()
+        context = [c.strip() for c in body.context if c.strip()]
+        tools = [t.strip() for t in body.expected_tools if t.strip()]
+        if not question or not expected:
+            raise HTTPException(status_code=400, detail="a test case needs a question and an expected answer")
+        if spec.dataset_name == "goldens_with_context" and not context:
+            raise HTTPException(status_code=400, detail="this metric needs context (the facts the reply should rest on)")
+        if spec.dataset_name == "goldens_with_tools" and not tools:
+            raise HTTPException(status_code=400, detail="this metric needs the tools the chatbot should call")
+        if spec.dataset_name == "goldens_without_context":
+            context = []
+        row = goldens_store.add_golden(theme, question, expected, context, extra={"expected_tools": tools})
+        return _case_view(row, set())
+    raise HTTPException(status_code=400, detail=f"test cases cannot be added to {spec.title}")
+
+
+@app.delete("/api/metrics/{key}/cases/{case_id}")
+def api_delete_metric_case(key: str, case_id: str, target_id: int | None = None):
+    """Deletes one of this metric's test cases from its store. A golden is
+    shared: every metric that reads the golden set loses it too."""
+    spec, (theme, persona, probe_set, _unavailable) = _cases_scope(key, target_id)
+    kind = _case_add_kind(spec)
+    if kind == "conversation" and case_id.startswith("auto_"):
+        # Built from the goldens, not stored: save the others so this one stays gone.
+        goldens = [g for g in goldens_store.load_goldens(theme=theme) if g.get("status") != "draft"]
+        built = conversations_store.from_goldens(goldens, theme, persona)
+        if case_id not in {row["id"] for row in built}:
+            raise HTTPException(status_code=404, detail="test case not found")
+        for row in built:
+            if row["id"] != case_id:
+                conversations_store.add_conversation(row)
+        return {"deleted": case_id}
+    if kind == "conversation":
+        delete = conversations_store.delete_conversation
+    # Safety probes send probes, then the goldens: the id says which store holds it.
+    elif kind == "probe" and case_id in _probe_ids(spec, probe_set):
+        delete = probes_store.delete_probe
+    elif kind == "golden" or spec.dataset_name == "safety_probes":
+        delete = goldens_store.delete_golden
+    elif kind == "probe":
+        raise HTTPException(status_code=404, detail="test case not found")
+    else:
+        raise HTTPException(status_code=400, detail=f"test cases cannot be deleted from {spec.title}")
+    if not delete(case_id):
+        raise HTTPException(status_code=404, detail="test case not found")
+    return {"deleted": case_id}
+
+
 @app.post("/api/run")
 def api_run(req: RunRequest):
     row = _target_or_404(req.target_id)
     spec = get_spec(req.metric_key)
     if spec is None:
         raise HTTPException(status_code=404, detail="metric not found")
-    target = _client_or_400(row)
+    target = _client_or_400(row)  # an MCP server starts only when first used
     try:
         judge = build_judge(**_judge_overrides())
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
+    spec = _spec_for_target(spec, target)
     theme = row["config"].get("theme") or DEFAULT_THEME
 
     def on_progress(done: int, total: int, phase: str, question: str) -> None:
@@ -1638,13 +2326,14 @@ def api_run(req: RunRequest):
                 spec, judge, target, req.target_id, _conn, theme=theme, threshold=req.threshold,
                 on_progress=on_progress, persona=row["config"].get("persona", ""), limit=req.limit,
                 probe_set=row["config"].get("probe_set", ""), check_consistency=req.check_consistency,
-                metric_kwargs=metric_options(spec, req.settings, row["config"]),
+                metric_kwargs=metric_options(spec, req.settings, _runtime_config(row)),
                 enhancements=req.enhancements, enhancement_options=req.enhancement_options,
                 max_latency_s=req.max_latency_s, price_per_mtok=_judge_price(),
                 calibration_examples=_calibration_examples(req.target_id, req.metric_key)
                 if req.use_calibration else None,
             )
     finally:
+        _close_client(target)
         if req.run_id:
             with _progress_lock:
                 _progress.pop(req.run_id, None)
@@ -1684,7 +2373,8 @@ class JobCreate(BaseModel):
     check_consistency: bool = False
     # Per metric key: that metric's tunable settings ({"turn_relevancy": {"window_size": 5}}).
     settings: dict[str, dict] = Field(default_factory=dict)
-    enhancements: list[str] = Field(default_factory=list, max_length=10)
+    # Every enhancer may be ticked at once (the app's own + DeepTeam's attacks).
+    enhancements: list[str] = Field(default_factory=list, max_length=MAX_ENHANCEMENTS)
     enhancement_options: dict = Field(default_factory=dict)
     # Fail the run when 95% of chatbot replies are not back within this many seconds.
     max_latency_s: float | None = Field(default=None, gt=0, le=600)
@@ -1719,7 +2409,7 @@ def api_create_job(body: JobCreate):
         build_judge(**_judge_overrides())
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
-    theme, persona, probe_set, unavailable = _availability(target["config"])
+    theme, persona, probe_set, unavailable = _availability(_runtime_config(target))
     runnable, skipped = [], []
     for key in body.metric_keys:
         spec = get_spec(key)
@@ -1777,7 +2467,31 @@ def api_get_scan(job_id: int):
     scan = scan_history.get_scan(_conn, job_id)
     if scan is None:
         raise HTTPException(status_code=404, detail="scan not found")
-    return scan
+    # Set once the run was sent to Langfuse: {trace_id, url, sent_at} or {error}.
+    job = storage.get_job(_conn, job_id)
+    return {**scan, "langfuse": ((job or {}).get("options") or {}).get("langfuse")}
+
+
+@app.get("/api/scans/{job_id}/security")
+def api_scan_security(job_id: int):
+    """The DeepTeam vulnerability report of THIS scan (risk categories and OWASP
+    ids, from the scan's own results), not the chatbot's latest runs."""
+    scan = scan_history.get_scan(_conn, job_id)
+    if scan is None:
+        raise HTTPException(status_code=404, detail="scan not found")
+    # coverage_report reads storage run rows; a scan's results carry the same
+    # fields under slightly different names.
+    runs = []
+    for result in scan.get("results") or []:
+        runs.append({
+            "metric_key": result.get("key"),
+            "score": result.get("score"),
+            "passed": bool(result.get("status") == "pass"),
+            "ts": scan.get("finished_at") or "",
+            "result_json": json.dumps({"rows": result.get("rows") or [],
+                                       "by_enhancement": result.get("by_enhancement")}),
+        })
+    return coverage_report(runs, {s.key: s.title for s in all_specs()})
 
 
 @app.get("/api/scans/{job_id}/compare")
@@ -1878,6 +2592,8 @@ def api_chat(req: ChatRequest):
         reply = target.chat(req.message, history=history)
     except Exception as e:  # noqa: BLE001 - any chatbot failure is a bad gateway here
         raise HTTPException(status_code=502, detail=f"{type(e).__name__}: {e}") from e
+    finally:
+        _close_client(target)
     return {"reply": reply.reply, "model": reply.model, "mode": reply.mode}
 
 
@@ -1949,6 +2665,21 @@ def api_list_enhancers():
                       for key, (label, uses_judge) in attack_enhancers.ENHANCERS.items()],
         "many_shot_counts": list(attack_enhancers.MANY_SHOT_COUNTS),
         "languages": list(attack_enhancers.LANGUAGES),
+        # Multi-turn Jailbreak's attack strategies (DeepTeam's multi-turn attacks).
+        "strategies": [{"key": k, "label": v} for k, v in ATTACK_STRATEGIES.items()],
+    }
+
+
+@app.get("/api/security/frameworks")
+def api_security_frameworks():
+    """OWASP LLM Top 10 2025, OWASP Agentic Top 10 2026 and OWASP MCP Top 10 2025:
+    the metrics that test each risk, and which DeepTeam release they come from."""
+    catalog = deepteam_sync.load_catalog()
+    return {
+        "frameworks": security_frameworks(),
+        "deepteam": {"version": catalog.get("deepteam_version", ""), "built_at": catalog.get("built_at", ""),
+                     "installed": deepteam_sync.installed_version(),
+                     "metrics": len(probes_store.DEEPTEAM_METRICS)},
     }
 
 
@@ -2006,6 +2737,8 @@ def api_simulate(body: SimulateRequest):
         result = simulator.simulate(judge, target, scenario, body.max_turns)
     except Exception as e:  # noqa: BLE001 - the chatbot or the judge failed mid-conversation
         raise HTTPException(status_code=502, detail=f"{type(e).__name__}: {e}") from e
+    finally:
+        _close_client(target)
     if not result["turns"]:
         raise HTTPException(status_code=502, detail="the simulated user wrote no message")
     result["scores"] = [simulator.score_conversation(s, judge, scenario, result["turns"],
@@ -2026,6 +2759,9 @@ def api_export_suite(target_id: int, metrics: str = "", env: str = "pr"):
     this chatbot's goldens with the environment's thresholds. Header values are
     left out (see backend/export_suite.py)."""
     row = _target_or_404(target_id)
+    if row["type"] != "http":
+        raise HTTPException(status_code=400, detail="The exported suite replays the chatbot's HTTP request; "
+                                                    "an MCP server cannot be exported yet.")
     if env not in ENVIRONMENTS:
         raise HTTPException(status_code=400, detail=f"env must be one of: {', '.join(ENVIRONMENTS)}")
     keys = [k for k in metrics.split(",") if k.strip()]
@@ -2108,3 +2844,12 @@ def api_delete_label(label_id: int):
     if not storage.delete_label(_conn, label_id):
         raise HTTPException(status_code=404, detail="label not found")
     return {"deleted": label_id}
+
+
+# Daily "latest" red-team probes: on start, a background thread has the judge
+# write 10 probes per probe metric from OWASP (LLM / Agentic / MCP / RAG) and
+# DeepTeam standards when the last refresh is over a day old
+# (backend/datasets/probe_refresh.py). The app does not wait for it; offline or
+# without a judge key the shipped probes are used. JUDGE_PROBE_REFRESH=0 = off.
+# Last in the module: the thread may start at once and needs _judge_overrides.
+probe_refresh.start_on_boot(lambda: build_judge(**_judge_overrides()), lambda days: storage.recent_metric_keys(_conn, days))

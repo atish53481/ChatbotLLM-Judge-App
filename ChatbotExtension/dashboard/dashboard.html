@@ -30,12 +30,14 @@
         </select>
       </label>
       <label>Parallel metrics <select id="parallel-metrics"></select></label>
+      <label class="check-toggle" title="Off: scores, trend and Details count only this session's runs (each side panel load starts a new session). On: every stored run counts, here, in the side panel's Latest scores and in the report. Scan history always lists every scan."><input id="show-all-runs" type="checkbox"> Show earlier runs</label>
       <label>Judge model <input id="judge-model" readonly title="Change it in the side panel's Judge settings"></label>
       <div class="segmented view-switch" role="group" aria-label="Dashboard view">
         <button type="button" data-view="judge" aria-pressed="true">Judge</button>
         <button type="button" data-view="history" aria-pressed="false">History</button>
       </div>
       <button id="refresh-status" type="button" class="ghost">Refresh status</button>
+  <button id="reset-page" type="button" class="ghost" title="Start a fresh session: scores, cards and trend reset (every run stays in History); filters and views go back to their defaults">Reset</button>
       <button id="advanced-button" type="button" class="ghost" title="Custom metrics, A/B tests, run comparison, red-team coverage, simulation, calibration and CI export">Advanced tools</button>
       <a id="regressions-link" class="ghost button-link" href="../regressions/regressions.html" target="_blank" rel="noopener" title="Compare this chatbot's two newest scans test case by test case: what broke and what got better since the last change">⇄ Regressions</a>
       <button id="report-button" type="button" class="ghost" title="Open a printable report of every metric's latest run for this chatbot, pick what to include, then Save as PDF">Download report (PDF)</button>

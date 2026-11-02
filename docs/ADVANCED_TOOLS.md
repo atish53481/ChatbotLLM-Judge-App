@@ -11,14 +11,25 @@ several times per question.
 Nothing here is on until you save it, and with everything off runs behave as before.
 
 1. **Metric settings**: Turn Relevancy window (how many earlier turns the judge reads),
-   Self-Check replies per question, Multi-turn Jailbreak attack turns.
+   Self-Check replies per question, Multi-turn Jailbreak attack turns, and each DeepTeam
+   metric's **Scorer**: the app's rubric (a 0–1 score, the default) or DeepTeam's own
+   (pass/fail per case, with DeepTeam's own judging prompts; your calibration labels are used
+   by both). DeepTeam passes any reply that apologises without looking at tool calls, so for an
+   agent the app's rubric re-checks those cases: apologising but still running the tool fails.
 2. **Chatbot instructions**: paste the chatbot's rules, one per line (e.g. "Answer in
    English", "Never promise delivery dates") and press **Save instructions**. Prompt
    Alignment checks each one; without them that metric shows as unavailable.
 3. **Red-team attack enhancers**: tick disguises (Base64, ROT13, leetspeak, role-play,
-   injection wrapper, math puzzle, many-shot, other language). Every security probe is then
-   also sent in each disguise. Each one adds a chatbot call per probe; Multilingual also asks
-   the judge to translate.
+   injection wrapper, math puzzle, many-shot, other language, and DeepTeam's attacks marked
+   "(DeepTeam)": authority / permission escalation, emotional manipulation, context flooding /
+   poisoning, system override, character stream, embedded JSON, adversarial poetry, gray box,
+   goal redirection, input bypass, linguistic confusion, prompt probing, synthetic context
+   injection). Every security probe is then also sent in each disguise. Each one adds a chatbot
+   call per probe; those marked "uses the judge" also ask the judge to rewrite the probe.
+   Multi-turn Jailbreak's **Attack strategy** picks DeepTeam's multi-turn attack: linear
+   (default), crescendo, tree, sequential break or Bad Likert Judge. When the judge cannot write
+   a DeepTeam disguise for a probe (it failed or declined), that disguise is not sent; the probe
+   itself still runs and the run's note says how many disguises were left out.
 4. **Performance and cost**: a latency limit in seconds (a run fails when 95% of replies are
    slower), the judge's price per million tokens (each run then shows its cost), and
    **Give the judge my calibration labels** (see Calibrate the judge).
@@ -53,9 +64,14 @@ listed below.
 
 ## Red-team coverage
 
-Read-only: the latest result of every security and safety metric by risk category and
-OWASP LLM Top 10 id. "not run" means untested, not safe; run the Security metrics from the
-dashboard to fill it.
+The latest result of every security and safety metric by OWASP list (Top 10 for LLM
+Applications 2025, Top 10 for Agentic Applications 2026, MCP Top 10 2025) and by risk
+category. Each OWASP id lists the metrics that test it; **Tick these** (or **Tick all its
+metrics**) ticks them in the side panel's Metrics to run. The line above shows which DeepTeam
+release the metrics come from. Ids marked "partly testable from the chat" (supply chain, data
+poisoning, unbounded consumption, cascading failures, audit logs, shadow MCP servers) can only be
+checked in part by talking to the bot: a good score there is not full coverage. "not run" means untested, not safe; run the Security metrics
+from the dashboard to fill it.
 
 ## Simulate a user
 
@@ -87,4 +103,8 @@ Choose which environment's thresholds to use and tick the metrics, then **Downlo
 questions, metrics and a pytest file, `.github/workflows/llm-evals.yml` runs it on every
 pull request. Add the repository secrets `JUDGE_API_KEY` and `LLM_EVAL_HEADERS` (the
 chatbot's headers as JSON, e.g. `{"Authorization": "Bearer ..."}`); header values are
-never in the zip. `tests/evals/README.md` lists what was left out and why.
+never in the zip. `tests/evals/README.md` lists what was left out and why. Security metrics
+export with their probes (`tests/evals/probes.json`: what this chatbot's probe set sends, with its
+role as context) and run as `test_red_team`; Bias and Toxicity send their adversarial probes
+first, then the goldens, as in the app; the multi-turn attack and attack enhancers stay in
+the app.

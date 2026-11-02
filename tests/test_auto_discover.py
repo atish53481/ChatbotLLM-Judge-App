@@ -3,7 +3,7 @@ metrics they make runnable are queued as one follow-up scan."""
 import json
 from unittest.mock import MagicMock, patch
 
-from tests.test_app import _create_target, _fake_spec, app_module, client  # noqa: F401 - fixtures
+from tests.test_app import BOT_CONFIG, _create_target, _fake_spec, app_module, client  # noqa: F401 - fixtures
 
 _AGENT_REPLY = json.dumps({
     "reply": "Order 123 ships tomorrow.",
@@ -19,7 +19,7 @@ def _response(text):
     return resp
 
 
-def _scan(client, app_module, target, reply_text):
+def _scan(client, app_module, target, reply_text, keys=("answer_relevancy",)):
     """Runs one queued scan of a fake metric against a chatbot answering reply_text."""
     # The app database is shared by the session: drop jobs earlier tests left queued.
     app_module._conn.execute("UPDATE jobs SET status = 'cancelled' WHERE status = 'queued'")
@@ -27,7 +27,7 @@ def _scan(client, app_module, target, reply_text):
     with patch.object(app_module, "build_judge", return_value=object()), \
          patch.object(app_module, "SPECS_BY_KEY", {"answer_relevancy": _fake_spec([])}), \
          patch("backend.targets.http_client.requests.request", return_value=_response(reply_text)):
-        job_id = client.post("/api/jobs", json={"target_id": target["id"], "metric_keys": ["answer_relevancy"],
+        job_id = client.post("/api/jobs", json={"target_id": target["id"], "metric_keys": list(keys),
                                                "limit": 2, "thresholds": {"answer_relevancy": 0.6}}).json()["job_id"]
         assert app_module.jobs.process_next()
     return job_id
@@ -97,3 +97,36 @@ def test_a_path_is_saved_once_and_not_re_queued(client, app_module):
     assert app_module.jobs.cancel(follow_up["id"])
     _scan(client, app_module, target, _AGENT_REPLY)  # the path is saved now: nothing new found
     assert _queued(client, target) == []
+
+
+def test_saving_the_chatbot_form_keeps_a_found_path(client, app_module):
+    target = _create_target(client)
+    _scan(client, app_module, target, _AGENT_REPLY)
+    [follow_up] = _queued(client, target)
+    assert app_module.jobs.cancel(follow_up["id"])
+    # The side panel's form, loaded before the scan or refilled by a pasted cURL,
+    # sends the path fields empty: saving it keeps the path the scan found.
+    blank = {**BOT_CONFIG, "tools_path": "", "context_path": ""}
+    r = client.put(f"/api/targets/{target['id']}", json={"name": "Support bot", "type": "http", "config": blank})
+    assert r.status_code == 200, r.text
+    assert r.json()["config"]["tools_path"] == "tool_calls"
+    _scan(client, app_module, target, _AGENT_REPLY)  # still saved: no second follow-up scan
+    assert _queued(client, target) == []
+    # A path typed in the form still replaces it.
+    typed = {**BOT_CONFIG, "tools_path": "steps"}
+    r = client.put(f"/api/targets/{target['id']}", json={"name": "Support bot", "type": "http", "config": typed})
+    assert r.json()["config"]["tools_path"] == "steps"
+
+
+def test_follow_up_scan_does_not_inherit_the_first_scans_skips(client, app_module):
+    target = _create_target(client)
+    # Argument Correctness cannot run before tool calls are found: the scan keeps it as skipped.
+    job_id = _scan(client, app_module, target, _AGENT_REPLY, keys=("answer_relevancy", "argument_correctness"))
+    first = client.get(f"/api/jobs/{job_id}").json()["options"]
+    assert [s["key"] for s in first["skipped"]] == ["argument_correctness"]
+    [follow_up] = _queued(client, target)
+    assert "argument_correctness" in follow_up["metric_keys"]
+    # The follow-up runs those metrics, so it must not list them as not run (nor
+    # carry the first scan's Confident AI upload).
+    assert "skipped" not in follow_up["options"]
+    assert "confident" not in follow_up["options"]

@@ -18,6 +18,9 @@ node_modules/
 backend/datasets/goldens.json
 backend/datasets/conversations.json
 backend/datasets/security_probes.json
+backend/datasets/security_probes.latest.json
+backend/datasets/deepteam_catalog.json
+backend/datasets/security_probes.target_*.json
 
 # Runtime uploads (reference documents for golden generation) and local screenshots
 backend/datasets/documents/
@@ -31,3 +34,6 @@ logs/
 
 # The user's own metrics (G-Eval / DAG), seeded from custom_metrics.default.json.
 backend/datasets/custom_metrics.json
+
+# Local stamp of the docs hook (python .claude/hooks/docs_guard.py --ack).
+.claude/docs-reviewed

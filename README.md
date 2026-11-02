@@ -5,6 +5,9 @@ metrics from a web app. A local FastAPI backend scores the answers with a
 separate judge model and serves the app, which shows the scores, the trend across
 runs, and a chat window for the chatbot being judged.
 
+**How it works:** [LLM Judge Workflow](https://claude.ai/artifact/JxkuyFH5iLH8ZdzoszZ4Qv) shows the whole flow as diagrams;
+[docs/WORKFLOW.md](docs/WORKFLOW.md) is the text version. Both are kept current with the code.
+
 ## Quick start (Windows)
 
 1. Copy `.env.example` to `.env` and set `JUDGE_API_KEY` (a Groq key works with the
@@ -38,6 +41,18 @@ Captured requests often carry session cookies or CSRF tokens that expire; when t
 chatbot starts answering 401/403, capture a fresh request and paste it again.
 
 ### Judge another LLM
+
+**An MCP server** (tools, no chat): in *Add a chatbot* pick **MCP server**, give a local command
+(stdio, e.g. `python my_server.py`) or a streamable HTTP URL, put keys in environment variables or
+headers (never in the arguments), and press **Test & list tools**. The app plays the agent: an
+**Agent model** (a model on your judge's provider) picks a tool for each test message; left empty,
+the judge model does it and the run says so. Agent and security metrics then score what the tools did.
+
+**Test data for every metric**: after saving any chatbot the panel asks "Build test data for every
+metric with AI?". Yes interviews the chatbot (or reads the MCP server's tools), reads its help pages,
+and has the judge write golden answers, scenarios, Context goldens, tool tests and security probes
+fitted to it, then lists any metric that still has no test case and why. **Build all test data**
+runs it again later and only fills what is missing. It uses judge tokens.
 
 If what you want to score is itself a model with an OpenAI-compatible chat API
 (OpenAI, Groq, a local Ollama or LM Studio, your Command Code provider, …) there is
@@ -79,7 +94,8 @@ logged in; the task just means the backend is always there when you are.
 - `tests/` — pytest suite.
 - `ChatbotExtension/` — the web app's pages (side panel, dashboard, report,
   Advanced tools), served by the backend at `/app/`.
-- `docs/superpowers/` — design spec and implementation plan.
+- `docs/` — `WORKFLOW.md` (how the app works; diagrams in `workflow.html`, published at the
+  link above), `ADVANCED_TOOLS.md`, and design specs and plans in `superpowers/`.
 
 ## Configuration (.env)
 
@@ -91,6 +107,8 @@ logged in; the task just means the backend is always there when you are.
 | `JUDGE_DB_PATH` | `judge.db` | SQLite file for chatbots and run history |
 | `JUDGE_LOG_LEVEL` | `INFO` | backend log level (logs paths and status codes, never bodies) |
 | `JUDGE_MAX_BODY_MB` | `25` | largest request body accepted (document uploads) |
+| `JUDGE_CONCURRENCY` | `4` | judge calls and test cases in flight across all runs (1–16) |
+| `JUDGE_METRIC_CONCURRENCY` | `2` | metrics of one scan run side by side (1–8); the web app's **Parallel metrics** overrides it per scan |
 
 The judge is never the chatbot being judged.
 
@@ -101,21 +119,24 @@ characters); **Remove saved key** goes back to the `.env` key.
 
 ## Metrics
 
-31 DeepEval metrics in six groups, plus your own (`backend/metrics_catalog.py`):
+76 DeepEval metrics in eight groups (32 of them DeepTeam red-team vulnerabilities), plus your own (`backend/metrics_catalog.py`;
+[docs/WORKFLOW.md](docs/WORKFLOW.md#12-metric-catalog) lists the dataset each one reads):
 
-| Group | Metrics (default threshold) |
+| Group | Metrics |
 |---|---|
-| Chatbot · safety | Bias ≤ 0.5, Toxicity ≤ 0.5, PII Leakage ≤ 0.1, No-Prompt-Leak (G-Eval) ≥ 0.7 |
-| Chatbot · conversational (multi-turn) | Conversation Completeness ≥ 0.7, Knowledge Retention ≥ 0.7, Role Adherence ≥ 0.7, Turn Relevancy ≥ 0.7 (window size setting) |
-| RAG · retrieval | Contextual Precision ≥ 0.7, Contextual Recall ≥ 0.7, Contextual Relevancy ≥ 0.7 |
-| RAG · quality + Chatbot | Faithfulness ≥ 0.8, Answer Relevancy ≥ 0.7, Hallucination ≤ 0.5, Correctness (G-Eval) ≥ 0.7, Summarization ≥ 0.6, Prompt Alignment ≥ 0.7 (needs the chatbot's instructions), Robustness (G-Eval) ≥ 0.7, Self-Check Consistency (G-Eval) ≥ 0.7 |
-| RAG · G-Eval | Citation Quality ≥ 0.7, Helpfulness ≥ 0.7 |
-| Security · red team (G-Eval) | Prompt Injection, Jailbreak, Encoded Injection, Data Exfiltration, Social Engineering, Domain Misuse, Non-Advice, Role Violation, Harmful Content, Multi-turn Jailbreak — all ≥ 0.7 |
-| Custom · your own metrics | G-Eval rubrics and DAG decision trees you write in **Advanced tools** |
+| Quality | Faithfulness, Answer Relevancy, Hallucination, Summarization, Prompt Alignment (the chatbot's rules), Robustness (G-Eval), Self-Check Consistency (G-Eval) |
+| Retrieval | Contextual Precision, Contextual Recall, Contextual Relevancy |
+| Safety | Bias, Toxicity, PII Leakage |
+| Security · red team | Prompt Injection, Jailbreak, Encoded Injection, Data Exfiltration, Social Engineering, Domain Misuse, Non-Advice, Role Violation, Harmful Content, Multi-turn Jailbreak |
+| G-Eval | Correctness, Helpfulness, Citation Quality, No-Prompt-Leak |
+| Conversational (multi-turn) | Conversation Completeness, Knowledge Retention, Role Adherence, Turn Relevancy (window size setting), Turn Faithfulness, Turn Contextual Precision / Recall / Relevancy |
+| Agent · tool calls | Task Completion, Tool Correctness, Argument Correctness, Plan Quality, Plan Adherence, Step Efficiency |
+| Text match (no judge) | BLEU, ROUGE-L, Exact Match |
+| Your own | G-Eval rubrics (single- or multi-turn, made in the side panel's G-Eval group or on **Advanced tools**) and DAG decision trees |
 
-Scores run from 0 to 1. **≥** metrics are higher-is-better. **≤** metrics (Hallucination,
-Bias, Toxicity, PII Leakage) are shown as a violation rate, lower is better; DeepEval 4
-scores them 1 = clean, so the app shows 1 − score and passes it the matching minimum.
+Scores run from 0 to 1 and every shipped metric is higher-is-better: DeepEval 4 scores
+Hallucination, Bias, Toxicity and PII Leakage 1 = clean. Only metrics you make as a
+violation rate are lower-is-better (**≤**).
 
 In the side panel, **Metrics to run** lists every metric with a tick box (a group tick
 selects the whole group) and its threshold; **Run judge** runs the ticked ones. Every
@@ -153,9 +174,34 @@ own, add a line there (shipped, survives resets) or `POST /api/security-probes` 
 session only). **Harmful Content** asks for dangerous help (weapons, drugs, malware,
 fraud, self-harm) and passes only when the bot refuses without any actionable steps.
 
+**DeepTeam.** The app also runs every vulnerability of
+[DeepTeam](https://github.com/confident-ai/deepteam) (Confident AI's red-teaming
+framework) that it had no metric for: 32 more Security metrics in deepteam 1.0.10 (BFLA,
+BOLA, RBAC, SSRF, SQL / Shell Injection, Debug Access, System Reconnaissance, Cross-Context
+Retrieval, Indirect Instruction, Tool Metadata Poisoning, Tool Orchestration Abuse, Goal
+Theft, Recursive Hijacking, Excessive Agency, Agent Identity Abuse, Inter-Agent
+Communication, Autonomous Agent Drift, Exploit Tool Agent, External System Abuse,
+Unexpected Code Execution, Illegal Activity, Graphic Content, Personal Safety, Child
+Protection, Ethics, Fairness, Competition, Intellectual Property, Misinformation,
+Hallucination and Robustness attacks). Their test cases are DeepTeam's own template
+examples (up to 10 per metric, labelled with the DeepTeam version and subtype). `deepteam`
+is in `requirements.txt`, so every start upgrades it, and when a newer release is installed
+the backend reads it again: new vulnerabilities become metrics and new examples become test
+cases (`JUDGE_DEEPTEAM_SYNC=0` turns that off; deepteam's telemetry is always switched off).
+They are not ticked by default: tick them in **Metrics to run**, or use **Tick these** next to
+an OWASP id under Advanced tools → Red-team coverage, which maps every metric to OWASP Top 10
+for LLM Applications 2025 (LLM01–10), OWASP Top 10 for Agentic Applications 2026
+(ASI01–10) and OWASP MCP Top 10 2025 (MCP01–10). The PDF report adds an **OWASP coverage**
+section: each risk the reported security metrics test, with how many attacks were resisted,
+and the risks nothing tested; risks that chatting with the bot can only partly check are marked
+"partly testable from the chat". Each DeepTeam metric can also be scored by DeepTeam's own judge
+(Advanced tools → Run options → Scorer; pass/fail per case). For an agent whose tool calls the app
+can read (**Tool calls path**), the security metrics also judge the tools it called, so an agent
+that refuses in words but still runs the tool fails. Red-team metrics export to CI with their probes.
+
 Security metrics send the red-team probes from that file — pick **Generic** (any assistant, the default) or **E-commerce** (orders, refunds) under the target's **Security probes**; set the target's **Chatbot role** in the side panel so Domain Misuse, Non-Advice and Role Violation know what the bot is meant to be.
 
-The dashboard header picks the target, **Cases per run** (1 / 3 / 5 / all) and runs every visible card with **Run all visible**. Tiles show chatbot, RAG-context and judge status, **Tokens used** (judge tokens and calls since the backend started), the **Average score** of the shown cards (lower-is-better metrics counted as 1 − score), and pass / fail / pending.
+The dashboard header picks the target, **Run mode** (1, 2, 3 or 5 cases per metric, or all) and **Parallel metrics**, and **Run all visible** runs every visible card as one background scan. Each page load starts a fresh session (scores start empty, every run stays in History); tick **Show earlier runs** in the dashboard header or the report's options to count every stored run again. Tiles show chatbot, RAG-context and judge status, **Tokens used** (judge tokens and calls since the backend started), the **Average score** of the shown cards (lower-is-better metrics counted as 1 − score), and pass / fail / pending.
 
 The dashboard shows, per metric, what it **scores on** (question, actual result, expected
 result, context, retrieved context, conversation) and the G-Eval criteria; **Details** lists
@@ -183,8 +229,9 @@ step-by-step instructions are in [docs/ADVANCED_TOOLS.md](docs/ADVANCED_TOOLS.md
 - **Compare runs**: two runs of one metric case by case: regressions, fixes, score moves.
 - **A/B test**: two chatbots answer the same goldens; the judge picks the better reply
   twice with the order swapped, and only a consistent preference counts (else a tie).
-- **Red-team coverage**: latest results by risk category (Responsible AI, Illegal
-  Activities, Brand Image, Data Privacy, Unauthorized Access) and OWASP LLM Top 10 id.
+- **Red-team coverage**: latest results by OWASP list (LLM01–10, Agentic ASI01–10, MCP01–10;
+  **Tick these** ticks an id's metrics) and by risk category (Responsible AI, Illegal
+  Activities, Brand Image, Data Privacy, Unauthorized Access, Agentic).
 - **Simulate a user**: the judge plays a user with a goal against the real chatbot, then
   conversational metrics score it; save the conversation as a fixed scenario.
 - **Generate & review**: golden generation from a help page or a file with DeepEval evolutions,
@@ -199,10 +246,10 @@ step-by-step instructions are in [docs/ADVANCED_TOOLS.md](docs/ADVANCED_TOOLS.md
 Each chatbot's form has **Limits and reply checks**, so one run cannot quietly
 record scores that mean nothing:
 
-- **Service messages are errors, not answers.** A short reply such as "daily limit
-  reached", "please log in", "session expired" or an empty reply stops the run with
-  an error and records nothing. Untick *Treat service messages as errors* only if
-  the chatbot's real answers look like that.
+- **Service messages as errors (opt-in).** Off by default: like DeepEval, every reply
+  is scored as it is. Tick *Treat service messages as errors* and a short reply such
+  as "daily limit reached", "please log in", "session expired" or an empty reply
+  stops the run with an error and records nothing.
 - **Max message length.** Messages longer than this are not sent: Summarization
   shortens its source to fit, other cases are skipped, and the result's note says
   how many.
@@ -241,6 +288,16 @@ backend jobs: closing the page does not stop them, and reopening it shows the li
 progress. If no notification appears, allow it when the browser asks, and check
 that Windows allows your browser under Settings → System → Notifications (and
 Focus assist / Do not disturb).
+
+## Tracing in Langfuse (optional)
+
+Save a Langfuse public and secret key (and your host, if you run Langfuse yourself; Langfuse
+Cloud is the default) in the side panel's **Langfuse** card, or set `LANGFUSE_PUBLIC_KEY`,
+`LANGFUSE_SECRET_KEY` and `LANGFUSE_HOST` in `.env`. Each finished scan can then be sent as one
+trace: a span per metric, a span per test case with the message sent, the reply and the
+judge's score and reason. Keys saved in the card turn auto-send on; with keys only in `.env`,
+switch Auto-send on in the card. The runs Overview has **Send to Langfuse** / **View in Langfuse**.
+Without keys nothing is sent; keys and chatbot headers never are.
 
 ## Details and the PDF report
 

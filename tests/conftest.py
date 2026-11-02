@@ -9,6 +9,9 @@ import pytest
 os.environ.setdefault("DEEPEVAL_TELEMETRY_OPT_OUT", "1")
 # Tests must not append to the real logs/traffic-*.log.
 os.environ["JUDGE_TRAFFIC_FILE"] = ""
+# Nor fetch standards and spend judge tokens on the daily probe refresh.
+os.environ["JUDGE_PROBE_REFRESH"] = "0"
+os.environ["JUDGE_DEEPTEAM_SYNC"] = "0"  # tests use the shipped DeepTeam catalog
 
 FIXTURE_GOLDENS = Path(__file__).parent / "data" / "goldens.json"
 
@@ -64,6 +67,9 @@ def fixed_security_probes(tmp_path, monkeypatch):
 
     monkeypatch.setattr(security_probes, "PROBES_PATH", str(tmp_path / "security_probes.json"))
     monkeypatch.setattr(security_probes, "DEFAULT_PROBES_PATH", str(FIXTURE_PROBES))
+    # The fixture probe set stays exactly as written; DeepTeam's shipped probes
+    # are tested on their own (tests/test_deepteam.py).
+    monkeypatch.setattr(security_probes, "deepteam_defaults", lambda: [])
 
 
 @pytest.fixture(autouse=True)

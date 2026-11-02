@@ -25,6 +25,7 @@ the page; reopening it follows the run again.
 
 ## Use
 
+- **MCP server**: *Add a chatbot* → **MCP server** connects a Model Context Protocol server (a local command or a streamable HTTP URL); **Test & list tools** shows its tools, and an optional **Agent model** picks a tool for each test message. After saving any chatbot the panel offers **Build test data for every metric** (also the **Build all test data** button), which writes goldens, scenarios, tool tests and fitted security probes and lists any metric still without test cases.
 - **Chatbot**: *Add a chatbot* connects a chatbot from a real website. On the site,
   press F12 → Network, send a message, right-click the chat request → Copy →
   **Copy as cURL (bash)** and paste it. The method, URL, headers, body, the message you

@@ -95,10 +95,11 @@ function cases(rows, metric, r) {
       el("th", {}, "Expected"), el("th", { className: "num" }, "Score"), el("th", {}, "Result"), el("th", {}, "Judge's reason"))),
     el("tbody", {}, rows.map((row, i) => {
       const failed = row.passed === false ? failedCaseView(metric, row, r.direction, r.threshold) : null;
+      const spoken = (value) => (typeof value === "string" ? speakerText(value) : value);
       return el("tr", {},
         el("td", { className: "num" }, String(i + 1)),
-        el("td", { className: "text" }, row.input || row.question || ""),
-        el("td", { className: "text" }, (failed && failed.actual) || row.actual_output || ""),
+        el("td", { className: "text" }, speakerText(row.input || row.question || "")),
+        el("td", { className: "text" }, spoken((failed && failed.actual) || row.actual_output || "")),
         el("td", { className: "text" }, (failed && failed.expected) || row.expected_output || "–"),
         el("td", { className: "num" }, formatScore(row.score)),
         statusCell(row.passed === undefined ? null : row.passed ? "pass" : "fail"),
@@ -109,6 +110,23 @@ function cases(rows, metric, r) {
             el("summary", {}, "How to pass"), failed.howToPass) : ""),
       );
     }))));
+}
+
+// Conversation transcripts come as plain text ("User: …\nBot: …"): the speaker
+// labels render bold, so the turns read like a chat.
+function speakerText(text) {
+  const lines = String(text ?? "").split("\n");
+  const parts = [];
+  for (let i = 0; i < lines.length; i++) {
+    const label = lines[i].match(/^(User|Bot):/);
+    if (label) {
+      parts.push(el("span", { className: "speaker" }, label[0]), lines[i].slice(label[0].length));
+    } else {
+      parts.push(lines[i]);
+    }
+    if (i < lines.length - 1) parts.push("\n");
+  }
+  return parts;
 }
 
 function metricSection(r, title, metric) {
@@ -127,6 +145,49 @@ function metricSection(r, title, metric) {
   );
 }
 
+// The DeepTeam vulnerability report of this scan: its red-team results by risk
+// category and OWASP id (backend/redteam_coverage.py, this scan's own results).
+function securitySection(report) {
+  const pct = (rate) => `${Math.round((rate || 0) * 100)}%`;
+  return [
+    el("div", { id: "security" }),
+    el("h2", {}, "Security · DeepTeam vulnerability report"),
+    el("p", { className: "muted" }, "This scan's red-team results by risk category and OWASP id. "
+      + "Untested is not the same as safe; risks marked partly testable live mostly outside the chat."),
+    el("div", { className: "table-scroll" }, el("table", {},
+      el("thead", {}, el("tr", {}, el("th", {}, "Risk category"), el("th", { className: "num" }, "Attacks"),
+        el("th", { className: "num" }, "Resisted"), el("th", {}, "Metrics tested"))),
+      el("tbody", {}, report.categories.map((cat) => el("tr", {},
+        el("td", {}, el("b", {}, cat.label)),
+        el("td", { className: "num" }, String(cat.attacks)),
+        el("td", { className: "num" }, cat.pass_rate === null ? "–" : pct(cat.pass_rate)),
+        el("td", { className: "num" }, `${cat.tested}/${cat.total}`)))))),
+    el("details", { className: "metric" },
+      el("summary", {}, el("b", {}, "By metric")),
+      el("div", { className: "body" },
+        el("ul", {}, ...report.categories.flatMap((cat) => cat.metrics.map((m) => el("li", {},
+          `${m.title}${m.owasp.length ? ` (${m.owasp.join(", ")})` : ""}: `,
+          m.tested
+            ? el("span", { className: m.passed ? "status-pass" : "status-fail" },
+                `${formatScore(m.score)} · ${m.passed ? "resisted" : "gave in"}`)
+            : el("span", { className: "muted" }, "not run in this scan"),
+        )))))),
+    el("details", { className: "metric" },
+      el("summary", {}, el("b", {}, "OWASP lists")),
+      el("div", { className: "body" },
+        ...report.frameworks.map((fw) => [
+          el("p", {}, el("b", {}, fw.label)),
+          el("ul", {}, ...fw.items.map((item) => el("li", {},
+            el("b", {}, `${item.id} ${item.title}`), " · ",
+            item.pass_rate === null
+              ? el("span", { className: "muted" }, `${item.tested}/${item.total} tested`)
+              : el("span", { className: item.pass_rate >= 0.8 ? "status-pass" : "status-fail" },
+                  `${pct(item.pass_rate)} resisted (${item.resisted}/${item.attacks})`),
+            item.partial ? el("span", { className: "muted" }, " · partly testable") : ""))),
+        ]))),
+  ];
+}
+
 async function loadScan() {
   const status = $("scan-status");
   const job = new URLSearchParams(location.search).get("job");
@@ -136,8 +197,9 @@ async function loadScan() {
   }
   try {
     const scan = await api(`/api/scans/${encodeURIComponent(job)}`);
-    const [targets, scans, metrics] = await Promise.all([
+    const [targets, scans, metrics, security] = await Promise.all([
       api("/api/targets"), api(`/api/targets/${scan.target_id}/scans`), api("/api/metrics").catch(() => []),
+      api(`/api/scans/${encodeURIComponent(job)}/security`).catch(() => null),
     ]);
     const chatbot = (targets.find((t) => t.id === scan.target_id) || {}).name || `Chatbot ${scan.target_id}`;
     const titles = new Map(metrics.map((m) => [m.key, m.title]));
@@ -155,6 +217,8 @@ async function loadScan() {
       el("h2", {}, "Details"),
       el("p", { className: "muted" }, "Failed and unscored metrics are open; click any metric to show or hide its cases."),
       ...scan.results.map((r) => metricSection(r, title, byKey.get(r.key))),
+      ...(security ? securitySection(security)
+        : [el("p", { className: "muted" }, "The security report for this scan could not be loaded.")]),
     );
   } catch (error) {
     status.textContent = `Could not load the scan: ${error.message}`;

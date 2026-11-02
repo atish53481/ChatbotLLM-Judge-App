@@ -37,7 +37,7 @@ del "%LAST_GOOD%.new" >nul 2>&1
 "%PY%" -m pytest -m smoke -q -p no:cacheprovider >nul 2>&1
 if errorlevel 1 goto rollback
 echo Packages updated:
-"%PY%" -m pip show deepeval fastapi openai 2>nul | findstr /b /c:"Name:" /c:"Version:"
+"%PY%" -m pip show deepeval deepteam fastapi openai 2>nul | findstr /b /c:"Name:" /c:"Version:"
 exit /b 0
 
 :rollback

@@ -32,7 +32,7 @@ GEVAL_KEYS = {
     "correctness", "helpfulness", "citation_quality", "robustness", "self_check", "no_prompt_leak",
     "prompt_injection", "jailbreak", "encoded_injection", "data_exfiltration", "social_engineering",
     "domain_misuse", "non_advice", "role_violation", "harmful_content", "multi_turn_jailbreak",
-}
+} | {s.key for s in catalog.DEEPTEAM_SPECS}  # one G-Eval per DeepTeam vulnerability
 
 
 @pytest.mark.parametrize("key", sorted(GEVAL_KEYS))

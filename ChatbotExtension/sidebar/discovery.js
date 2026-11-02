@@ -80,6 +80,32 @@
     for (const note of report.notes || []) box.append(el("p", "muted small", note));
   }
 
+  async function fileText(input) {
+    const file = input.files && input.files[0];
+    return file ? file.text() : "";
+  }
+
+  async function helpFileText(targetId) {
+    // PDF/DOCX are binary: the backend extracts their text; other files are text.
+    const file = $("discovery-help-file").files[0];
+    if (!file) return "";
+    const name = file.name.toLowerCase();
+    if (name.endsWith(".pdf") || name.endsWith(".docx")) {
+      const form = new FormData();
+      form.append("file", file);
+      const response = await fetch(`${BACKEND_URL}/api/targets/${targetId}/discovery/extract`, {
+        method: "POST",
+        body: form,
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(data && data.detail ? data.detail : `Could not read ${file.name}`);
+      }
+      return data.text;
+    }
+    return file.text();
+  }
+
   async function run() {
     const target = currentTarget();
     if (!target) return;
@@ -91,9 +117,19 @@
     $("discovery-run").disabled = true;
     status.textContent = "Looking (API docs, request flags, help pages, a few chat messages)…";
     try {
+      const specUrl = $("discovery-spec-url").value.trim();
+      const specText = await fileText($("discovery-spec-file"));
+      const helpText = [await helpFileText(target.id), $("discovery-help-text").value.trim()]
+        .filter(Boolean).join("\n\n");
       const report = await api(`/api/targets/${target.id}/discover`, {
         method: "POST",
-        body: { authorized: true, send_headers: $("discovery-send-headers").checked },
+        body: {
+          authorized: true,
+          send_headers: $("discovery-send-headers").checked,
+          spec_url: specUrl,
+          spec_text: specText,
+          help_text: helpText,
+        },
       });
       target.config.discovery = report;
       render(report);

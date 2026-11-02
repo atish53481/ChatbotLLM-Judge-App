@@ -82,43 +82,83 @@
     </form>
   </details>
 
+  <details id="langfuse-settings" class="card">
+    <summary>Langfuse <span id="langfuse-summary" class="muted small">· optional</span></summary>
+    <form id="langfuse-form" class="stack">
+      <p class="muted small">Optional. With Langfuse keys, each test run also appears in
+        <a href="https://cloud.langfuse.com" target="_blank" rel="noopener">Langfuse</a> (Langfuse Cloud or your own
+        server) as one trace: a span per metric and per test case, with the judge's scores. Without keys the app works
+        as usual and nothing is sent. Sending copies the run's questions, replies, context and the judge's reasons to
+        Langfuse; chatbot keys and cookies are never sent.</p>
+      <label>Public key
+        <input id="langfuse-public-key" autocomplete="off" spellcheck="false" placeholder="pk-lf-…">
+      </label>
+      <label>Secret key
+        <input id="langfuse-secret-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-lf-…">
+      </label>
+      <p id="langfuse-key-hint" class="muted small"></p>
+      <label>Host
+        <input id="langfuse-host" spellcheck="false" maxlength="500" placeholder="https://cloud.langfuse.com">
+      </label>
+      <p class="muted small">Both keys are under Settings → API Keys in your Langfuse project. Host: EU cloud
+        https://cloud.langfuse.com (used when empty), US cloud https://us.cloud.langfuse.com, or your own server's
+        address, e.g. http://localhost:3000.</p>
+      <label class="row small">
+        <input id="langfuse-auto" type="checkbox">
+        <span>Send each finished run automatically (else use "Send latest run")</span>
+      </label>
+      <div class="row">
+        <button type="submit" class="primary">Save</button>
+        <button type="button" id="langfuse-send-latest" title="Send the selected chatbot's latest finished run to Langfuse now">Send latest run</button>
+        <button type="button" id="langfuse-clear-keys" class="small-button hidden" title="Forget the keys saved here">Remove saved keys</button>
+      </div>
+      <p id="langfuse-result" class="small" role="status"></p>
+    </form>
+  </details>
+
   <section class="card" aria-labelledby="chatbot-heading">
     <h2 id="chatbot-heading">Chatbot</h2>
-    <div class="row">
+    <div class="row target-row">
       <label class="grow">
         <span class="sr-only">Chatbot to judge</span>
         <select id="target-select"></select>
       </label>
-      <button id="edit-target" type="button" title="Edit this chatbot">Edit</button>
-      <button id="reset-target-runs" type="button" title="Clear this chatbot's score history (goldens and config stay)">Reset scores</button>
-      <button id="delete-target" type="button" title="Delete this chatbot">Delete</button>
+      <div class="target-actions">
+        <button id="edit-target" type="button" title="Edit this chatbot">Edit</button>
+        <button id="build-testdata" type="button" title="Build test data for every metric with AI. Uses judge tokens.">Build all test data</button>
+        <button id="reset-target-runs" type="button" title="Clear this chatbot's score history (goldens and config stay)">Reset scores</button>
+        <button id="delete-target" type="button" title="Delete this chatbot">Delete</button>
+      </div>
     </div>
     <p id="target-theme" class="muted small"></p>
-    <details id="discovery">
-      <summary>Find missing metric data <span id="discovery-summary" class="muted small"></span></summary>
-      <div class="stack">
-        <p class="muted small">When the cURL alone does not show what some metrics need (the chatbot's rules, its
-          tool calls, its retrieved sources), the app looks for them: the chatbot's API docs (OpenAPI / Swagger), the
-          same request with a debug flag, its help pages and its own answers. At most 20 page fetches and 10 chat
-          messages (its own golden questions first); the judge drafts rules and tools. Nothing is used until you approve it, and whatever is not found
-          is scored black box.</p>
-        <label class="row small">
-          <input id="discovery-authorized" type="checkbox">
-          <span>I own this chatbot or am allowed to test it</span>
-        </label>
-        <label class="row small">
-          <input id="discovery-send-headers" type="checkbox">
-          <span title="Some API docs need a login. Off: the docs are fetched without the chatbot's cookies and keys.">Also send its cookies / keys to its API docs</span>
-        </label>
-        <div class="row">
-          <button id="discovery-run" type="button">Find missing data</button>
-          <span id="discovery-status" class="small" role="status"></span>
-        </div>
-        <div id="discovery-report" class="stack"></div>
+    <!-- Test data for every metric (POST/GET /api/targets/{id}/prepare-all): the
+         question after a chatbot is added, then the build's live progress. -->
+    <div id="testdata" class="testdata hidden">
+      <div class="testdata-head">
+        <p id="testdata-status" class="small" role="status"></p>
+        <button type="button" id="testdata-close" class="small-button hidden" aria-label="Dismiss the test data status" title="Dismiss">×</button>
       </div>
-    </details>
+      <p id="testdata-question" class="small hidden" tabindex="-1">Build test data for every metric with AI? It interviews the chatbot, reads its help pages, lists its tools and writes goldens, scenarios, tool tests and security probes fitted to it. Uses judge tokens.</p>
+      <p id="testdata-needs-judge" class="small status-error hidden">Add the judge's API key in Judge settings first: the judge writes the test data.</p>
+      <div id="testdata-ask" class="row hidden">
+        <button type="button" id="testdata-yes" class="primary small-button">Build test data with AI</button>
+        <button type="button" id="testdata-no" class="small-button">No, I'll enter my own</button>
+      </div>
+      <ol id="testdata-steps" class="testdata-steps" aria-label="Build steps"></ol>
+      <div id="testdata-metrics" class="testdata-metrics"></div>
+    </div>
     <details id="add-target">
-      <summary id="target-form-summary">Add a chatbot</summary>
+      <summary id="target-form-summary">Add a chatbot or MCP server</summary>
+      <div id="target-kind" class="kind-switch" role="radiogroup" aria-label="What to add">
+        <label class="kind-option">
+          <input type="radio" id="kind-http" name="target-kind" value="http" checked>
+          <span>Website chatbot <small>(paste cURL)</small></span>
+        </label>
+        <label class="kind-option">
+          <input type="radio" id="kind-mcp" name="target-kind" value="mcp">
+          <span>MCP server</span>
+        </label>
+      </div>
       <form id="target-form" class="stack">
         <label>Name <input id="target-name" required maxlength="80"></label>
         <div id="target-existing" class="row hidden" role="status">
@@ -202,6 +242,7 @@
             <select id="target-probe-set" title="Which red-team probes the Security metrics send: E-commerce ones mention orders, refunds and customers; Generic ones fit any assistant.">
               <option value="generic">Generic (any assistant)</option>
               <option value="ecommerce">E-commerce (orders, refunds, customers)</option>
+              <option value="latest">Latest (OWASP / DeepTeam, refreshed daily)</option>
             </select>
           </label>
           <label>Chatbot instructions (for Prompt Alignment)
@@ -239,6 +280,109 @@
           <span id="target-form-error" class="status-error small" role="alert"></span>
         </div>
       </form>
+      <!-- novalidate: the script checks name, command and URL itself; the browser
+           would also check the hidden transport's fields and block Save silently. -->
+      <form id="mcp-form" class="stack hidden" aria-label="MCP server" novalidate>
+        <p class="muted small">
+          An MCP server offers tools, not a chat. For each test message the agent model picks one of its tools
+          and the arguments, the server runs it, and the tool's output is scored as the reply. The agent and
+          security metrics score the calls it made.
+        </p>
+        <label>Name <input id="mcp-name" required maxlength="80" spellcheck="false"></label>
+        <div class="field-group">
+          <span id="mcp-transport-label" class="field-caption">How the app reaches it</span>
+          <div class="kind-switch" role="radiogroup" aria-labelledby="mcp-transport-label">
+            <label class="kind-option">
+              <input type="radio" id="mcp-transport-stdio" name="mcp-transport" value="stdio" checked>
+              <span>Local command (stdio)</span>
+            </label>
+            <label class="kind-option">
+              <input type="radio" id="mcp-transport-http" name="mcp-transport" value="http">
+              <span>HTTP URL</span>
+            </label>
+          </div>
+        </div>
+        <div id="mcp-stdio" class="stack mcp-fields">
+          <label>Command
+            <input id="mcp-command" spellcheck="false" placeholder="e.g. npx, uvx or python" title="The program that starts the server on this computer. It runs without a console window.">
+          </label>
+          <label>Arguments (one per line)
+            <textarea id="mcp-args" rows="3" spellcheck="false" placeholder="-y&#10;@modelcontextprotocol/server-everything"></textarea>
+          </label>
+          <p class="muted small">Put keys and tokens in the environment variables, not the arguments: arguments are saved and shown as typed, environment values are hidden.</p>
+          <label>Environment variables (one KEY=VALUE per line, optional)
+            <textarea id="mcp-env" rows="2" spellcheck="false" placeholder="API_KEY=…"></textarea>
+          </label>
+          <p id="mcp-env-hint" class="muted small hidden">Saved values show as ***. Leave a value as *** to keep it, type a new one to change it, or delete its line to remove it.</p>
+        </div>
+        <div id="mcp-http" class="stack mcp-fields hidden">
+          <label>URL
+            <input id="mcp-url" type="url" spellcheck="false" placeholder="http://localhost:3000/mcp" title="The server's streamable HTTP endpoint.">
+          </label>
+          <label>Headers (one "Name: value" per line, optional)
+            <textarea id="mcp-headers" rows="2" spellcheck="false" placeholder="Authorization: Bearer …"></textarea>
+          </label>
+          <p id="mcp-headers-hint" class="muted small hidden">Saved header values show as ***. Leave a value as *** to keep it, type a new one to change it, or delete its line to remove it.</p>
+        </div>
+        <label>Chatbot role (recommended, for Security metrics)
+          <input id="mcp-persona" maxlength="300" placeholder="e.g. File assistant for the team's shared drive" title="What the server's agent is meant to be. Domain Misuse, Non-Advice and Role Violation are judged against it.">
+        </label>
+        <label>Agent model (optional)
+          <input id="mcp-agent-model" maxlength="200" spellcheck="false" placeholder="empty = the judge model" aria-describedby="mcp-agent-model-help">
+        </label>
+        <p id="mcp-agent-model-help" class="muted small">The model that picks the server's tools. Empty = the judge model, which then also grades its own choices.</p>
+        <div class="row">
+          <button type="button" id="mcp-test">Test &amp; list tools</button>
+        </div>
+        <p id="mcp-test-status" class="small" role="status"></p>
+        <p id="mcp-server-instructions" class="muted small hidden"></p>
+        <ul id="mcp-tool-list" class="mcp-tool-list hidden" aria-label="The server's tools"></ul>
+        <div class="row">
+          <button type="submit" id="mcp-submit" class="primary">Save MCP server</button>
+          <button type="button" id="mcp-cancel" class="hidden">Cancel</button>
+          <span id="mcp-form-error" class="status-error small" role="alert"></span>
+        </div>
+      </form>
+    </details>
+    <details id="discovery">
+      <summary>Find missing metric data <span id="discovery-summary" class="muted small"></span></summary>
+      <div class="stack">
+        <p class="muted small">When the cURL alone does not show what some metrics need (the chatbot's rules, its
+          tool calls, its retrieved sources), the app looks for them: the chatbot's API docs (OpenAPI / Swagger), the
+          same request with a debug flag, its help pages and its own answers. At most 20 page fetches and 10 chat
+          messages (its own golden questions first); the judge drafts rules and tools. Nothing is used until you approve it, and whatever is not found
+          is scored black box.</p>
+        <label class="row small">
+          <input id="discovery-authorized" type="checkbox">
+          <span>I own this chatbot or am allowed to test it</span>
+        </label>
+        <label class="row small">
+          <input id="discovery-send-headers" type="checkbox">
+          <span title="Some API docs need a login. Off: the docs are fetched without the chatbot's cookies and keys.">Also send its cookies / keys to its API docs</span>
+        </label>
+        <details id="discovery-docs">
+          <summary>Or provide the docs yourself (optional)</summary>
+          <div class="stack">
+            <label>OpenAPI / Swagger link
+              <input id="discovery-spec-url" type="url" spellcheck="false" placeholder="https://example.com/openapi.json">
+            </label>
+            <label>… or OpenAPI / Swagger file (JSON or YAML)
+              <input id="discovery-spec-file" type="file" accept=".json,.yaml,.yml,application/json,application/yaml,text/yaml">
+            </label>
+            <label>Help / FAQ / log text (pasted, for the judge to infer rules and tools)
+              <textarea id="discovery-help-text" rows="3" spellcheck="false" placeholder="Paste the chatbot's help page, FAQ or a chat / API log."></textarea>
+            </label>
+            <label>… or a help / FAQ / log file (TXT, MD, LOG, PDF, DOCX)
+              <input id="discovery-help-file" type="file" accept=".txt,.md,.markdown,.log,.pdf,.docx">
+            </label>
+          </div>
+        </details>
+        <div class="row">
+          <button id="discovery-run" type="button">Find missing data</button>
+          <span id="discovery-status" class="small" role="status"></span>
+        </div>
+        <div id="discovery-report" class="stack"></div>
+      </div>
     </details>
   </section>
 
@@ -249,10 +393,6 @@
     </div>
     <p id="golden-missing" class="golden-missing small hidden" role="status"></p>
     <p id="golden-prompt" class="golden-missing small hidden" role="status"></p>
-    <div id="golden-generate" class="row hidden">
-      <button type="button" id="golden-generate-yes" class="primary small-button">Generate with AI</button>
-      <button type="button" id="golden-generate-no" class="small-button">No, I'll enter my own</button>
-    </div>
     <ul id="golden-list" class="golden-list"></ul>
     <details id="add-golden">
       <summary id="golden-form-summary">Add a golden answer</summary>
@@ -383,6 +523,7 @@
   <script src="../lib/announce.js"></script>
   <script src="../lib/ui.js"></script>
   <script src="../lib/charts.js"></script>
+  <script src="../lib/geval-builder.js"></script>
   <script src="sidebar.js"></script>
   <script src="discovery.js"></script>
 </body>

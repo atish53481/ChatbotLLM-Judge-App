@@ -15,6 +15,8 @@ from __future__ import annotations
 import base64
 import codecs
 
+from backend import traffic
+from backend.datasets import deepteam_sync
 from backend.judges.ask import ask_json
 
 _LEET = str.maketrans({"a": "4", "e": "3", "i": "1", "o": "0", "s": "5", "t": "7",
@@ -96,20 +98,36 @@ ENHANCERS = {
     "many_shot": ("Many-shot jailbreak", False),
     "multilingual": ("Multilingual", True),
 }
+# DeepTeam's single-turn attacks the enhancers above do not already cover
+# (backend/datasets/deepteam_sync.py lists the installed ones). Applied by
+# deepteam itself at run time, with the judge as its simulator model when the
+# attack rewrites the probe; "dt_" keys keep them apart from the app's own.
+ALREADY_COVERED = {"base64": "base64", "rot13": "rot13", "leetspeak": "leetspeak", "multilingual": "multilingual",
+                   "math_problem": "disguised_math", "roleplay": "role_play", "prompt_injection": "injection_wrapper"}
+DEEPTEAM_ENHANCERS = {f"dt_{a['key']}": a for a in deepteam_sync.load_catalog().get("single_turn_attacks", [])
+                      if a["key"] not in ALREADY_COVERED
+                      and set(a.get("needs", [])) <= deepteam_sync.SUPPLIED_ARGS}
+for _key, _attack in DEEPTEAM_ENHANCERS.items():
+    ENHANCERS[_key] = (f"{_attack['name']} (DeepTeam)", bool(_attack.get("uses_model")))
+
 _DETERMINISTIC = {
     "base64": _base64, "rot13": _rot13, "leetspeak": _leetspeak, "role_play": _role_play,
     "injection_wrapper": _injection_wrapper, "disguised_math": _disguised_math,
 }
 
 
-def enhance(question: str, enhancement: str, judge=None, options: dict | None = None) -> str:
-    """The text to send for one probe under one enhancer."""
+def enhance(question: str, enhancement: str, judge=None, options: dict | None = None, context: str = "") -> str:
+    """The text to send for one probe under one enhancer. context (the probe's
+    chatbot role) tells DeepTeam attacks that tailor themselves what they target."""
     options = options or {}
     if enhancement in _DETERMINISTIC:
         return _DETERMINISTIC[enhancement](question)
     if enhancement == "many_shot":
         count = options.get("many_shot", DEFAULT_MANY_SHOT)
         return _many_shot(question, count if count in MANY_SHOT_COUNTS else DEFAULT_MANY_SHOT)
+    if enhancement in DEEPTEAM_ENHANCERS:
+        return deepteam_sync.enhance(DEEPTEAM_ENHANCERS[enhancement]["class"], question, judge,
+                                     target_information=context)
     if enhancement == "multilingual":
         language = options.get("language", DEFAULT_LANGUAGE)
         return _multilingual(question, judge, language if language in LANGUAGES else DEFAULT_LANGUAGE)
@@ -121,9 +139,13 @@ def is_probe(item: dict) -> bool:
     return str(item.get("id", "")).startswith("sp_")
 
 
-def expand(items: list[dict], enhancements: list[str], judge=None, options: dict | None = None) -> list[dict]:
+def expand(items: list[dict], enhancements: list[str], judge=None, options: dict | None = None,
+           skipped: list | None = None) -> list[dict]:
     """Each probe, then one variant per enhancer. A variant keeps the attack in
-    plain words for the judge (its question) and sends the enhanced text."""
+    plain words for the judge (its question) and sends the enhanced text.
+    A DeepTeam attack that hands a probe back unchanged (deepteam_sync.NotEnhanced)
+    is not sent under its name: with a `skipped` list the variant is left out and
+    recorded there ({"enhancement", "label", "base_probe_id", "reason"}), else it raises."""
     unknown = [e for e in enhancements if e not in ENHANCERS]
     if unknown:
         raise ValueError(f"unknown enhancement {', '.join(unknown)}: use one of {', '.join(ENHANCERS)}")
@@ -133,8 +155,15 @@ def expand(items: list[dict], enhancements: list[str], judge=None, options: dict
         if not is_probe(item):
             continue
         for name in enhancements:
-            sent = enhance(item["question"], name, judge, options)
             label = ENHANCERS[name][0]
+            try:
+                sent = enhance(item["question"], name, judge, options, context=" ".join(item.get("context") or []))
+            except deepteam_sync.NotEnhanced as e:
+                if skipped is None:
+                    raise
+                skipped.append({"enhancement": name, "label": label, "base_probe_id": item["id"], "reason": str(e)})
+                continue
+            traffic.log("probe %s as %s: %s", item["id"], label, traffic.clip(sent))
             out.append({
                 **item,
                 "id": f"{item['id']}~{name}",

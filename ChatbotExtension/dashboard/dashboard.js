@@ -44,7 +44,8 @@ function categoryLabels() {
 }
 
 function isTicked(metric) {
-  return !state.checked || state.checked.has(metric.key);
+  // Nothing saved yet: what the side panel ticks by default, every metric but the DeepTeam ones.
+  return state.checked ? state.checked.has(metric.key) : metric.source !== "deepteam";
 }
 
 // The cards the totals and Run all visible work on: this category, ticked in the side panel.
@@ -316,7 +317,8 @@ async function refreshUsage() {
   renderTiles();
 }
 
-// Refresh status: re-check the judge and send the chatbot one test question.
+// Refresh status: re-check the judge and send the chatbot one test question,
+// then reload the scores, cards and trend like the page just opened.
 async function refreshStatus() {
   await refreshJudge();
   const target = currentTarget();
@@ -328,13 +330,17 @@ async function refreshStatus() {
         body: { type: target.type, config, message: "Hello", target_id: target.id },
       });
       state.chatbotHealth = result.ok ? "good" : "bad";
-      setStatus(result.ok ? "Chatbot and judge checked." : `Chatbot: ${result.error}`, !result.ok);
+      const at = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      setStatus(result.ok ? `Chatbot and judge checked · ${at}` : `Chatbot: ${result.error}`, !result.ok);
     } catch (error) {
       state.chatbotHealth = "bad";
       setStatus(error.message, true);
     }
   }
   await refreshUsage();
+  await renderLatest();
+  await renderTrend();
+  if (state.view === "history") await renderHistory();
 }
 
 // One row per golden case: the question, the chatbot's actual answer, and
@@ -706,18 +712,6 @@ function metricCard(metric, row) {
         { type: "button", onclick: () => toggleCardDetails(metric.key) },
         state.expandedDetailKeys.has(metric.key) ? "Hide details" : "Details",
       ),
-      // Your own G-Eval metric: change it in the builder above, or remove it.
-      metric.custom_id && metric.ui_category === "geval"
-        ? el("button", {
-          type: "button",
-          disabled: state.running,
-          onclick: () => editOwnGeval(metric).catch((error) => setStatus(error.message, true)),
-        }, "Edit")
-        : null,
-      metric.custom_id && metric.ui_category === "geval" && !state.running
-        ? confirmButton("Delete", `Delete ${metric.title}`,
-          () => deleteOwnGeval(metric).catch((error) => setStatus(error.message, true)))
-        : null,
     ),
     state.expandedDetailKeys.has(metric.key) ? caseDetailPanel(metric, state.caseDetailsCache[metric.key]) : null,
   );
@@ -857,6 +851,8 @@ async function followRun(target, keys, start) {
     updateRunButton();
     renderMetricGrid();
     await Promise.all([renderLatest(), renderTrend(), refreshUsage()]);
+    // The finished run is a new scan: refresh its row in Scan history too.
+    if (state.view === "history") renderHistory().catch((error) => setStatus(error.message, true));
   }
 }
 
@@ -864,6 +860,11 @@ async function followRun(target, keys, start) {
 // Replaces the old KPI tiles + single latest-scores chart with one card per
 // metric, filterable by category, each runnable on its own.
 let latestRowsCache = [];
+// renderLatest can be called while an earlier call is still in flight (the
+// initial load, then the new session's freshSinceRunId arriving from the side
+// panel): the newer call wins, and the older response is dropped, so the tiles
+// never keep the previous session's rows.
+let latestFetchSeq = 0;
 
 function renderMetricGrid() {
   const shown = visibleMetrics();
@@ -871,193 +872,7 @@ function renderMetricGrid() {
   $("metric-grid-empty").classList.toggle("hidden", state.metrics.length > 0);
   // Metrics that cannot run for this chatbot go last, so the runnable ones lead.
   const ordered = [...shown.filter((m) => !m.unavailable), ...shown.filter((m) => m.unavailable)];
-  // The G-Eval section starts with the builder for your own G-Eval metrics.
-  const builder = state.categoryFilter === "geval" ? gevalBuilder.node() : null;
-  $("metric-grid").replaceChildren(...[builder, ...ordered.map((m) => metricCard(m, byKey.get(m.key)))].filter(Boolean));
-}
-
-// --- Your own G-Eval metrics (DeepEval GEval), built in the G-Eval section ------
-// Saved through /api/custom-metrics like the Advanced page's form; they show in
-// the G-Eval section of the side panel and here. The form node is built once and
-// reused, so a grid refresh (a run's progress) never loses what was typed.
-const GEVAL_PARAMS = [
-  ["input", "INPUT"],
-  ["actual_output", "ACTUAL_OUTPUT"],
-  ["expected_output", "EXPECTED_OUTPUT"],
-  ["context", "CONTEXT"],
-  ["retrieval_context", "RETRIEVAL_CONTEXT"],
-];
-const GEVAL_DEFAULT_THRESHOLD = 0.7;
-
-const gevalBuilder = (() => {
-  let card = null;
-  let open = false;
-  let editing = null;  // the stored row being edited, or null for a new metric
-  const f = {};
-
-  function steps() {
-    return f.steps.value.split("\n").map((s) => s.trim()).filter(Boolean);
-  }
-  function params() {
-    return GEVAL_PARAMS.map(([key]) => key).filter((key) => f.params[key].checked);
-  }
-  function threshold() {
-    const value = Number(f.threshold.value);
-    return f.threshold.value !== "" && Number.isFinite(value) && value >= 0 && value <= 1
-      ? value : GEVAL_DEFAULT_THRESHOLD;
-  }
-
-  // The same metric as DeepEval code, so what is saved here reads like a notebook cell.
-  function preview() {
-    const q = (s) => JSON.stringify(s);
-    const lines = [`metric = GEval(`, `    name=${q(f.name.value.trim() || "My metric")},`];
-    if (f.criteria.value.trim()) lines.push(`    criteria=${q(f.criteria.value.trim())},`);
-    if (steps().length) lines.push(`    evaluation_steps=[`, ...steps().map((s) => `        ${q(s)},`), `    ],`);
-    lines.push(`    evaluation_params=[`,
-      ...GEVAL_PARAMS.filter(([key]) => f.params[key].checked).map(([, name]) => `        SingleTurnParams.${name},`),
-      `    ],`, `    threshold=${threshold()},`);
-    if (f.strict.checked) lines.push(`    strict_mode=True,`);
-    lines.push(`)`);
-    f.code.textContent = lines.join("\n");
-  }
-
-  function fill(row) {
-    editing = row;
-    f.title.textContent = row ? `Edit “${row.name}”` : "New G-Eval metric";
-    f.name.value = row ? row.name : "";
-    f.criteria.value = row ? row.criteria : "";
-    f.steps.value = row ? row.evaluation_steps.join("\n") : "";
-    const picked = row ? row.params : ["input", "actual_output"];
-    for (const [key] of GEVAL_PARAMS) f.params[key].checked = picked.includes(key);
-    f.threshold.value = String(row ? row.threshold : GEVAL_DEFAULT_THRESHOLD);
-    f.strict.checked = Boolean(row && row.strict);
-    f.error.textContent = "";
-    preview();
-  }
-
-  async function save(event) {
-    event.preventDefault();
-    f.error.textContent = "";
-    const body = {
-      name: f.name.value.trim(),
-      kind: "geval",
-      description: editing ? editing.description : "",
-      criteria: f.criteria.value.trim(),
-      evaluation_steps: steps(),
-      params: params(),
-      threshold: threshold(),
-      strict: f.strict.checked,
-    };
-    if (!body.name) return void (f.error.textContent = "Give the metric a name.");
-    if (!body.criteria && !body.evaluation_steps.length) {
-      return void (f.error.textContent = "Write the criteria, the evaluation steps, or both.");
-    }
-    if (!body.params.length) return void (f.error.textContent = "Tick at least one evaluation param.");
-    f.save.disabled = true;
-    try {
-      const row = await api(editing ? `/api/custom-metrics/${editing.id}` : "/api/custom-metrics",
-        { method: editing ? "PUT" : "POST", body });
-      // Tick a new metric to run when the side panel keeps an explicit list.
-      const ticked = await settings.get("checkedMetrics", null);
-      if (!editing && Array.isArray(ticked) && !ticked.includes(row.key)) {
-        await settings.set("checkedMetrics", [...ticked, row.key]);
-      }
-      open = false;
-      await reloadMetricCatalog();
-      await settings.set("metricsChangedAt", Date.now());
-      setStatus(`Saved “${row.name}”: it is in the G-Eval section here and in the side panel.`);
-    } catch (error) {
-      f.error.textContent = error.message;
-    } finally {
-      f.save.disabled = false;
-    }
-  }
-
-  function build() {
-    const field = (label, control, hint) => el("label", { className: "geval-field" },
-      el("span", {}, label, hint ? el("span", { className: "muted small" }, ` ${hint}`) : null), control);
-    f.title = el("h3", {}, "New G-Eval metric");
-    f.name = el("input", { maxlength: "80", placeholder: "Bias Metrics", "aria-label": "Metric name" });
-    f.criteria = el("textarea", { rows: "3", maxlength: "4000",
-      placeholder: "Check if the actual output contains statements favouring one group over another based on gender, race or other social traits." });
-    f.steps = el("textarea", { rows: "4",
-      placeholder: "Check whether the 'actual output' contains biased language\nIf there is bias, return a low score\nIf there is no bias in the statement, return a high score" });
-    f.params = {};
-    const paramBoxes = GEVAL_PARAMS.map(([key, name]) => {
-      f.params[key] = el("input", { type: "checkbox", value: key });
-      return el("label", { className: "geval-param", title: `SingleTurnParams.${name}` }, f.params[key], ` ${fieldLabel(key)}`);
-    });
-    f.threshold = el("input", { type: "number", min: "0", max: "1", step: "0.05", className: "geval-threshold" });
-    f.strict = el("input", { type: "checkbox" });
-    f.code = el("pre", { className: "geval-code", "aria-label": "The same metric as DeepEval code" });
-    f.error = el("p", { className: "status-error geval-error", role: "alert" });
-    f.save = el("button", { type: "submit", className: "primary" }, "Save metric");
-    const form = el("form", { className: "geval-form" },
-      f.title,
-      el("p", { className: "muted small" },
-        "As in DeepEval's GEval: the judge scores 0–1 by following your evaluation steps (or steps it writes from the criteria) on the fields you tick."),
-      field("Name", f.name),
-      field("Criteria", f.criteria, "(what a good reply looks like)"),
-      field("Evaluation steps", f.steps, "(optional, one per line; used for scoring when given)"),
-      el("fieldset", { className: "geval-params" }, el("legend", {}, "Evaluation params (what the judge reads)"), ...paramBoxes),
-      el("div", { className: "geval-row" },
-        field("Threshold", f.threshold),
-        el("label", { className: "geval-param" }, f.strict, " Strict: pass/fail only (0 or 1)")),
-      el("details", { className: "geval-preview" }, el("summary", {}, "DeepEval code"), f.code),
-      f.error,
-      el("div", { className: "metric-card-actions" },
-        f.save,
-        el("button", { type: "button", onclick: () => { open = false; renderMetricGrid(); } }, "Cancel")));
-    form.addEventListener("input", preview);
-    form.addEventListener("change", preview);
-    form.addEventListener("submit", save);
-    f.form = form;
-    f.closed = el("div", { className: "geval-closed" },
-      el("h3", {}, "Your own G-Eval metric"),
-      el("p", { className: "metric-card-desc" },
-        "Name it, write the criteria and evaluation steps, and pick the evaluation params, as in DeepEval's GEval(...)."),
-      el("div", { className: "metric-card-actions" },
-        el("button", { type: "button", className: "primary", onclick: () => startEdit(null) }, "＋ New G-Eval metric")));
-    card = el("div", { className: "metric-card geval-builder" });
-  }
-
-  function node() {
-    if (!card) build();
-    card.classList.toggle("geval-builder-open", open);
-    card.replaceChildren(open ? f.form : f.closed);
-    return card;
-  }
-
-  function startEdit(row) {
-    if (!card) build();
-    fill(row);
-    open = true;
-    if (state.categoryFilter !== "geval") {
-      state.categoryFilter = "geval";
-      settings.set("dashCategory", "geval");
-      renderCategoryChips();
-    }
-    renderMetricGrid();
-    card.scrollIntoView({ block: "nearest" });
-    f.name.focus();
-  }
-
-  return { node, startEdit };
-})();
-
-// Edit opens the builder with the stored row; Delete removes the metric (its old runs stay).
-async function editOwnGeval(metric) {
-  const rows = await api("/api/custom-metrics");
-  const row = rows.find((r) => r.id === metric.custom_id);
-  if (!row) throw new Error("This metric is no longer saved; reload the page.");
-  gevalBuilder.startEdit(row);
-}
-
-async function deleteOwnGeval(metric) {
-  await api(`/api/custom-metrics/${metric.custom_id}`, { method: "DELETE" });
-  await reloadMetricCatalog();
-  await settings.set("metricsChangedAt", Date.now());
-  setStatus(`Deleted “${metric.title}”. Its earlier runs stay in History.`);
+  $("metric-grid").replaceChildren(...ordered.map((m) => metricCard(m, byKey.get(m.key))));
 }
 
 // After a metric is added, changed or removed (here or on another page).
@@ -1072,12 +887,15 @@ async function reloadMetricCatalog() {
 async function renderLatest() {
   const target = currentTarget();
   if (!target) return;
+  const seq = ++latestFetchSeq;
   try {
-    latestRowsCache = await api(`/api/runs/latest?target_id=${target.id}&since_id=${await sessionSince()}`);
+    const rows = await api(`/api/runs/latest?target_id=${target.id}&since_id=${await sessionSince()}`);
+    if (seq !== latestFetchSeq) return; // a newer render superseded this one
+    latestRowsCache = rows;
     renderCounts(latestRowsCache);
     renderMetricGrid();
   } catch (error) {
-    setStatus(error.message, true);
+    if (seq === latestFetchSeq) setStatus(error.message, true);
   }
 }
 
@@ -1237,6 +1055,9 @@ async function renderHistory() {
           // Opens the scan's full report in its own tab (scan/scan.html).
           el("a", { className: "button-link", href: `../scan/scan.html?job=${scan.job_id}`,
             target: "_blank", rel: "noopener" }, "Open"),
+          // This scan's DeepTeam vulnerability report (risk categories + OWASP).
+          el("a", { className: "button-link", href: `../scan/scan.html?job=${scan.job_id}#security`,
+            target: "_blank", rel: "noopener" }, "Security"),
           // Overview / Test Cases view of this run (runs/runs.html).
           el("a", { className: "button-link", href: `../runs/runs.html?target=${target.id}&job=${scan.job_id}#overview`,
             target: "_blank", rel: "noopener" }, "Overview"),
@@ -1246,7 +1067,13 @@ async function renderHistory() {
               el("button", { type: "button", onclick: () => compareScan(scan, chosen()) }, "Compare"),
               // Case by case, side by side (regressions/regressions.html).
               regressions)
-            : ""),
+            : "",
+          // Delete this one scan; a running/queued scan must be stopped first.
+          scan.status === "running" || scan.status === "queued"
+            ? el("button", { type: "button", disabled: true, title: "This scan is still going; stop it first" }, "Delete")
+            : confirmButton("Delete", `Delete scan ${scan.version}`, async () => {
+                await deleteRuns(`/api/scans/${scan.job_id}`);
+              })),
       );
     }));
   } catch (error) {
@@ -1426,9 +1253,54 @@ $("cases-select").addEventListener("change", () => {
   settings.set("casesPerRun", state.casesPerRun);
 });
 
-$("refresh-status").addEventListener("click", () => {
-  refreshStatus().catch((error) => setStatus(error.message, true));
+// "Show earlier runs" (off: this session's runs only). The flip broadcasts
+// runsChangedAt, which reloads scores, trend and Details here and the side
+// panel's Latest scores, all through sessionSince().
+$("show-all-runs").addEventListener("change", () => {
+  setShowAllRuns($("show-all-runs").checked).catch((error) => setStatus(error.message, true));
 });
+
+$("refresh-status").addEventListener("click", () => {
+  const button = $("refresh-status");
+  if (button.disabled) return;
+  button.disabled = true;
+  button.textContent = "Checking…";
+  setStatus("Checking the chatbot and judge…");
+  refreshStatus()
+    .catch((error) => setStatus(error.message, true))
+    .finally(() => {
+      button.disabled = false;
+      button.textContent = "Refresh status";
+    });
+});
+
+// Reset the whole page: a fresh session, so scores, cards and the trend start
+// empty (every run stays in History), and filters and views go back to their
+// defaults. The side panel hears the freshSinceRunId change and resets too.
+$("reset-page").addEventListener("click", () => {
+  resetPage().catch((error) => setStatus(error.message, true));
+});
+
+async function resetPage() {
+  const session = await api("/api/session/start", { method: "POST", body: {} });
+  await settings.set("freshSinceRunId", session.since_id);
+  await settings.set("lastRun", null);
+  await settings.set("showAllRuns", false);
+  await settings.set("dashCategory", "all");
+  $("show-all-runs").checked = false;
+  state.categoryFilter = "all";
+  state.failedOnlyKeys.clear();
+  state.detailHistory = {};
+  state.caseDetailsCache = {};
+  state.expandedDetailKeys.clear();
+  state.history = [];
+  setView("judge");
+  renderCategoryChips();
+  renderCases(null);
+  await loadTargets();
+  const at = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  setStatus(`Page reset · ${at}: scores start fresh; earlier runs stay in History.`);
+}
 
 $("tokens-reset").addEventListener("click", async () => {
   try {
@@ -1455,6 +1327,8 @@ settings.onChange((changes) => {
     state.casesPerRun = changes.casesPerRun.newValue || null;
     $("cases-select").value = state.casesPerRun ? String(state.casesPerRun) : "";
   }
+  // Flipped in the report or another tab; the runsChangedAt sent with it reloads the scores.
+  if (changes.showAllRuns) $("show-all-runs").checked = changes.showAllRuns.newValue === true;
   if (changes.checkedMetrics) {
     const keys = changes.checkedMetrics.newValue;
     state.checked = Array.isArray(keys) ? new Set(keys) : null;
@@ -1518,6 +1392,7 @@ window.addEventListener("focus", () => {
     state.categoryFilter = await settings.get("dashCategory", "all");
     state.casesPerRun = await settings.get("casesPerRun", null);
     $("cases-select").value = state.casesPerRun ? String(state.casesPerRun) : "";
+    $("show-all-runs").checked = await showingAllRuns();
     bindParallelSelect($("parallel-metrics")).catch(() => {});
     await loadMetrics();
     const ticked = await settings.get("checkedMetrics", null);

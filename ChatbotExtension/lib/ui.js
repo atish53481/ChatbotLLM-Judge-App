@@ -290,8 +290,25 @@ const settings = {
 // Each fresh load of the panel starts a session (POST /api/session/start):
 // scores, trend and cases show only runs with an id above this, while every
 // run stays in SQLite and the dashboard's History view lists them all.
+// "Show earlier runs" (showingAllRuns) makes it 0, so every stored run counts.
 async function sessionSince() {
+  if (await showingAllRuns()) return 0;
   return Number(await settings.get("freshSinceRunId", 0)) || 0;
+}
+
+// "Show earlier runs" (dashboard header, report options): saved setting
+// showAllRuns, off by default. Only a saved true turns it on.
+async function showingAllRuns() {
+  return (await settings.get("showAllRuns", false)) === true;
+}
+
+// Flips "Show earlier runs" and broadcasts runsChangedAt, so every open view
+// that reloads its scores when runs change (the side panel's Latest scores, the
+// dashboard) reloads them through sessionSince(); the report listens for
+// showAllRuns itself.
+async function setShowAllRuns(on) {
+  await settings.set("showAllRuns", on === true);
+  await settings.set("runsChangedAt", Date.now());
 }
 
 // A page of this app (path relative to the app root, e.g. "report/report.html").
@@ -530,6 +547,9 @@ async function followJob(target, jobId, onProgress, control = {}) {
       announceWebJob(job).catch(() => {});
       control.jobStatus = job.status;
       control.jobError = job.error || null;
+      // The job reached its final state: every open page (dashboard History,
+      // side panel latest scores) re-renders instead of showing it as running.
+      await settings.set("runsChangedAt", Date.now());
       return job.results;
     }
     await sleep(1000);

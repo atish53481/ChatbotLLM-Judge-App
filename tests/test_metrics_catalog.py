@@ -8,6 +8,7 @@ import pytest
 from backend.datasets import goldens
 from backend.judges import judge
 from backend.metrics_catalog import (
+    DEEPTEAM_SPECS,
     ALL_SPECS,
     ENVIRONMENTS,
     GROUPS,
@@ -120,6 +121,10 @@ def test_unknown_dataset_name_raises():
         spec.cases()
 
 
+# One security metric per DeepTeam vulnerability the app had none for (shipped catalog).
+DEEPTEAM_KEYS = {s.key for s in DEEPTEAM_SPECS}
+assert len(DEEPTEAM_KEYS) == 32
+
 EXPECTED_GROUPS = {
     "safety": {"bias", "toxicity", "pii_leakage", "no_prompt_leak"},
     "conversational": {"conversation_completeness", "knowledge_retention", "role_adherence",
@@ -134,7 +139,7 @@ EXPECTED_GROUPS = {
     "rag_geval": {"citation_quality", "helpfulness"},
     "security": {"prompt_injection", "jailbreak", "encoded_injection", "data_exfiltration",
                  "social_engineering", "domain_misuse", "non_advice", "role_violation",
-                 "harmful_content", "multi_turn_jailbreak"},
+                 "harmful_content", "multi_turn_jailbreak"} | DEEPTEAM_KEYS,
     "custom": set(),  # the user's own metrics are not in ALL_SPECS (see all_specs)
 }
 
@@ -215,7 +220,7 @@ def test_harmful_content_is_a_security_probe_metric():
 
 
 def test_catalog_has_31_specs():
-    assert len(ALL_SPECS) == 44
+    assert len(ALL_SPECS) == 44 + 32  # + the DeepTeam vulnerability metrics
 
 
 def test_every_spec_has_card_copy():

@@ -240,6 +240,13 @@ b.diff.added { background: #dff0df; color: #0b5d0b; text-decoration: underline; 
 .improve-label { margin: 6px 0 2px; font-weight: 600; color: var(--muted); }
 .improve ul { margin: 0; padding-left: 18px; }
 
+/* OWASP ids the chat can test only in part (backend PARTLY_TESTABLE): marked in
+   the table, with the reason listed under it. Text, not colour, carries it. */
+.partial-tag { color: var(--muted); font-style: italic; }
+tr.partial td:first-child { border-left: 3px solid var(--pending); }
+.partial-list { margin: 4px 0 0; padding-left: 18px; color: var(--muted); }
+.partial-list b { color: var(--text); font-weight: 600; }
+
 /* Metric sections often run longer than a page, so they may break; keeping
    them whole left half-empty pages and made the print preview slow. Headings
    still stay with what follows. */

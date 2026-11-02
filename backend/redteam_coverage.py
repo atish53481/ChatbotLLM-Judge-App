@@ -8,13 +8,19 @@ from __future__ import annotations
 
 import json
 
+from backend.datasets import deepteam_sync
+
 OWASP_2025 = {
     "LLM01": "Prompt Injection",
     "LLM02": "Sensitive Information Disclosure",
+    "LLM03": "Supply Chain",
+    "LLM04": "Data and Model Poisoning",
     "LLM05": "Improper Output Handling",
     "LLM06": "Excessive Agency",
     "LLM07": "System Prompt Leakage",
+    "LLM08": "Vector and Embedding Weaknesses",
     "LLM09": "Misinformation",
+    "LLM10": "Unbounded Consumption",
 }
 
 RISK_CATEGORIES = {
@@ -23,6 +29,7 @@ RISK_CATEGORIES = {
     "brand_image": "Brand Image",
     "data_privacy": "Data Privacy",
     "unauthorized_access": "Unauthorized Access",
+    "agentic": "Agentic",
 }
 
 # metric key -> (risk category, OWASP ids)
@@ -43,6 +50,95 @@ COVERAGE = {
     "encoded_injection": ("unauthorized_access", ["LLM01"]),
     "social_engineering": ("unauthorized_access", ["LLM01", "LLM06"]),
 }
+
+
+# --- DeepTeam metrics and the three OWASP lists --------------------------------
+_CATALOG = deepteam_sync.load_catalog()
+_LLM_ITEMS = {i["id"]: i for i in _CATALOG.get("frameworks", {}).get("owasp_llm", [])}
+_ASI_ITEMS = _CATALOG.get("frameworks", {}).get("owasp_agentic", [])
+_DT_KEYS = {v["class"]: v["key"] for v in _CATALOG.get("vulnerabilities", [])}
+
+# Every DeepTeam metric: its risk category and the LLM Top 10 ids DeepTeam maps it to.
+for _v in deepteam_sync.new_vulnerabilities(_CATALOG):
+    COVERAGE.setdefault(_v["key"], (
+        deepteam_sync.RISK_OF_CATEGORY.get(_v.get("category", ""), "unauthorized_access"),
+        sorted(i for i, item in _LLM_ITEMS.items() if _v["class"] in item["vulnerabilities"])))
+
+OWASP_AGENTIC_2026 = {i["id"]: i["title"] for i in _ASI_ITEMS}
+# OWASP MCP Top 10 (2025, github.com/OWASP/www-project-mcp-top-10). DeepTeam has
+# no MCP map, so this one is the app's: the metrics whose attacks reach each risk
+# through the chat. MCP04, MCP08 and MCP09 can only be checked in part from the
+# outside (PARTLY_TESTABLE).
+OWASP_MCP_2025 = {
+    "MCP01": ("Token Mismanagement and Secret Exposure", ["no_prompt_leak", "data_exfiltration", "system_reconnaissance"]),
+    "MCP02": ("Privilege Escalation via Scope Creep", ["excessive_agency", "rbac", "bfla"]),
+    "MCP03": ("Tool Poisoning", ["tool_metadata_poisoning", "indirect_instruction", "prompt_injection"]),
+    "MCP04": ("Software Supply Chain Attacks and Dependency Tampering", ["tool_metadata_poisoning", "agent_identity_abuse"]),
+    "MCP05": ("Command Injection and Execution", ["shell_injection", "sql_injection", "unexpected_code_execution", "ssrf"]),
+    "MCP06": ("Intent Flow Subversion", ["goal_theft", "recursive_hijacking", "indirect_instruction", "prompt_injection"]),
+    "MCP07": ("Insufficient Authentication and Authorization", ["bola", "bfla", "rbac", "agent_identity_abuse"]),
+    "MCP08": ("Lack of Audit and Telemetry", ["tool_orchestration_abuse", "autonomous_agent_drift", "debug_access"]),
+    "MCP09": ("Shadow MCP Servers", ["external_system_abuse", "insecure_inter_agent_communication", "tool_metadata_poisoning"]),
+    "MCP10": ("Context Injection and Over-Sharing", ["cross_context_retrieval", "data_exfiltration", "indirect_instruction"]),
+}
+FRAMEWORK_LABELS = {
+    "owasp_llm": "OWASP Top 10 for LLM Applications 2025",
+    "owasp_agentic": "OWASP Top 10 for Agentic Applications 2026",
+    "owasp_mcp": "OWASP MCP Top 10 2025",
+}
+
+# OWASP ids that chatting with the bot can check only in part: the risk lives
+# mostly outside the conversation (dependencies, training data, servers, logs),
+# so the metrics mapped to them test only what reaches the replies. Even every
+# attack resisted is not full coverage. id -> why, in one line.
+PARTLY_TESTABLE = {
+    "LLM03": "the risk sits in the models, packages and plugins the bot is built on; "
+             "the chat shows only what reaches its replies",
+    "LLM04": "poisoned training, fine-tuning or document data is found by auditing that data; "
+             "the chat shows only its effects on replies",
+    "LLM10": "cost, rate limits and resource use show on the servers, not in the replies; "
+             "the chat only probes how the bot handles runaway requests",
+    "ASI04": "the agent's third-party tools, plugins and models are checked where they come from; "
+             "the chat shows only what a compromised one makes the agent do",
+    "ASI08": "failures that spread across agents and systems happen behind the chat; "
+             "one conversation sees only the first agent's replies",
+    "MCP04": "tampered MCP servers and dependencies are found by auditing what is installed; "
+             "the chat shows only what a poisoned tool makes the bot do",
+    "MCP08": "audit logs and telemetry live on the server; the chat can probe debug access and "
+             "unchecked tool use, not whether actions are logged",
+    "MCP09": "unapproved MCP servers are found in the deployment's inventory; the chat shows only "
+             "whether the bot can be steered to outside systems",
+}
+
+
+def _keys(classes) -> list[str]:
+    return [_DT_KEYS[c] for c in classes if c in _DT_KEYS]
+
+
+def _partial(rid: str) -> dict:
+    """{"partial": True, "partial_reason": why} for an id in PARTLY_TESTABLE, else {"partial": False}."""
+    reason = PARTLY_TESTABLE.get(rid)
+    return {"partial": True, "partial_reason": reason} if reason else {"partial": False}
+
+
+def frameworks() -> dict:
+    """{framework: {"label", "items": [{"id", "title", "metrics": [keys], "partial",
+    "partial_reason"?}]}}: which metrics test each OWASP risk. LLM and Agentic ids
+    come from DeepTeam's maps (plus the app's own metrics mapped in COVERAGE); MCP
+    ids from OWASP_MCP_2025. partial: the chat can test the risk only in part."""
+    known = set(COVERAGE)
+    llm = []
+    for rid, title in OWASP_2025.items():
+        item = _LLM_ITEMS.get(rid, {})
+        keys = _keys(item.get("vulnerabilities", [])) + [k for k, (_, ids) in COVERAGE.items() if rid in ids]
+        llm.append({"id": rid, "title": title, "metrics": sorted(set(keys) & known), **_partial(rid)})
+    asi = [{"id": i["id"], "title": i["title"], "metrics": sorted(set(_keys(i["vulnerabilities"])) & known),
+            **_partial(i["id"])}
+           for i in _ASI_ITEMS]
+    mcp = [{"id": rid, "title": title, "metrics": sorted(set(keys) & known), **_partial(rid)}
+           for rid, (title, keys) in OWASP_MCP_2025.items()]
+    return {key: {"label": FRAMEWORK_LABELS[key], "items": items}
+            for key, items in (("owasp_llm", llm), ("owasp_agentic", asi), ("owasp_mcp", mcp))}
 
 
 def coverage_report(latest_runs: list[dict], titles: dict[str, str]) -> dict:
@@ -74,4 +170,17 @@ def coverage_report(latest_runs: list[dict], titles: dict[str, str]) -> dict:
             "attacks": attacks, "resisted": resisted,
             "pass_rate": round(resisted / attacks, 4) if attacks else None,
         })
-    return {"categories": categories, "owasp": OWASP_2025}
+    by_metric = {m["key"]: m for cat in categories for m in cat["metrics"]}
+    framework_view = []
+    for key, fw in frameworks().items():
+        items = []
+        for item in fw["items"]:
+            entries = [by_metric[k] for k in item["metrics"] if k in by_metric]
+            tested = [m for m in entries if m["tested"]]
+            n = sum(m["attacks"] for m in tested)
+            ok = sum(m["resisted"] for m in tested)
+            items.append({**item, "tested": len(tested), "total": len(entries), "attacks": n, "resisted": ok,
+                          "pass_rate": round(ok / n, 4) if n else None})
+        framework_view.append({"key": key, "label": fw["label"], "items": items})
+    return {"categories": categories, "owasp": OWASP_2025, "owasp_agentic": OWASP_AGENTIC_2026,
+            "owasp_mcp": {k: t for k, (t, _) in OWASP_MCP_2025.items()}, "frameworks": framework_view}

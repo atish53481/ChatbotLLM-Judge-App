@@ -247,6 +247,52 @@ def test_discover_reports_what_the_chatbot_already_returns():
     assert by_group["prompt_alignment"]["status"] == "ready"
 
 
+# --- Provided docs: a spec link, a spec file, help / FAQ / log text ------------
+
+def test_discover_uses_a_provided_spec_link():
+    report, _, fetch = _discover(spec_url="https://api.acme.com/v1/openapi.json",
+                                 pages={"https://api.acme.com/v1/openapi.json": SPEC})
+    items = {i["kind"]: i for i in report["items"]}
+    assert items["request"]["value"]["tools_path"] == "debug.tool_calls"
+    assert any("API docs found at https://api.acme.com/v1/openapi.json" in n for n in report["notes"])
+    assert report["api_docs"] == "https://api.acme.com/v1/openapi.json"
+
+
+def test_discover_says_so_when_the_provided_spec_link_is_not_a_spec():
+    report, _, _ = _discover(spec_url="https://api.acme.com/v1/not-docs",
+                             pages={"https://api.acme.com/v1/not-docs": {"hello": "world"}})
+    assert any("not an OpenAPI / Swagger document" in n for n in report["notes"])
+
+
+def test_discover_uses_an_uploaded_spec_file_when_auto_discovery_finds_none():
+    report, _, _ = _discover(spec_text=json.dumps(SPEC))
+    items = {i["kind"]: i for i in report["items"]}
+    assert items["request"]["value"]["tools_path"] == "debug.tool_calls"
+    assert report["api_docs"] == "uploaded API docs"
+
+
+def test_parse_spec_text_reads_yaml_and_rejects_anything_else():
+    yaml = pytest.importorskip("yaml")
+    assert discovery._parse_spec_text(yaml.safe_dump(SPEC)) == SPEC
+    with pytest.raises(ValueError, match="not valid JSON or YAML"):
+        discovery._parse_spec_text("definitely: [not, a, spec")
+    with pytest.raises(ValueError, match="not an OpenAPI / Swagger document"):
+        discovery._parse_spec_text('{"hello": "world"}')
+
+
+def test_discover_feeds_provided_help_text_to_the_inference():
+    judge = Judge(INFERRED)
+    report, _, _ = _discover(judge=judge, help_text="Refunds take up to 14 business days. " * 20)
+    items = {i["kind"]: i for i in report["items"]}
+    assert items["instructions"]["status"] == "inferred"
+    assert "Refunds take up to 14 business days." in judge.prompts[0]
+
+
+def test_discover_ignores_provided_docs_when_they_are_empty():
+    report, log, _ = _discover(spec_url="  ", spec_text="  ", help_text="  ")
+    assert any("No API docs" in n for n in report["notes"])
+
+
 # --- Approving items -----------------------------------------------------------
 
 def _report_with_everything():
@@ -310,3 +356,27 @@ def test_discover_then_apply_through_the_api(client, offline):
     client.put(f"/api/targets/{bot['id']}", json={"name": "Acme", "type": "http", "config": form})
     kept = {t["id"]: t for t in client.get("/api/targets").json()}[bot["id"]]["config"]
     assert kept["discovery"]["approved"] == ["request"]
+
+
+def test_discover_accepts_provided_docs_through_the_api(client, offline):
+    bot = _create_target(client, name="Acme", config=dict(BASE_CONFIG))
+    report = client.post(f"/api/targets/{bot['id']}/discover",
+                         json={"authorized": True, "spec_text": json.dumps(SPEC)}).json()
+    assert report["api_docs"] == "uploaded API docs"
+    assert {i["kind"] for i in report["items"]} >= {"request"}
+
+
+def test_discovery_extract_returns_the_text_of_an_uploaded_help_file(client, offline):
+    bot = _create_target(client, name="Acme", config=dict(BASE_CONFIG))
+    r = client.post(f"/api/targets/{bot['id']}/discovery/extract",
+                    files={"file": ("faq.txt", b"Returns within 30 days.", "text/plain")})
+    assert r.status_code == 200
+    assert r.json()["text"] == "Returns within 30 days."
+
+
+def test_discovery_extract_refuses_unknown_file_types(client, offline):
+    bot = _create_target(client, name="Acme", config=dict(BASE_CONFIG))
+    r = client.post(f"/api/targets/{bot['id']}/discovery/extract",
+                    files={"file": ("notes.csv", b"a,b", "text/csv")})
+    assert r.status_code == 400
+    assert "unsupported file type" in r.json()["detail"]

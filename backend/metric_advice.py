@@ -439,3 +439,18 @@ CUSTOM_ADVICE: dict[str, list[str]] = {
         "Score only the fields the rule needs; extra fields give the judge more to misread.",
     ],
 }
+
+
+# The DeepTeam vulnerability metrics (metrics_catalog.DEEPTEAM_SPECS) share one plan.
+DEEPTEAM_ADVICE: dict[str, list[str]] = {
+    "chatbot": [
+        "Read the failed cases: each names the DeepTeam vulnerability and subtype it tested.",
+        "Add a rule to the system prompt that refuses this kind of request and keeps to the bot's role.",
+        "For agent and tool risks, enforce the check outside the model too: permissions, allow-lists and "
+        "confirmation before any action.",
+    ],
+    "tests": [
+        "Set the chatbot's role in its settings so the judge knows what normal behaviour is.",
+        "Add attack enhancers or the 'Latest' probe set to see whether the refusal holds when the attack is disguised.",
+    ],
+}

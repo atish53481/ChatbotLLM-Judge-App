@@ -87,9 +87,16 @@ function requireTarget() {
   return state.target;
 }
 
+// Multi-turn Jailbreak's strategies are named by /api/security/enhancers.
+function strategyLabel(key) {
+  const found = ((state.enhancers && state.enhancers.strategies) || []).find((s) => s.key === key);
+  return found ? found.label : key;
+}
+
 // --- Run options ------------------------------------------------------------------
 loaders["run-options"] = async () => {
   const options = await settings.get("runOptions", {});
+  if (!state.enhancers) state.enhancers = await api("/api/security/enhancers");
   const perMetric = options.metricSettings || {};
   const tunable = state.metrics.filter((m) => m.settings && Object.keys(m.settings).length);
   $("metric-settings").replaceChildren(...(tunable.length ? tunable.map((m) => el(
@@ -97,6 +104,11 @@ loaders["run-options"] = async () => {
     el("span", { className: "setting-title" }, m.title),
     ...Object.entries(m.settings).map(([name, schema]) => {
       const saved = perMetric[m.key] && perMetric[m.key][name];
+      if (schema.type === "choice") {
+        const select = el("select", { "data-metric": m.key, "data-setting": name, "data-choice": "1" });
+        fillSelect(select, (schema.options || []).map((o) => ({ value: o, label: (schema.labels && schema.labels[o]) || strategyLabel(o) })), saved ?? schema.default);
+        return el("label", {}, select, el("span", { className: "secondary small" }, schema.label || name));
+      }
       const input = el("input", {
         type: "number", min: schema.min, max: schema.max, step: 1, className: "num-input",
         "data-metric": m.key, "data-setting": name, value: saved ?? schema.default,
@@ -129,9 +141,10 @@ loaders["run-options"] = async () => {
 
 $("save-run-options").addEventListener("click", () => guarded(async () => {
   const metricSettings = {};
-  for (const input of $("metric-settings").querySelectorAll("input[data-metric]")) {
+  for (const input of $("metric-settings").querySelectorAll("input[data-metric], select[data-metric]")) {
     if (input.value === "") continue;
-    metricSettings[input.dataset.metric] = { ...(metricSettings[input.dataset.metric] || {}), [input.dataset.setting]: Number(input.value) };
+    const value = input.dataset.choice ? input.value : Number(input.value);
+    metricSettings[input.dataset.metric] = { ...(metricSettings[input.dataset.metric] || {}), [input.dataset.setting]: value };
   }
   const maxLatency = numberOrNull($("max-latency"));
   await settings.set("runOptions", {
@@ -395,6 +408,7 @@ $("pair-run").addEventListener("click", () => guarded(async () => {
 loaders.coverage = async () => {
   const target = requireTarget();
   const report = await api(`/api/security/coverage?target_id=${target.id}`);
+  renderFrameworks(report.frameworks || []);
   $("coverage-grid").replaceChildren(...report.categories.map((cat) => {
     const rate = cat.pass_rate;
     const fill = el("span");
@@ -410,6 +424,48 @@ loaders.coverage = async () => {
           : el("span", { className: "muted" }, "not run")))));
   }));
 };
+
+// OWASP LLM / Agentic / MCP: each risk id, how the bot did on the metrics that
+// test it, and a button that ticks those metrics in the side panel.
+async function tickMetrics(keys) {
+  const known = state.metrics.map((m) => m.key);
+  const saved = await settings.get("checkedMetrics", null);
+  const base = saved ?? state.metrics.filter((m) => m.source !== "deepteam").map((m) => m.key);
+  await settings.set("checkedMetrics", [...new Set([...base, ...keys])].filter((k) => known.includes(k)));
+  setStatus(`Ticked ${keys.length} metric(s) in the side panel's Metrics to run.`);
+}
+
+// How the bot did on one OWASP id. An id the chat can test only in part
+// (partial, backend PARTLY_TESTABLE) never reads as fully covered.
+function frameworkStatus(item) {
+  if (item.pass_rate === null) {
+    return el("span", { className: "muted" }, `${item.tested}/${item.total} tested${item.partial ? " · partly testable" : ""}`);
+  }
+  return el("span", { className: item.pass_rate >= 0.8 ? "status-pass" : "status-fail" },
+    `${pct(item.pass_rate)} resisted (${item.resisted}/${item.attacks})${item.partial ? " · partial coverage" : ""}`);
+}
+
+function renderFrameworks(frameworks) {
+  const titles = Object.fromEntries(state.metrics.map((m) => [m.key, m.title]));
+  api("/api/security/frameworks").then((data) => {
+    const dt = data.deepteam || {};
+    $("deepteam-version").textContent = dt.version
+      ? `DeepTeam ${dt.version}${dt.installed && dt.installed !== dt.version ? ` (installed ${dt.installed}: restart to read it)` : ""} · ${dt.metrics} vulnerability metrics`
+      : "DeepTeam catalog not found.";
+  }).catch(() => {});
+  $("framework-grid").replaceChildren(...frameworks.map((fw) => el("details", { className: "card stack", open: fw.key === "owasp_llm" },
+    el("summary", {}, el("strong", {}, fw.label)),
+    el("button", { type: "button", onclick: () => guarded(() => tickMetrics([...new Set(fw.items.flatMap((i) => i.metrics))])) }, "Tick all its metrics"),
+    el("ul", { className: "small framework-list" }, ...fw.items.map((item) => el("li", { className: item.partial ? "partial" : "" },
+      el("strong", {}, `${item.id} ${item.title}`), " ",
+      frameworkStatus(item),
+      item.partial
+        ? el("p", { className: "partial-note" }, `Partly testable from the chat: ${item.partial_reason || "only part of this risk shows in the chatbot's replies"}`)
+        : null,
+      el("div", { className: "secondary small" }, item.metrics.map((k) => titles[k] || k).join(", ")),
+      el("button", { type: "button", className: "small", onclick: () => guarded(() => tickMetrics(item.metrics)) }, "Tick these"),
+    ))))));
+}
 
 // --- Simulate ---------------------------------------------------------------------------------
 loaders.simulate = async () => {
@@ -608,7 +664,8 @@ $("cal-metric").addEventListener("change", () => guarded(loadCalibration));
 loaders.export = async () => {
   const envs = await api("/api/metrics/environments");
   fillSelect($("export-env"), envs.map((e) => ({ value: e.key, label: e.label })), $("export-env").value || "pr");
-  const singles = state.metrics.filter((m) => m.kind === "single" && !["security_probes", "prompt_leak_probes"].includes(m.dataset));
+  // Red-team probe metrics export too (with their probes); the multi-turn attack (kind "attack") stays in the app.
+  const singles = state.metrics.filter((m) => m.kind === "single");
   const defaults = new Set(["answer_relevancy", "correctness", "faithfulness", "helpfulness"]);
   $("export-metrics").replaceChildren(...singles.map((m) => checkbox("export-metric", m.key, m.title, defaults.has(m.key))));
 };

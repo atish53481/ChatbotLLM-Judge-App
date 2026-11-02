@@ -181,7 +181,7 @@ def test_api_enhancers_coverage_and_job_validation(client):
     assert {e["key"] for e in data["enhancers"]} == set(ae.ENHANCERS)
     target = _create_target(client)
     report = client.get(f"/api/security/coverage?target_id={target['id']}").json()
-    assert len(report["categories"]) == 5
+    assert len(report["categories"]) == 6  # the five risk categories + Agentic (DeepTeam)
     bad = client.post("/api/jobs", json={"target_id": target["id"], "metric_keys": ["prompt_injection"],
                                          "enhancements": ["nope"]})
     assert bad.status_code == 400
