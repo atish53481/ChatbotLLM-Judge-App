@@ -131,6 +131,7 @@ loaders["run-options"] = async () => {
 
   $("max-latency").value = typeof options.maxLatencyS === "number" ? options.maxLatencyS : "";
   $("use-calibration").checked = Boolean(options.useCalibration);
+  $("cache-judge").checked = Boolean(options.cacheJudgeResults);
   const deepeval = options.deepeval || {};
   $("de-strict").checked = Boolean(deepeval.strict_mode);
   $("de-reason").checked = deepeval.include_reason !== false;
@@ -154,6 +155,7 @@ $("save-run-options").addEventListener("click", () => guarded(async () => {
     maxLatencyS: maxLatency && maxLatency > 0 ? maxLatency : null,
     useCalibration: $("use-calibration").checked,
     deepeval: { strict_mode: $("de-strict").checked, include_reason: $("de-reason").checked, async_mode: $("de-async").checked },
+    cacheJudgeResults: $("cache-judge").checked,
   });
   await api("/api/judge/price", { method: "PUT", body: { price_per_mtok: numberOrNull($("judge-price")) } });
   setStatus("Run options saved. They apply to the next run you start.");

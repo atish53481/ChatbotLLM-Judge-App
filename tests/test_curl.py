@@ -67,7 +67,7 @@ def test_explicit_method_and_get_without_body():
 @pytest.mark.parametrize("bad", [
     "wget https://a.example",
     "curl -H 'x: y'",
-    'curl ^"https://a.example^" -H ^"x: y^"',
+    # 'curl ^"https://a.example^" -H ^"x: y^"'  # now supported after fix
     "curl 'https://a.example",
 ])
 def test_rejects_unusable_commands(bad):

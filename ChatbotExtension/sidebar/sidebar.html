@@ -392,7 +392,9 @@
   <section class="card" aria-labelledby="goldens-heading">
     <div class="card-heading">
       <h2 id="goldens-heading">Golden answers <span id="golden-count" class="muted"></span></h2>
-      <button id="reset-goldens" type="button" class="small-button" title="Discard edits and deletes, and bring back the default golden answers">Reset to defaults</button>
+      <div class="card-heading-actions">
+        <button id="reset-goldens" type="button" class="small-button" title="Discard edits and deletes, and bring back the default golden answers">Reset to defaults</button>
+      </div>
     </div>
     <p id="golden-missing" class="golden-missing small hidden" role="status"></p>
     <p id="golden-prompt" class="golden-missing small hidden" role="status"></p>
@@ -417,8 +419,10 @@
   <section class="card" aria-labelledby="conversations-heading">
     <div class="card-heading">
       <h2 id="conversations-heading">Conversation scenarios <span id="conversation-count" class="muted"></span></h2>
-      <button id="generate-conversations" type="button" class="small-button" title="Build scenarios from this chatbot's golden answers (two questions, then the first again) and save them here to review and edit">Generate from goldens</button>
-      <button id="reset-conversations" type="button" class="small-button" title="Discard edits and deletes, and bring back the default scenarios">Reset to defaults</button>
+      <div class="card-heading-actions">
+        <button id="generate-conversations" type="button" class="small-button" title="Build scenarios from this chatbot's golden answers (two questions, then the first again) and save them here to review and edit">Generate from goldens</button>
+        <button id="reset-conversations" type="button" class="small-button" title="Discard edits and deletes, and bring back the default scenarios">Reset to defaults</button>
+      </div>
     </div>
     <p class="muted small">
       Multi-turn tests for Conversation Completeness, Knowledge Retention, Role Adherence and
@@ -481,10 +485,13 @@
     </div>
     <details id="threshold-details" open>
       <summary>Metrics to run <span id="metric-check-count" class="muted small"></span></summary>
-      <div class="row metric-check-actions">
-        <button type="button" id="check-all-metrics" class="small-button">All</button>
+      <p class="muted small metric-check-hint">Quick select groups · then fine-tune below</p>
+      <div class="row metric-check-actions" role="group" aria-label="Quick select metric groups">
+        <button type="button" id="check-all-metrics" class="small-button">All Metrics</button>
+        <button type="button" id="check-golden-metrics" class="small-button">Golden Set Metrics</button>
+        <button type="button" id="check-scenario-metrics" class="small-button">Scenario Metrics</button>
+        <button type="button" id="check-own-question-metrics" class="small-button">Own Question Metrics</button>
         <button type="button" id="check-no-metrics" class="small-button">None</button>
-        <span class="muted small">Tick metrics to run · ≥ higher is better, ≤ lower is better</span>
       </div>
       <div id="threshold-table" class="threshold-table"></div>
     </details>

@@ -184,9 +184,11 @@ servers"). For a website chatbot the side panel:
 1. `POST /api/targets/parse-curl {curl, sample_message?, probe?}` runs when the user pastes.
    `targets/curl.py` parses a *Copy as cURL (bash)* command into `{url, method, headers,
    body_template}`. `prepare_body` / `prepare_url` find the question (`sample_message` if given;
-   else by key name, such as `message`, `prompt` or `query`, the last user turn of a `messages` list,
-   or the longest text) and swap it for `{{message}}`, emptying `history`-style arrays and cutting
-   `messages` to system + last user turn. With `probe` (default on) the captured question is sent
+   else by key name such as `message`, `prompt`, `query`, or the last user turn of a `messages` list,
+   or the longest text). It now also treats an `id`, `ticket`, `ticketid`, or `query` parameter
+   as the message for ticket-lookup chatbots (MetTel Compass, Jira, etc.). It swaps the value for
+   `{{message}}`, empties `history`-style arrays and cuts `messages` to system + last user turn.
+   With `probe` (default on) the captured question is sent
    once and `find_reply_path` / `find_stream_reply_path` locate the reply; a reply that lists tool
    calls or sources fills `tools_path` / `context_path` too. The result carries `sample_message`,
    `response_path`, `reply_preview` and `probe_error`.
@@ -374,10 +376,11 @@ Where the cases come from:
   it. The shipped `generic` and `ecommerce` probes are unchanged. Custom metrics
   (`custom_metrics.json`) are never reset.
 - **You.** The side panel's forms (`/api/goldens`, `/api/conversations`, `/api/security-probes`).
-  On each metric, **Test cases** lists exactly what a run sends (`GET /api/metrics/{key}/cases?target_id=`),
-  **Add** puts a case in the store that metric reads (`POST /api/metrics/{key}/cases`: a golden in
-  the chatbot's theme, a probe in its probe set, or a scenario) and **Delete** removes one
-  (`DELETE /api/metrics/{key}/cases/{case_id}`).
+  On each metric, **Test cases** lists exactly what a run sends (`GET /api/metrics/{key}/cases?target_id=`).
+  **Add** opens a form that puts a case in the store that metric reads (`POST /api/metrics/{key}/cases`):
+  a golden in the chatbot's theme, a probe in its probe set, or (for multi-turn metrics) a conversation scenario.
+  **Delete** removes one (`DELETE /api/metrics/{key}/cases/{case_id}`). The side panel also has a dedicated
+  **Conversation scenarios** section (shared across all Turns metrics).
 - **Generate with AI** (`POST /api/targets/{id}/prepare-goldens`, `generate: true` only after the
   user says yes, so nothing is written or spent before). A chatbot on the shared `generic` theme
   gets its own theme, named after it. `backend/datasets/autogen.py` asks the chatbot what it does
@@ -853,7 +856,7 @@ old runs once). Only metrics you make as a violation rate are lower-is-better.
 | What happens after a scan | `app._after_job` in `backend/dashboard/app.py` |
 | Single-answer judging | `judge_one` in `backend/dashboard/runner.py`, `POST /api/judge` |
 | Pass threshold | per metric: the threshold next to its tick box under **Metrics to run**, or a **Thresholds for** preset; defaults: each spec's threshold and `presets()` |
-| Judge model / provider | side panel **Judge settings**, or `.env`: `JUDGE_MODEL`, `JUDGE_BASE_URL`, `JUDGE_API_KEY` |
+| Judge model / provider | side panel **Judge settings**, or `.env`: `JUDGE_MODEL`, `JUDGE_BASE_URL`, `JUDGE_API_KEY`. Optional per-run judge result cache (`cache_judge_results`) reuses identical evaluations (test case + criteria) to save tokens. Every metric in the side panel and report now shows whether it is **DeepEval** or **DeepTeam**. Security metrics (DeepTeam, OWASP LLM / Agentic / MCP, red-team) always use the full set of probes with no compromise on coverage. For security metrics you can add your own question and click "Generate similar security probes with AI" to let the judge create related probes from DeepTeam, OWASP, Agentic, MCP, and RAG security topics on the same subject. When you open or add test cases for any metric, the panel now automatically scrolls into view. The UI (dashboard, report, risk page, side panel) has been polished to match the target demo GIFs.
 | Default golden answers, scenarios, probes | `backend/datasets/goldens.default.json`, `conversations.default.json`, `security_probes.default.json` |
 | DeepTeam metrics, their test cases, attacks, OWASP maps | `backend/datasets/deepteam_sync.py` (catalog; `deepteam_catalog.default.json` is regenerated with `build_catalog()` + `save_catalog(…, DEFAULT_CATALOG_PATH)`), `metrics_catalog._DEEPTEAM_RULES`, `runner.ATTACK_PROMPTS`, `redteam_coverage.OWASP_MCP_2025` |
 | Test data written for a new chatbot | `backend/datasets/autogen.py`; documents in `backend/rag/` |

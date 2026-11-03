@@ -84,6 +84,10 @@
   border-left: 0; padding-left: 0;
   font-size: 13px; color: var(--text-primary);
 }
+:root[data-theme="dark"] body.panel .card-heading-actions .small-button {
+  background: var(--surface-raised);
+  border-color: var(--border);
+}
 /* A small icon tile per section, so each block is easy to find by eye. */
 :root[data-theme="dark"] body.panel h2::before {
   display: inline-grid; place-items: center; flex: none;
@@ -121,10 +125,17 @@
   background: var(--surface-raised); border-radius: 6px;
   color: var(--text-primary); font-size: 12px;
 }
-:root[data-theme="dark"] body.panel .threshold-row { padding: 3px 8px; border-radius: 6px; }
+:root[data-theme="dark"] body.panel .threshold-row { padding: 5px 8px; border-radius: 6px; }
 :root[data-theme="dark"] body.panel .threshold-row:hover { background: rgba(255, 255, 255, 0.04); }
 :root[data-theme="dark"] body.panel .threshold-row .direction { color: var(--accent); }
-:root[data-theme="dark"] body.panel .threshold-row input[type="number"] { padding: 3px 6px; text-align: right; }
+:root[data-theme="dark"] body.panel .threshold-row input[type="number"] {
+  padding: 3px 6px; text-align: right;
+  background: #0d0f13;
+}
+:root[data-theme="dark"] body.panel .metric-check-actions {
+  border-bottom-color: var(--border);
+}
+:root[data-theme="dark"] body.panel label.row.run-mode > span { color: var(--text-secondary); }
 
 /* ---------- dashboard: slate, terracotta accent ---------- */
 :root[data-theme="dark"] body.dash {

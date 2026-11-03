@@ -1,0 +1,20 @@
+[2026-11-03T20:53:01.759Z] [INFO] ========================================================================================================================
+[2026-11-03T20:53:01.759Z] [INFO] Initializing MAM Client.
+App: com.microsoft.edge 156.0.4314.58
+SDK: 2.4.2.0
+OS: windows 10.0.26200.9711
+DeviceType: Desktop
+Manufacturer: Dell Inc.
+Model: Dell Pro Max 14 MC14250
+Telemetry: yes
+Managed device support: enabled
+[2026-11-03T20:53:01.760Z] [INFO] Telemetry session 53ed2682-47c0-485d-ad69-9dc3329c7de1.
+[2026-11-03T20:53:01.760Z] [INFO] ECS client initialized.
+[2026-11-03T20:53:01.760Z] [INFO] Initializing cache (v1).
+[2026-11-03T20:53:01.762Z] [INFO] Flight configuration defaults:
+{"924da161-897f-4061-ad83-eca72d58a16e_0":{"source":0,"value":false},"DesktopMAM_Canary":{"source":0,"value":0},"f9fec151-8ff5-437c-a028-0e92e9878d8d_0":{"source":0,"value":false},"f9fec151-8ff5-437c-a028-0e92e9878d8d_1":{"source":0,"value":false}}
+[2026-11-03T20:53:01.762Z] [INFO] Registered Flight Client FlightClientId:6a1b553f-06f8-43f5-8e14-2f7a7e4c3a01 with new flight key 10160f90-ad8e-40c2-8b3b-b47d2f200741.
+[2026-11-03T20:53:01.776Z] [INFO] Started ECS service request processing.
+[2026-11-03T20:53:01.776Z] [INFO] Fetching flight data for flight key 10160f90-ad8e-40c2-8b3b-b47d2f200741...
+[2026-11-03T20:53:02.796Z] [INFO] Shutting down.
+[2026-11-03T20:53:02.796Z] [INFO] Stopping ECS service request processing and discarding any remaining scheduled requests...

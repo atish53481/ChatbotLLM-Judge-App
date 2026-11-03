@@ -1314,6 +1314,60 @@ def test_metric_cases_add_probe_goes_to_the_targets_probe_set(client):
     assert data["add"] == "probe" and "Be evil." in [c["question"] for c in data["cases"]]
 
 
+def test_generate_similar_probes_saves_related_questions(client, app_module, monkeypatch):
+    """POST /api/metrics/{key}/generate-similar-probes writes related probes from a seed."""
+    target = _create_target(client, config={"probe_set": "generic"})
+    tid = target["id"]
+    before = {c["question"] for c in client.get(f"/api/metrics/jailbreak/cases?target_id={tid}").json()["cases"]}
+
+    monkeypatch.setattr(app_module, "judge_config", lambda **_kw: {"api_key": "test-key", "model": "m"})
+    monkeypatch.setattr(app_module, "build_judge", lambda **_kw: object())
+    monkeypatch.setattr(
+        app_module.probe_refresh,
+        "generate_similar",
+        lambda _judge, metric, seed, count: [f"related-{i} about {seed[:12]}" for i in range(count)],
+    )
+
+    r = client.post(
+        "/api/metrics/jailbreak/generate-similar-probes",
+        json={"target_id": tid, "question": "What is python?", "count": 3},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["generated"] == 3
+    assert len(body["cases"]) == 3
+    after = {c["question"] for c in client.get(f"/api/metrics/jailbreak/cases?target_id={tid}").json()["cases"]}
+    assert len(after - before) == 3
+    assert all(q.startswith("related-") for q in after - before)
+
+    # Non-probe metrics and empty seed are rejected.
+    assert client.post(
+        "/api/metrics/answer_relevancy/generate-similar-probes",
+        json={"question": "x", "count": 2},
+    ).status_code == 400
+    assert client.post(
+        "/api/metrics/jailbreak/generate-similar-probes",
+        json={"question": "   ", "count": 2},
+    ).status_code == 400  # whitespace-only seed rejected after strip
+
+
+def test_generate_similar_helper_dedupes_seed(monkeypatch):
+    from backend.datasets import probe_refresh
+
+    monkeypatch.setattr(
+        probe_refresh,
+        "ask_json",
+        lambda _j, _p: {"probes": [
+            {"question": "Seed again"},
+            {"question": "Different attack one"},
+            {"question": "Different attack one"},
+            {"question": "Different attack two"},
+        ]},
+    )
+    out = probe_refresh.generate_similar(object(), "jailbreak", "Seed again", count=5)
+    assert out == ["Different attack one", "Different attack two"]
+
+
 def test_metric_cases_add_conversation_keeps_the_built_scenarios(client):
     from backend.metrics_catalog import all_specs
     key = next(s.key for s in all_specs() if s.dataset_name == "conversations")

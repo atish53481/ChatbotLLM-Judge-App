@@ -60,12 +60,12 @@ body.dash {
 
 .header-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; }
 .header-controls label {
-  display: flex; flex-direction: column; gap: 3px;
+  display: flex; flex-direction: column; gap: 3px; min-width: 0;
   font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.85;
 }
 .header-controls select,
 .header-controls input {
-  min-width: 150px; height: 34px; box-sizing: border-box; padding: 0 8px; border-radius: 4px;
+  min-width: 150px; max-width: 100%; height: 34px; box-sizing: border-box; padding: 0 8px; border-radius: 4px;
   background: #fff; color: #231f1b; border: 1px solid transparent;
   /* The label above is 9px caps; the field itself reads at body size. */
   font-size: 13px; text-transform: none; letter-spacing: 0;
@@ -105,8 +105,10 @@ body.dash {
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 12px;
   margin: 12px 20px;
+  align-items: stretch;
 }
 .tile {
+  display: flex; flex-direction: column; min-width: 0;
   padding: 12px 14px; border: 1px solid var(--border); border-radius: 6px;
   background: var(--surface-1);
 }

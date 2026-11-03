@@ -110,8 +110,20 @@ def parse_curl(command: str) -> dict:
     strings. The Windows "cmd" flavour escapes quotes with ^ and is not supported.
     """
     text = command.strip().replace("\\\r\n", " ").replace("\\\n", " ")
-    if '^"' in text or text.endswith("^"):
-        raise ValueError('use "Copy as cURL (bash)", not "Copy as cURL (cmd)"')
+
+    # Extremely aggressive cleanup for Windows "Copy as cURL (cmd)" (full of ^, line continuations, mixed quotes)
+    if any(marker in text for marker in ['^"', ' ^ ', '--url ^', '^&', 'curl --url']):
+        text = (text.replace(' ^', ' ')
+                    .replace('^"', '"')
+                    .replace('^&', '&')
+                    .replace('^\\', '')
+                    .replace('^', '')
+                    .replace('\\ ', ' ')
+                    .replace(' \\', ' '))
+        text = text.replace("curl --url '", "curl '").replace("curl --url ", "curl ")
+
+    # Final normalization
+    text = " ".join(text.split())
     try:
         tokens = shlex.split(_expand_ansi_c_quotes(text))
     except ValueError as e:
@@ -339,6 +351,13 @@ def _prepare_form(body: str, sample_message: str) -> tuple[str, str]:
         ranked = [(_MESSAGE_KEYS.index(_norm(k)), i) for i, (k, v) in enumerate(pairs)
                   if _norm(k) in _MESSAGE_KEYS and v.strip()]
         target = min(ranked)[1] if ranked else None
+
+    # Fallback: if we have an "id" parameter (common in ticket lookups), treat it as the message
+    if target is None:
+        for i, (k, v) in enumerate(pairs):
+            if _norm(k) in ("id", "ticket", "ticketid", "query"):
+                target = i
+                break
     if target is None:
         return body, ""
     parts = [
@@ -355,6 +374,11 @@ def prepare_url(url: str, sample_message: str = "") -> tuple[str, str]:
         return url, ""
     query, found = _prepare_form(parts.query, sample_message)
     if not found:
+        # Last resort for ticket lookup APIs (MetTel Compass, Jira, etc.)
+        for k, v in parse_qsl(parts.query):
+            if _norm(k) in ("id", "ticket", "ticketid", "query"):
+                new_query = parts.query.replace(f"{k}={v}", f"{k}={MESSAGE_PLACEHOLDER}", 1)
+                return urlunsplit(parts._replace(query=new_query)), v
         return url, ""
     return urlunsplit(parts._replace(query=query)), found
 

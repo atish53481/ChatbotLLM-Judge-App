@@ -14,6 +14,7 @@ from deepeval.models import LocalModel
 from dotenv import load_dotenv
 
 from backend import cancel, traffic, usage
+from backend.judges.cache import get_cache, clear_cache
 
 load_dotenv()
 
@@ -66,7 +67,29 @@ class GroqJudge(LocalModel):
         raise RuntimeError("unreachable")
 
     def generate(self, *args, **kwargs):
-        return self._call(super().generate, *args, **kwargs)
+        # Judge result cache (new run option "cache_judge_results")
+        cache = get_cache()
+        if kwargs.get("cache_judge_results"):
+            key = cache.key(
+                test_case=kwargs.get("test_case", {}),
+                metric=kwargs.get("metric", {}),
+                judge_model=kwargs.get("model") or self.model
+            )
+            cached = cache.get(key)
+            if cached:
+                return cached  # return cached response object
+
+        response = self._call(super().generate, *args, **kwargs)
+
+        if kwargs.get("cache_judge_results") and "test_case" in kwargs and "metric" in kwargs:
+            key = cache.key(
+                test_case=kwargs["test_case"],
+                metric=kwargs["metric"],
+                judge_model=kwargs.get("model") or self.model
+            )
+            cache.set(key, response)
+
+        return response
 
     async def a_generate(self, *args, **kwargs):
         # Same cap and rate-limit backoff as the sync path.

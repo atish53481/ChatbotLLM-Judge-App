@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LLM Judge</title>
+  <link rel="stylesheet" href="../lib/theme.css">
+  <link rel="stylesheet" href="sidebar.css">
+  <link rel="stylesheet" href="../lib/skin.css">
+  <script src="../lib/theme-mode.js"></script>
+</head>
+<body class="panel">
+  <header class="panel-header">
+    <div class="panel-title-row">
+      <h1>LLM Judge</h1>
+      <button type="button" class="theme-toggle small-button"></button>
+    </div>
+    <p id="status" class="secondary" role="status">Checking backend…</p>
+  </header>
+  <div id="run-banner" class="run-banner hidden">
+    <span id="run-banner-text" class="run-banner-text"></span>
+    <button type="button" id="run-banner-show" class="small-button">Show results</button>
+    <button type="button" id="run-banner-close" class="small-button" aria-label="Dismiss run status" title="Dismiss">×</button>
+    <div id="run-detail" class="run-detail hidden" role="status"></div>
+  </div>
+  <span id="run-announce" class="sr-only" role="status"></span>
+
+  <details id="judge-settings" class="card">
+    <summary>Judge settings <span id="judge-summary" class="muted small"></span></summary>
+    <form id="judge-form" class="stack">
+      <p class="muted small">The judge model scores the chatbot's answers. It must not be the chatbot being judged.</p>
+      <label>Provider
+        <select id="judge-provider">
+          <option value="groq" data-base-url="https://api.groq.com/openai/v1" data-model="openai/gpt-oss-120b">Groq</option>
+          <option value="commandcode" data-base-url="https://api.commandcode.ai/provider/v1" data-model="deepseek/deepseek-v4-flash">Command Code</option>
+          <option value="openai" data-base-url="https://api.openai.com/v1" data-model="gpt-4o-mini">OpenAI</option>
+          <option value="nvidia" data-base-url="https://integrate.api.nvidia.com/v1" data-model="openai/gpt-oss-20b">NVIDIA</option>
+          <option value="custom">Other OpenAI-compatible API</option>
+        </select>
+      </label>
+      <label>API key
+        <input id="judge-key" type="password" autocomplete="off" spellcheck="false">
+      </label>
+      <p id="judge-key-hint" class="muted small"></p>
+      <label>Model <input id="judge-model" spellcheck="false" placeholder="e.g. openai/gpt-oss-120b"></label>
+      <label>Base URL <input id="judge-base-url" spellcheck="false" placeholder="https://api.example.com/v1"></label>
+      <div class="row">
+        <button type="button" id="judge-test">Test</button>
+        <button type="submit" id="judge-save" class="primary">Save</button>
+        <button type="button" id="judge-clear-key" class="small-button hidden" title="Forget the key saved here and use the .env key again">Remove saved key</button>
+      </div>
+      <p id="judge-result" class="small" role="status"></p>
+    </form>
+  </details>
+
+  <details id="confident-settings" class="card">
+    <summary>Confident AI <span id="confident-summary" class="muted small">· optional</span></summary>
+    <form id="confident-form" class="stack">
+      <p class="muted small">Optional. With a Confident AI key, test runs also appear in your
+        <a href="https://app.confident-ai.com" target="_blank" rel="noopener">Confident AI portal</a>.
+        Without one the app works as usual and every report stays here. Sending copies the run's questions, replies,
+        context and the judge's reasons to Confident AI; chatbot keys and cookies are never sent.</p>
+      <label>Confident AI API key
+        <input id="confident-key" type="password" autocomplete="off" spellcheck="false" placeholder="paste your Confident AI API key">
+      </label>
+      <p id="confident-key-hint" class="muted small"></p>
+      <label>Project name <span class="muted small">(only with an organization key)</span>
+        <input id="confident-project" spellcheck="false" maxlength="200" placeholder="e.g. Test">
+      </label>
+      <p class="muted small">A project key (confident_us_proj_…) works as it is. With an organization key
+        (confident_us_org_…) the app creates a project key named "LLM Judge app" in the project you name and keeps
+        only that; the organization key is not stored.</p>
+      <label class="row small">
+        <input id="confident-auto" type="checkbox">
+        <span>Send each finished run automatically (else use "Send to Confident AI" on a run)</span>
+      </label>
+      <div class="row">
+        <button type="submit" class="primary">Save</button>
+        <button type="button" id="confident-clear-key" class="small-button hidden" title="Forget the key saved here">Remove saved key</button>
+      </div>
+      <p id="confident-result" class="small" role="status"></p>
+    </form>
+  </details>
+
+  <details id="langfuse-settings" class="card">
+    <summary>Langfuse <span id="langfuse-summary" class="muted small">· optional</span></summary>
+    <form id="langfuse-form" class="stack">
+      <p class="muted small">Optional. With Langfuse keys, each test run also appears in
+        <a href="https://cloud.langfuse.com" target="_blank" rel="noopener">Langfuse</a> (Langfuse Cloud or your own
+        server) as one trace: a span per metric and per test case, with the judge's scores. Without keys the app works
+        as usual and nothing is sent. Sending copies the run's questions, replies, context and the judge's reasons to
+        Langfuse; chatbot keys and cookies are never sent.</p>
+      <label>Public key
+        <input id="langfuse-public-key" autocomplete="off" spellcheck="false" placeholder="pk-lf-…">
+      </label>
+      <label>Secret key
+        <input id="langfuse-secret-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-lf-…">
+      </label>
+      <p id="langfuse-key-hint" class="muted small"></p>
+      <label>Host
+        <input id="langfuse-host" spellcheck="false" maxlength="500" placeholder="https://cloud.langfuse.com">
+      </label>
+      <p class="muted small">Both keys are under Settings → API Keys in your Langfuse project. Host: EU cloud
+        https://cloud.langfuse.com (used when empty), US cloud https://us.cloud.langfuse.com, or your own server's
+        address, e.g. http://localhost:3000.</p>
+      <label class="row small">
+        <input id="langfuse-auto" type="checkbox">
+        <span>Send each finished run automatically (else use "Send latest run")</span>
+      </label>
+      <div class="row">
+        <button type="submit" class="primary">Save</button>
+        <button type="button" id="langfuse-send-latest" title="Send the selected chatbot's latest finished run to Langfuse now">Send latest run</button>
+        <button type="button" id="langfuse-clear-keys" class="small-button hidden" title="Forget the keys saved here">Remove saved keys</button>
+      </div>
+      <p id="langfuse-result" class="small" role="status"></p>
+    </form>
+  </details>
+
+  <section class="card" aria-labelledby="chatbot-heading">
+    <h2 id="chatbot-heading">Chatbot</h2>
+    <div class="row target-row">
+      <label class="grow">
+        <span class="sr-only">Chatbot to judge</span>
+        <select id="target-select"></select>
+      </label>
+      <div class="target-actions">
+        <button id="edit-target" type="button" title="Edit this chatbot">Edit</button>
+        <button id="build-testdata" type="button" title="Build test data for every metric with AI. Uses judge tokens.">Build all test data</button>
+        <button id="reset-target-runs" type="button" title="Clear this chatbot's score history (goldens and config stay)">Reset scores</button>
+        <button id="delete-target" type="button" title="Delete this chatbot">Delete</button>
+      </div>
+    </div>
+    <p id="target-theme" class="muted small"></p>
+    <!-- Test data for every metric (POST/GET /api/targets/{id}/prepare-all): the
+         question after a chatbot is added, then the build's live progress. -->
+    <div id="testdata" class="testdata hidden">
+      <div class="testdata-head">
+        <p id="testdata-status" class="small" role="status"></p>
+        <button type="button" id="testdata-stop" class="small-button hidden" title="Stop the build before its next message or judge call; what it wrote so far stays.">Stop</button>
+        <button type="button" id="testdata-close" class="small-button hidden" aria-label="Dismiss the test data status" title="Dismiss">×</button>
+      </div>
+      <p id="testdata-question" class="small hidden" tabindex="-1">Build test data for every metric with AI? It interviews the chatbot, reads its help pages, lists its tools and writes goldens, scenarios, tool tests and security probes fitted to it. Uses judge tokens.</p>
+      <p id="testdata-needs-judge" class="small status-error hidden">Add the judge's API key in Judge settings first: the judge writes the test data.</p>
+      <div id="testdata-ask" class="row hidden">
+        <button type="button" id="testdata-yes" class="primary small-button">Build test data with AI</button>
+        <button type="button" id="testdata-no" class="small-button">No, I'll enter my own</button>
+      </div>
+      <p id="testdata-kind" class="small hidden"></p>
+      <ol id="testdata-steps" class="testdata-steps" aria-label="Build steps"></ol>
+      <div id="testdata-metrics" class="testdata-metrics"></div>
+      <div id="testdata-leftovers" class="testdata-leftovers hidden"></div>
+    </div>
+    <details id="add-target">
+      <summary id="target-form-summary">Add a chatbot or MCP server</summary>
+      <div id="target-kind" class="kind-switch" role="radiogroup" aria-label="What to add">
+        <label class="kind-option">
+          <input type="radio" id="kind-http" name="target-kind" value="http" checked>
+          <span>Website chatbot <small>(paste cURL)</small></span>
+        </label>
+        <label class="kind-option">
+          <input type="radio" id="kind-mcp" name="target-kind" value="mcp">
+          <span>MCP server</span>
+        </label>
+      </div>
+      <form id="target-form" class="stack">
+        <label>Name <input id="target-name" required maxlength="80"></label>
+        <div id="target-existing" class="row hidden" role="status">
+          <span id="target-existing-text" class="small"></span>
+          <button type="button" id="target-save-as-new" class="small-button">Save as new instead</button>
+        </div>
+        <details id="curl-import" open>
+          <summary>Fill from a real request (cURL)</summary>
+          <div class="stack">
+            <p class="muted small">
+              On the chatbot's website open DevTools (F12) &rarr; Network, send it a message,
+              right-click the chat request &rarr; Copy &rarr; <strong>Copy as cURL (bash)</strong>, and paste it here.
+              Every field below fills in by itself.
+            </p>
+            <label>cURL command <textarea id="curl-input" rows="4" spellcheck="false" placeholder="curl 'https://…' -H '…' --data-raw '…'"></textarea></label>
+            <label>Message you sent in that request (found automatically)
+              <input id="curl-sample-message" placeholder="found when you paste" title="Replaced with {{message}} so the judge can ask its own questions. Correct it and press Re-detect if the wrong text was picked.">
+            </label>
+            <div class="row">
+              <button type="button" id="curl-fill">Re-detect</button>
+              <span id="curl-status" class="small" role="status"></span>
+            </div>
+          </div>
+        </details>
+        <details id="llm-import">
+          <summary>Or fill from an LLM API (OpenAI-compatible)</summary>
+          <div class="stack">
+            <p class="muted small">
+              Judging another model? Point the judge straight at its chat API &mdash; no request
+              capture needed. Filling these sets the fields below for you.
+            </p>
+            <label class="grow">Base URL <input id="llm-base-url" value="https://api.openai.com/v1" spellcheck="false"></label>
+            <label>Model <input id="llm-model" spellcheck="false" placeholder="e.g. gpt-4o-mini or openai/gpt-oss-120b"></label>
+            <label>API key <input id="llm-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="leave empty for a local model"></label>
+            <label>System prompt (optional) <textarea id="llm-system-prompt" rows="2" placeholder="e.g. You are a support assistant for ACME."></textarea></label>
+            <div class="row">
+              <button type="button" id="llm-fill">Fill from LLM API</button>
+              <span id="llm-status" class="small" role="status"></span>
+            </div>
+          </div>
+        </details>
+        <div class="row">
+          <label>Method
+            <select id="target-method">
+              <option>POST</option><option>GET</option><option>PUT</option><option>PATCH</option>
+            </select>
+          </label>
+          <label class="grow">URL <input id="target-url" required placeholder="https://chatbot.example/api/chat"></label>
+        </div>
+        <label>Headers (one "Name: value" per line)
+          <textarea id="target-headers" rows="3" spellcheck="false" placeholder="Content-Type: application/json&#10;Authorization: Bearer …"></textarea>
+        </label>
+        <p id="target-headers-hint" class="muted small hidden">Saved headers are hidden. Leave empty to keep them; type new ones to replace them all.</p>
+        <label><span>Body (put <code>{{message}}</code> where the question goes)</span>
+          <textarea id="target-body" rows="4" spellcheck="false" placeholder='{"message": "{{message}}"}'></textarea>
+        </label>
+        <label>Reply path
+          <input id="target-response-path" placeholder="e.g. reply or choices.0.message.content" title="Dotted path to the reply text in the JSON response (for a stream: in each event). Empty = the whole response text.">
+        </label>
+        <label>Chatbot role (recommended, for Security metrics)
+          <input id="target-persona" maxlength="300" placeholder="e.g. ShopEasy e-commerce support bot" title="What the chatbot is meant to be. Domain Misuse, Non-Advice and Role Violation are judged against it; empty = the role the bot claims for itself.">
+        </label>
+        <p class="muted small">One line on what the bot is for. Without it, off-role answers are judged against the role the bot claims for itself.</p>
+        <details id="target-advanced" class="target-limits">
+          <summary>Advanced (optional) <span id="target-advanced-summary" class="muted small"></span></summary>
+          <p class="muted small">All of these work automatically when left empty. Set them only to override.</p>
+          <label>Retrieved context path (RAG metrics)
+            <input id="target-context-path" spellcheck="false" placeholder="auto: found in the replies (e.g. sources)" title="Where the chatbot's response lists the documents it retrieved. Filled in automatically when a reply has them (pasted cURL or any scan). Needed for Contextual Precision / Recall / Relevancy and the Turn RAG metrics.">
+          </label>
+          <label>Sources when the reply lists none
+            <select id="target-sources-fallback" title="For a chatbot whose response does not list its sources. The judge app finds context itself, and Faithfulness, Citation Quality and Turn Faithfulness score the answers against it. This is not the chatbot's own retrieval, so Contextual Precision / Recall / Relevancy never use it.">
+              <option value="">None (score only what the chatbot returns)</option>
+              <option value="knowledge_base">My uploaded documents (this theme's knowledge base)</option>
+              <option value="cited_links">Pages the reply links to</option>
+            </select>
+          </label>
+          <label>Tool calls path (agent metrics)
+            <input id="target-tools-path" spellcheck="false" placeholder="auto: found in the replies (e.g. tool_calls)" title="Where the chatbot's response lists the tools it called (an agent). Filled in automatically when a reply has them (pasted cURL or any scan). Turns on Tool Correctness, Argument Correctness, Plan Quality / Adherence and Step Efficiency.">
+          </label>
+          <label>Security probes
+            <select id="target-probe-set" title="Which red-team probes the Security metrics send: E-commerce ones mention orders, refunds and customers; Generic ones fit any assistant.">
+              <option value="generic">Generic (any assistant)</option>
+              <option value="ecommerce">E-commerce (orders, refunds, customers)</option>
+              <option value="latest">Latest (OWASP / DeepTeam, refreshed daily)</option>
+            </select>
+          </label>
+          <label>Chatbot instructions (for Prompt Alignment)
+            <span class="muted small">Paste the rules from the chatbot's system prompt, one rule per line. Prompt Alignment scores each reply by how many of these rules it follows. Leave empty to use the pasted request's system prompt, else standard production rules.</span>
+            <textarea id="target-instructions" rows="3" placeholder="auto: the pasted request's system prompt, else standard production rules" title="The rules this chatbot is told to follow (its system prompt). Prompt Alignment checks every reply against them. Empty = the system prompt in the pasted request if it has one, else standard production rules fitted to the chatbot (RAG rules when it returns retrieved context, agent rules when it reports tool calls, a role rule when it has a Chatbot role)."></textarea>
+          </label>
+        </details>
+        <label>Help / FAQ page URL (optional, for golden answers with Context)
+          <input id="target-help-url" type="url" spellcheck="false" placeholder="https://example.com/help" title="A page with what this chatbot should know (FAQ, policies, help centre). When a new chatbot is saved, golden answers with Context are generated from it, which Faithfulness, Hallucination, Summarization and the Contextual metrics need.">
+        </label>
+        <details class="target-limits">
+          <summary>Limits and reply checks</summary>
+          <label>Max message length (characters, optional)
+            <input id="target-max-length" type="number" min="1" step="1" placeholder="no limit" title="The longest message this chatbot accepts. Longer test messages are shortened where they can be (Summarization) and otherwise skipped, instead of failing the run.">
+          </label>
+          <label>Delay between messages (seconds)
+            <input id="target-send-delay" type="number" min="0" max="60" step="0.5" placeholder="0" title="Wait this long between two messages, for chatbots that rate-limit. Busy replies (HTTP 429/503) are retried either way.">
+          </label>
+          <label class="row">
+            <input id="target-check-replies" type="checkbox">
+            <span title="Off by default: like DeepEval, every reply is scored as it is. On: a reply like 'daily limit reached' or 'please log in' stops the run as an error instead of being scored.">Treat service messages as errors (not in DeepEval)</span>
+          </label>
+        </details>
+        <input id="target-history-path" type="hidden">
+        <label>Golden set (theme)
+          <input id="target-theme-input" value="generic" required pattern="[A-Za-z0-9_\-]+" title="Letters, digits, _ and -">
+        </label>
+        <div class="row">
+          <button type="button" id="target-test">Test</button>
+          <span id="target-test-result" class="small" role="status"></span>
+        </div>
+        <div class="row">
+          <button type="submit" id="target-submit" class="primary">Save chatbot</button>
+          <button type="button" id="target-cancel" class="hidden">Cancel</button>
+          <span id="target-form-error" class="status-error small" role="alert"></span>
+        </div>
+      </form>
+      <!-- novalidate: the script checks name, command and URL itself; the browser
+           would also check the hidden transport's fields and block Save silently. -->
+      <form id="mcp-form" class="stack hidden" aria-label="MCP server" novalidate>
+        <p class="muted small">
+          An MCP server offers tools, not a chat. For each test message the agent model picks one of its tools
+          and the arguments, the server runs it, and the tool's output is scored as the reply. The agent and
+          security metrics score the calls it made.
+        </p>
+        <label>Name <input id="mcp-name" required maxlength="80" spellcheck="false"></label>
+        <div class="field-group">
+          <span id="mcp-transport-label" class="field-caption">How the app reaches it</span>
+          <div class="kind-switch" role="radiogroup" aria-labelledby="mcp-transport-label">
+            <label class="kind-option">
+              <input type="radio" id="mcp-transport-stdio" name="mcp-transport" value="stdio" checked>
+              <span>Local command (stdio)</span>
+            </label>
+            <label class="kind-option">
+              <input type="radio" id="mcp-transport-http" name="mcp-transport" value="http">
+              <span>HTTP URL</span>
+            </label>
+          </div>
+        </div>
+        <div id="mcp-stdio" class="stack mcp-fields">
+          <label>Command
+            <input id="mcp-command" spellcheck="false" placeholder="e.g. npx, uvx or python" title="The program that starts the server on this computer. It runs without a console window.">
+          </label>
+          <label>Arguments (one per line)
+            <textarea id="mcp-args" rows="3" spellcheck="false" placeholder="-y&#10;@modelcontextprotocol/server-everything"></textarea>
+          </label>
+          <p class="muted small">Put keys and tokens in the environment variables, not the arguments: arguments are saved and shown as typed, environment values are hidden.</p>
+          <label>Environment variables (one KEY=VALUE per line, optional)
+            <textarea id="mcp-env" rows="2" spellcheck="false" placeholder="API_KEY=…"></textarea>
+          </label>
+          <p id="mcp-env-hint" class="muted small hidden">Saved values show as ***. Leave a value as *** to keep it, type a new one to change it, or delete its line to remove it.</p>
+        </div>
+        <div id="mcp-http" class="stack mcp-fields hidden">
+          <label>URL
+            <input id="mcp-url" type="url" spellcheck="false" placeholder="http://localhost:3000/mcp" title="The server's streamable HTTP endpoint.">
+          </label>
+          <label>Headers (one "Name: value" per line, optional)
+            <textarea id="mcp-headers" rows="2" spellcheck="false" placeholder="Authorization: Bearer …"></textarea>
+          </label>
+          <p id="mcp-headers-hint" class="muted small hidden">Saved header values show as ***. Leave a value as *** to keep it, type a new one to change it, or delete its line to remove it.</p>
+        </div>
+        <label>Chatbot role (recommended, for Security metrics)
+          <input id="mcp-persona" maxlength="300" placeholder="e.g. File assistant for the team's shared drive" title="What the server's agent is meant to be. Domain Misuse, Non-Advice and Role Violation are judged against it.">
+        </label>
+        <label>Agent model (optional)
+          <input id="mcp-agent-model" maxlength="200" spellcheck="false" placeholder="empty = the judge model" aria-describedby="mcp-agent-model-help">
+        </label>
+        <p id="mcp-agent-model-help" class="muted small">The model that picks the server's tools. Empty = the judge model, which then also grades its own choices.</p>
+        <div class="row">
+          <button type="button" id="mcp-test">Test &amp; list tools</button>
+        </div>
+        <p id="mcp-test-status" class="small" role="status"></p>
+        <p id="mcp-server-instructions" class="muted small hidden"></p>
+        <ul id="mcp-tool-list" class="mcp-tool-list hidden" aria-label="The server's tools"></ul>
+        <div class="row">
+          <button type="submit" id="mcp-submit" class="primary">Save MCP server</button>
+          <button type="button" id="mcp-cancel" class="hidden">Cancel</button>
+          <span id="mcp-form-error" class="status-error small" role="alert"></span>
+        </div>
+      </form>
+    </details>
+    <details id="discovery">
+      <summary>Find missing metric data <span id="discovery-summary" class="muted small"></span></summary>
+      <div class="stack">
+        <p class="muted small">When the cURL alone does not show what some metrics need (the chatbot's rules, its
+          tool calls, its retrieved sources), the app looks for them: the chatbot's API docs (OpenAPI / Swagger), the
+          same request with a debug flag, its help pages and its own answers. At most 20 page fetches and 10 chat
+          messages (its own golden questions first); the judge drafts rules and tools. Nothing is used until you approve it, and whatever is not found
+          is scored black box.</p>
+        <label class="row small">
+          <input id="discovery-authorized" type="checkbox">
+          <span>I own this chatbot or am allowed to test it</span>
+        </label>
+        <label class="row small">
+          <input id="discovery-send-headers" type="checkbox">
+          <span title="Some API docs need a login. Off: the docs are fetched without the chatbot's cookies and keys.">Also send its cookies / keys to its API docs</span>
+        </label>
+        <details id="discovery-docs">
+          <summary>Or provide the docs yourself (optional)</summary>
+          <div class="stack">
+            <label>OpenAPI / Swagger link
+              <input id="discovery-spec-url" type="url" spellcheck="false" placeholder="https://example.com/openapi.json">
+            </label>
+            <label>… or OpenAPI / Swagger file (JSON or YAML)
+              <input id="discovery-spec-file" type="file" accept=".json,.yaml,.yml,application/json,application/yaml,text/yaml">
+            </label>
+            <label>Help / FAQ / log text (pasted, for the judge to infer rules and tools)
+              <textarea id="discovery-help-text" rows="3" spellcheck="false" placeholder="Paste the chatbot's help page, FAQ or a chat / API log."></textarea>
+            </label>
+            <label>… or a help / FAQ / log file (TXT, MD, LOG, PDF, DOCX)
+              <input id="discovery-help-file" type="file" accept=".txt,.md,.markdown,.log,.pdf,.docx">
+            </label>
+          </div>
+        </details>
+        <div class="row">
+          <button id="discovery-run" type="button">Find missing data</button>
+          <span id="discovery-status" class="small" role="status"></span>
+        </div>
+        <div id="discovery-report" class="stack"></div>
+      </div>
+    </details>
+  </section>
+
+  <section class="card" aria-labelledby="goldens-heading">
+    <div class="card-heading">
+      <h2 id="goldens-heading">Golden answers <span id="golden-count" class="muted"></span></h2>
+      <div class="card-heading-actions">
+        <button id="reset-goldens" type="button" class="small-button" title="Discard edits and deletes, and bring back the default golden answers">Reset to defaults</button>
+      </div>
+    </div>
+    <p id="golden-missing" class="golden-missing small hidden" role="status"></p>
+    <p id="golden-prompt" class="golden-missing small hidden" role="status"></p>
+    <ul id="golden-list" class="golden-list"></ul>
+    <details id="add-golden">
+      <summary id="golden-form-summary">Add a golden answer</summary>
+      <form id="golden-form" class="stack">
+        <label>Question <textarea id="golden-question" rows="2" required></textarea></label>
+        <label>Expected answer <textarea id="golden-answer" rows="3" required></textarea></label>
+        <label>Context (one fact per line; needed by Faithfulness, Hallucination, Summarization and the Contextual metrics) <textarea id="golden-context" rows="3"></textarea></label>
+        <label>Categories (comma separated, optional) <input id="golden-categories"></label>
+        <label>Expected tools (comma separated, optional; for Tool Correctness) <input id="golden-tools" spellcheck="false" placeholder="e.g. lookup_order, send_email"></label>
+        <div class="row">
+          <button type="submit" id="golden-submit" class="primary">Add golden answer</button>
+          <button type="button" id="golden-cancel" class="hidden">Cancel</button>
+          <span id="golden-form-error" class="status-error small" role="alert"></span>
+        </div>
+      </form>
+    </details>
+  </section>
+
+  <section class="card" aria-labelledby="conversations-heading">
+    <div class="card-heading">
+      <h2 id="conversations-heading">Conversation scenarios <span id="conversation-count" class="muted"></span></h2>
+      <div class="card-heading-actions">
+        <button id="generate-conversations" type="button" class="small-button" title="Build scenarios from this chatbot's golden answers (two questions, then the first again) and save them here to review and edit">Generate from goldens</button>
+        <button id="reset-conversations" type="button" class="small-button" title="Discard edits and deletes, and bring back the default scenarios">Reset to defaults</button>
+      </div>
+    </div>
+    <p class="muted small">
+      Multi-turn tests for Conversation Completeness, Knowledge Retention, Role Adherence and
+      Turn Relevancy. The user turns are sent one by one, each with the conversation so far.
+      With no scenarios here, a run builds them from the golden answers.
+    </p>
+    <p id="conversation-status" class="small" role="status"></p>
+    <ul id="conversation-list" class="golden-list"></ul>
+    <details id="add-conversation">
+      <summary id="conversation-form-summary">Add a scenario</summary>
+      <form id="conversation-form" class="stack">
+        <label>Name <input id="conversation-name" required maxlength="200"></label>
+        <label>User turns (one message per line, sent in order)
+          <textarea id="conversation-turns" rows="4" required placeholder="Hi, my order number is 48213.&#10;How long does shipping take?&#10;Which order number did I give you?"></textarea>
+        </label>
+        <label>Expected outcome <textarea id="conversation-outcome" rows="2" placeholder="What a complete, good conversation achieves"></textarea></label>
+        <label>Scenario (optional) <textarea id="conversation-scenario" rows="2"></textarea></label>
+        <label>Chatbot role (optional) <input id="conversation-role" placeholder="a customer support assistant for an online store"></label>
+        <div class="row">
+          <button type="submit" id="conversation-submit" class="primary">Add scenario</button>
+          <button type="button" id="conversation-cancel" class="hidden">Cancel</button>
+          <span id="conversation-form-error" class="status-error small" role="alert"></span>
+        </div>
+      </form>
+    </details>
+  </section>
+
+  <section class="card" aria-labelledby="documents-heading">
+    <h2 id="documents-heading">Generate from a document or web page</h2>
+    <p class="muted small">
+      Upload a reference or requirement document (PDF, TXT, DOCX, MD), or give the
+      address of the chatbot's help / FAQ page, and DeepEval generates a golden set
+      from it into the golden answers above.
+    </p>
+    <form id="document-form" class="stack">
+      <input id="document-file" type="file" accept=".pdf,.txt,.docx,.md,.markdown,.mdx" required>
+      <div class="row">
+        <button type="submit" id="document-submit" class="primary">Generate goldens</button>
+        <span id="document-form-error" class="status-error small" role="alert"></span>
+      </div>
+    </form>
+    <form id="url-form" class="stack">
+      <label>Help / FAQ page address
+        <input id="document-url" type="url" required placeholder="https://example.com/help" spellcheck="false" title="A page with static text (not built by JavaScript). If it has none, save it as a PDF and upload that instead.">
+      </label>
+      <div class="row">
+        <button type="submit" id="url-submit" class="primary">Generate from URL</button>
+        <span id="url-form-error" class="status-error small" role="alert"></span>
+      </div>
+    </form>
+    <ul id="document-list" class="document-list"></ul>
+  </section>
+
+  <section class="card" aria-labelledby="judge-heading">
+    <h2 id="judge-heading">Judge</h2>
+    <div class="row threshold-env-row">
+      <label class="grow">Thresholds for
+        <select id="threshold-env" title="Pick a preset from the threshold strategy, or edit any metric below (Custom)"></select>
+      </label>
+    </div>
+    <details id="threshold-details" open>
+      <summary>Metrics to run <span id="metric-check-count" class="muted small"></span></summary>
+      <div class="row metric-check-actions">
+        <button type="button" id="check-all-metrics" class="small-button">All Metrics</button>
+        <button type="button" id="check-golden-metrics" class="small-button">Golden Set Metrics</button>
+        <button type="button" id="check-scenario-metrics" class="small-button">Scenario Metrics</button>
+        <button type="button" id="check-own-question-metrics" class="small-button">Own Question Metrics</button>
+        <button type="button" id="check-no-metrics" class="small-button">None</button>
+        <span class="muted small">Quick select groups · then fine-tune below</span>
+      </div>
+      <div id="threshold-table" class="threshold-table"></div>
+    </details>
+    <label class="row small run-mode" title="Low: each metric scores 1 test case (fast, few judge tokens). High: each metric scores every test case it has. Same setting as the dashboard's Run mode.">
+      <span>Run mode</span>
+      <select id="run-mode">
+        <option value="1">Low · 1 case per metric</option>
+        <option value="2">2 cases per metric</option>
+        <option value="3">3 cases per metric</option>
+        <option value="5">5 cases per metric</option>
+        <option value="">High · all cases</option>
+      </select>
+    </label>
+    <label class="row small run-mode">
+      <span>Parallel metrics</span>
+      <select id="parallel-metrics"></select>
+    </label>
+    <label class="row small consistency-check" title="The judge scores every reply twice (the chatbot is asked once). The case scores the average, and a run whose two scorings differ by more than 0.15 is flagged as judge unstable. Uses about twice the judge tokens.">
+      <input id="check-consistency" type="checkbox">
+      <span>Check judge consistency (about 2× judge tokens, not in DeepEval)</span>
+    </label>
+    <div class="row run-row-buttons">
+      <button id="run-button" type="button" class="primary grow">Run judge</button>
+      <button id="stop-button" type="button" class="danger hidden" title="Stop everything: every running and queued run ends at its next chatbot or judge call">Stop</button>
+    </div>
+    <ul id="run-results" class="run-results" aria-live="polite"></ul>
+    <h3>Latest scores</h3>
+    <div id="latest-chart-box" class="chart-box hidden">
+      <canvas id="latest-chart" role="img" aria-label="Latest score per metric"></canvas>
+    </div>
+    <p id="latest-empty" class="muted small">No runs yet for this chatbot. Tick metrics and press Run judge.</p>
+  </section>
+
+  <button id="open-dashboard" type="button" class="wide">Open dashboard</button>
+  <button id="open-advanced" type="button" class="wide" title="Custom metrics, A/B tests, run comparison, red-team coverage, simulation, calibration and CI export">Advanced tools</button>
+
+  <script src="../lib/vendor/chart.umd.min.js"></script>
+  <script src="../lib/api.js"></script>
+  <script src="../lib/announce.js"></script>
+  <script src="../lib/ui.js"></script>
+  <script src="../lib/charts.js"></script>
+  <script src="../lib/geval-builder.js"></script>
+  <script src="sidebar.js"></script>
+  <script src="discovery.js"></script>
+</body>
+</html>

@@ -1979,6 +1979,19 @@ async function renderThresholds() {
           $("threshold-env").value = "custom";
         });
         const panel = el("div", { className: "case-panel", hidden: true });
+        // Title, ≥/≤ and threshold share one row; Test cases / Add sit on the
+        // next grid row so the number column stays lined up across metrics.
+        const title = el(
+          "span",
+          { className: "threshold-title" },
+          metric.title,
+          hasNoCases(metric)
+            ? el("small", {
+                className: "no-cases",
+                title: metric.unavailable || `No cases for this metric in the golden set '${themeOf(currentTarget())}': a run skips it.`,
+              }, " · 0 cases")
+            : null,
+        );
         const row = el(
           "label",
           {
@@ -1986,20 +1999,10 @@ async function renderThresholds() {
             title: metric.description || "",
           },
           tick,
-          el(
-            "span",
-            {},
-            metric.title,
-            hasNoCases(metric)
-              ? el("small", {
-                  className: "no-cases",
-                  title: metric.unavailable || `No cases for this metric in the golden set '${themeOf(currentTarget())}': a run skips it.`,
-                }, " · 0 cases")
-              : null,
-            caseButtons(metric),
-          ),
+          title,
           el("span", { className: "direction" }, comparator(metric.direction)),
           input,
+          caseButtons(metric),
         );
         // Re-rendering (a tick, a threshold) keeps an open list or form open.
         if (state.openCases.key === metric.key) {
@@ -2012,6 +2015,10 @@ async function renderThresholds() {
             state.openCases = { key: null, mode: null };
             renderThresholds();
           });
+          // Auto-scroll the opened panel into view so user doesn't have to scroll down
+          setTimeout(() => {
+            panel.scrollIntoView({ behavior: "smooth", block: "center" });
+          }, 100);
         }
         return [row, panel];
       }),
@@ -2053,7 +2060,7 @@ async function editOwnGeval(metric) {
   gevalForm().fill(row);
   state.gevalOpen = true;
   await renderThresholds();
-  gevalForm().form.scrollIntoView({ block: "nearest" });
+  gevalForm().form.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 // Edit / Delete for a G-Eval metric of your own; Delete asks once inline.
@@ -2115,8 +2122,10 @@ function caseButtons(metric) {
     },
   }, label);
   return el("span", { className: "case-actions" },
-    button(`Test cases (${metric.cases_available ?? 0})`, "list", "Show the questions a run of this metric sends the chatbot"),
-    button("Add", "add", "Add a test case this metric will run"),
+    button(`Test cases (${metric.cases_available ?? 0})`, "list", "Show the questions/scenarios a run of this metric sends the chatbot"),
+    button("Add", "add", (metric.kind === "conversation" || (metric.dataset_name || "").startsWith("conversations"))
+      ? "Add a multi-turn conversation scenario for this (and other) Turns metrics"
+      : "Add a test case this metric will run"),
     metric.custom_id && metric.ui_category === "geval" ? ownGevalButtons(metric) : null);
 }
 
@@ -2197,7 +2206,13 @@ function caseList(metric, data) {
 }
 
 function caseForm(metric, data) {
-  if (!data.add) return el("p", { className: "small" }, `Test cases cannot be added to ${metric.title} here.`);
+  if (!data.add) {
+    // All conversational metrics now support adding scenarios directly from their Test cases panel.
+    if (metric.kind === "conversation" || metric.dataset_name?.startsWith("conversations")) {
+      return el("p", { className: "small" }, "Use the dedicated **Conversation scenarios** section at the bottom of the side panel (or click Add on a Turns metric to open the form here).");
+    }
+    return el("p", { className: "small" }, `Test cases cannot be added to ${metric.title} here.`);
+  }
   const field = (label, control) => el("label", { className: "case-field small" }, label, control);
   const area = (placeholder) => el("textarea", { rows: "2", placeholder });
   const fields = {};
@@ -2232,9 +2247,82 @@ function caseForm(metric, data) {
   const status = el("p", { className: "small" });
   const lines = (node) => (node ? node.value.split("\n").map((s) => s.trim()).filter(Boolean) : []);
   const save = el("button", { type: "submit" }, "Save test case");
+
+  // Probe metrics: generate related probes from the seed question (DeepTeam / OWASP-style).
+  let aiBlock = null;
+  if (data.add === "probe") {
+    const countInput = el("input", {
+      type: "number",
+      className: "case-count-input",
+      min: "1",
+      max: "20",
+      step: "1",
+      value: "5",
+      "aria-label": "Number of related probes to generate",
+      title: "How many related probes the judge should write (1–20)",
+    });
+    const aiHelper = el("button", {
+      type: "button",
+      className: "small-button primary",
+      title: "Enter a seed question above, pick how many, then generate related probes from DeepTeam, OWASP LLM, Agentic, MCP and RAG techniques for this metric.",
+    }, "Generate similar probes with AI");
+    aiHelper.addEventListener("click", async () => {
+      if (!fields.question || !fields.question.value.trim()) {
+        status.textContent = "Enter your seed question first.";
+        status.className = "small status-error";
+        return;
+      }
+      let count = Number(countInput.value);
+      if (!Number.isFinite(count) || count < 1) count = 5;
+      count = Math.min(20, Math.max(1, Math.round(count)));
+      countInput.value = String(count);
+      aiHelper.disabled = true;
+      countInput.disabled = true;
+      aiHelper.textContent = "Generating related probes…";
+      status.className = "small";
+      status.textContent = `Asking the judge for ${count} related probe${count === 1 ? "" : "s"} (DeepTeam / OWASP techniques)…`;
+      try {
+        const target = currentTarget();
+        const response = await api(`/api/metrics/${encodeURIComponent(metric.key)}/generate-similar-probes`, {
+          method: "POST",
+          body: {
+            question: fields.question.value.trim(),
+            count,
+            target_id: target ? target.id : null,
+          },
+        });
+        const n = response.generated || 0;
+        await settings.set("metricsChangedAt", Date.now());
+        // Show the list with the new probes and a short status on the metric row.
+        state.openCases = { key: metric.key, mode: "list" };
+        $("status").textContent = n
+          ? `Generated ${n} related probe${n === 1 ? "" : "s"} for ${metric.title}. Your seed question was not saved — open Add again to save it too.`
+          : `No new probes for ${metric.title}.`;
+        await loadMetrics().catch(() => {});
+        return;
+      } catch (e) {
+        status.className = "small status-error";
+        status.textContent = "Failed to generate: " + e.message;
+        aiHelper.textContent = "Generate similar probes with AI";
+      } finally {
+        aiHelper.disabled = false;
+        countInput.disabled = false;
+      }
+    });
+    aiBlock = el("div", { className: "case-ai-block" },
+      el("p", { className: "muted small" },
+        "Optional: generate related security probes from your seed question (uses judge tokens)."),
+      el("div", { className: "row case-ai-row" },
+        el("label", { className: "case-count-label small" },
+          "No. of test cases",
+          countInput),
+        aiHelper));
+  }
+
   const form = el("form", { className: "case-form" },
     el("p", { className: "muted small" }, `Adds to the ${where}; other metrics reading it run it too. Shipped sets reset when the panel reloads.`),
     ...rows,
+    aiBlock,
     el("div", { className: "row" }, save,
       el("button", { type: "button", onclick: () => { state.openCases = { key: null, mode: null }; renderThresholds(); } }, "Cancel")),
     status);
@@ -2260,6 +2348,11 @@ function caseForm(metric, data) {
       // Show the list with the new case; counts change for every metric reading the set.
       state.openCases = { key: metric.key, mode: "list" };
       await settings.set("metricsChangedAt", Date.now());
+      // Auto-scroll to the newly added case list
+      setTimeout(() => {
+        const panel = document.querySelector(`[data-metric-key="${metric.key}"]`);
+        if (panel) panel.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 200);
       if (data.add === "golden") loadGoldens().catch(() => {});
       if (data.add === "conversation") loadConversations().catch(() => {});
     } catch (error) {
@@ -2292,6 +2385,24 @@ function groupCheckRow(group) {
 }
 
 $("check-all-metrics").addEventListener("click", () => setChecked(state.metrics.map((m) => m.key)));
+$("check-golden-metrics").addEventListener("click", () => {
+  const goldenKeys = state.metrics
+    .filter(m => !m.kind || m.kind !== "conversation")
+    .map(m => m.key);
+  setChecked(goldenKeys);
+});
+$("check-scenario-metrics").addEventListener("click", () => {
+  const scenarioKeys = state.metrics
+    .filter(m => m.kind === "conversation" || (m.dataset_name || "").includes("conversation"))
+    .map(m => m.key);
+  setChecked(scenarioKeys);
+});
+$("check-own-question-metrics").addEventListener("click", () => {
+  const ownKeys = state.metrics
+    .filter(m => m.custom_id || m.ui_category === "geval" || m.source === "deepteam")
+    .map(m => m.key);
+  setChecked(ownKeys);
+});
 $("check-no-metrics").addEventListener("click", () => setChecked([]));
 
 $("threshold-env").addEventListener("change", async () => {

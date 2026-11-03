@@ -2358,6 +2358,61 @@ class MetricCaseCreate(BaseModel):
     chatbot_role: str = Field(default="", max_length=500)
 
 
+class GenerateSimilarProbes(BaseModel):
+    """Seed question + how many related probes the judge should write."""
+    question: str = Field(..., min_length=1, max_length=4000)
+    count: int = Field(default=5, ge=1, le=20)
+    target_id: int | None = None
+
+
+@app.post("/api/metrics/{key}/generate-similar-probes")
+def api_generate_similar_probes(key: str, body: GenerateSimilarProbes):
+    """Writes related security/safety probes from a seed question the user typed.
+
+    Uses the judge (DeepTeam / OWASP-style techniques in the prompt). Each probe
+    is saved in this metric's probe set so the next run picks them up. The seed
+    itself is not saved here — use Save test case for that.
+    """
+    spec, (_theme, _persona, probe_set, _unavailable) = _cases_scope(key, body.target_id)
+    if _case_add_kind(spec) != "probe":
+        raise HTTPException(
+            status_code=400,
+            detail=f"{spec.title} does not use security probes; only probe metrics can generate related ones",
+        )
+    seed = body.question.strip()
+    if not seed:
+        raise HTTPException(status_code=400, detail="enter a seed question first")
+    overrides = _judge_overrides()
+    if not judge_config(**overrides).get("api_key"):
+        raise HTTPException(
+            status_code=400,
+            detail="add the judge's API key in Judge settings first: the judge writes the related probes",
+        )
+    try:
+        judge = build_judge(**overrides)
+        questions = probe_refresh.generate_similar(judge, spec.key, seed, body.count)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001 - surface the judge failure to the panel
+        raise HTTPException(status_code=502, detail=f"judge failed: {type(e).__name__}: {e}") from e
+
+    probe_set = probe_set or probes_store.DEFAULT_PROBE_SET
+    note = f"related to seed · written by the judge for {spec.key}"
+    cases = []
+    for question in questions:
+        try:
+            row = probes_store.add_probe({
+                "metric": spec.key,
+                "question": question,
+                "set": probe_set,
+                "note": note,
+            })
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        cases.append(_case_view(row, {row["id"]}))
+    return {"generated": len(cases), "cases": cases, "metric": spec.key, "probe_set": probe_set}
+
+
 @app.post("/api/metrics/{key}/cases")
 def api_add_metric_case(key: str, body: MetricCaseCreate):
     """Adds a test case where this metric reads its cases: a golden in the
@@ -2374,6 +2429,7 @@ def api_add_metric_case(key: str, body: MetricCaseCreate):
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         return _case_view(row, {row["id"]})
+
     if kind == "conversation":
         turns = [t.strip() for t in body.user_turns if t.strip()]
         if not turns:

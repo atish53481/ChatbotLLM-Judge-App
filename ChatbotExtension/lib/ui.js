@@ -479,6 +479,7 @@ async function runOptionsBody(metricKeys) {
   if (typeof options.maxLatencyS === "number" && options.maxLatencyS > 0) body.max_latency_s = options.maxLatencyS;
   if (options.useCalibration) body.use_calibration = true;
   if (options.deepeval) body.deepeval = options.deepeval;
+  if (options.cacheJudgeResults === true) body.cache_judge_results = true;
   return body;
 }
 

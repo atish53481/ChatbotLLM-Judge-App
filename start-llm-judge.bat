@@ -20,4 +20,4 @@ start "" /b powershell -NoProfile -WindowStyle Hidden -Command "for ($i = 0; $i 
 rem Everything the backend prints (chatbot/judge traffic, errors) shows here and is
 rem also appended to logs\llm-judge-YYYY-MM-DD.log.
 if not exist logs mkdir logs
-call "%~dp0run-backend.bat" 2>&1 | powershell -NoProfile -Command "$log = 'logs\llm-judge-' + (Get-Date -Format 'yyyy-MM-dd') + '.log'; Write-Host ('Log file: ' + (Join-Path (Get-Location) $log)); $input | ForEach-Object { Write-Host $_; Add-Content -LiteralPath $log -Value $_ -Encoding UTF8 }"
+call "%~dp0run-backend.bat"

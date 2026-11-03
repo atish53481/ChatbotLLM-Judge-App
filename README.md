@@ -22,7 +22,7 @@ runs, and a chat window for the chatbot being judged.
 3. Open **http://127.0.0.1:8765/** (or double-click `start-llm-judge.bat`, which does
    steps 2–3). See [ChatbotExtension/README.md](ChatbotExtension/README.md).
 
-To add a chatbot, capture one real request from its website and paste it as cURL:
+To add a chatbot, capture one real request from its website and paste it as cURL (works for ticket-lookup chatbots such as MetTel Compass or Jira that put the query in an `id` or `ticket` parameter):
 
 1. Open the chatbot's website, press F12 → **Network**, and send it a message.
 2. Right-click the chat request → **Copy** → **Copy as cURL (bash)**.

@@ -87,6 +87,13 @@ main {
   cursor: pointer;
 }
 
+.metric-source { 
+  font-size: 11px; 
+  color: var(--muted); 
+  font-weight: normal; 
+  margin-left: 6px; 
+}
+
 .options input:focus-visible,
 .options button:focus-visible,
 .toolbar button:focus-visible { outline: 2px solid #256abf; outline-offset: 2px; }

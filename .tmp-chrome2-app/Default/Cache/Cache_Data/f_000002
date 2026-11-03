@@ -1,0 +1,944 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  padding: 12px;
+  max-width: 100%;
+  /* Long unbroken strings wrap; avoid clipping button labels at the edge. */
+  overflow-x: auto;
+}
+
+h1 {
+  font-size: 16px;
+  margin: 0;
+}
+
+h2 {
+  font-size: 14px;
+  margin: 0 0 8px;
+}
+
+h3 {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 12px 0 4px;
+}
+
+.panel-header {
+  margin-bottom: 10px;
+}
+
+.panel-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.panel-header p {
+  margin: 4px 0 0;
+}
+
+.card {
+  margin-bottom: 10px;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.grow select {
+  width: 100%;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.stack label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* A checkbox and its text side by side, as on the Advanced page. */
+.stack label.row {
+  flex-direction: row;
+  align-items: center;
+}
+
+.stack input,
+.stack select,
+.stack textarea {
+  color: var(--text-primary);
+}
+
+.small {
+  font-size: 12px;
+}
+
+summary {
+  cursor: pointer;
+  margin-top: 8px;
+  color: var(--text-secondary);
+}
+
+.card-heading {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.card-heading h2 {
+  margin: 0;
+  line-height: 1.3;
+  min-width: 0;
+}
+
+/* Full labels on their own row under the title — no clipping on a narrow panel. */
+.card-heading-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.card-heading-actions .small-button {
+  flex: 0 0 auto;
+}
+
+.small-button {
+  padding: 2px 8px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.golden-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.golden-list li {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--grid);
+}
+
+.golden-list .text {
+  flex: 1;
+  min-width: 0;
+}
+
+.golden-list .question {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.golden-list .answer {
+  color: var(--text-secondary);
+  font-size: 12px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.golden-list button {
+  padding: 2px 6px;
+  font-size: 12px;
+}
+
+/* The inline editor needs room, so the list stops scrolling while it is open. */
+.golden-list.editing {
+  max-height: none;
+}
+
+.golden-list li.selected {
+  border-bottom: none;
+  box-shadow: inset 3px 0 0 var(--accent);
+  padding-left: 8px;
+}
+
+.golden-list li.golden-editor {
+  display: block;
+  padding: 0 0 10px 8px;
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.golden-editor .stack {
+  margin-top: 0;
+}
+
+.golden-editor textarea,
+.golden-editor input {
+  width: 100%;
+  resize: vertical;
+}
+
+/* Run status, pinned to the top of the panel while a run goes and after it ends. */
+.run-banner {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  background: var(--surface-raised);
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+
+.run-banner-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+/* Hover the banner or the results list: updates pause and this says what the run is doing. */
+.run-banner { flex-wrap: wrap; }
+.run-detail {
+  flex-basis: 100%; margin-top: 6px; padding: 8px 10px; border-radius: 6px;
+  background: var(--surface-1); border: 1px solid var(--border);
+  color: var(--text-primary); font-weight: 400; line-height: 1.45;
+}
+.run-detail p { margin: 0 0 4px; }
+.run-detail ul { margin: 0 0 6px; padding-left: 16px; }
+.run-detail li { overflow-wrap: anywhere; }
+.run-detail-head { font-weight: 600; color: var(--accent); }
+.run-detail-label { margin-top: 6px !important; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
+.run-banner-running { border-left-color: var(--accent); }
+.run-banner-running .run-banner-text::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: run-bar-pulse 1.1s ease-in-out infinite;
+}
+.run-banner-pass { border-left-color: var(--success-text); color: var(--success-text); }
+.run-banner-fail,
+.run-banner-error { border-left-color: var(--status-critical); color: var(--status-critical); }
+.run-banner-running #run-banner-show { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .run-banner-running .run-banner-text::before { animation: none; }
+}
+
+.run-results {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.run-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px 8px;
+}
+
+.run-row-title {
+  grid-column: 1 / -1;
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+}
+
+.run-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--grid);
+  overflow: hidden;
+}
+
+.run-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--series-1);
+  border-radius: 3px;
+}
+
+.run-row.status-fail .run-bar-fill {
+  background: var(--status-critical);
+}
+
+.run-bar.running .run-bar-fill {
+  width: 40%;
+  animation: run-bar-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes run-bar-pulse {
+  0% { margin-left: -40%; }
+  100% { margin-left: 100%; }
+}
+
+.run-row-chip {
+  font-size: 11px;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+
+.run-row.status-pass .run-row-chip {
+  color: var(--success-text);
+}
+
+.run-row.status-fail .run-row-chip {
+  color: var(--status-critical);
+}
+
+.wide {
+  width: 100%;
+}
+
+.document-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.document-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  font-size: 12px;
+  border-bottom: 1px solid var(--grid);
+}
+
+.document-row span:first-child {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
+.threshold-table {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.threshold-table h4 {
+  margin: 8px 0 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+/* Checkbox | title | ≥/≤ | threshold on row 1; Test cases / Add on row 2. */
+.threshold-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 1.25em 4.75em;
+  grid-template-areas:
+    "tick title dir val"
+    ".    actions actions actions";
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 2px;
+  padding: 4px 0;
+}
+
+.threshold-row > input[type="checkbox"] {
+  grid-area: tick;
+  align-self: center;
+  margin: 0;
+}
+
+.threshold-row > .threshold-title {
+  grid-area: title;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+.threshold-row > .direction {
+  grid-area: dir;
+  justify-self: center;
+  text-align: center;
+}
+
+.threshold-row > input[type="number"] {
+  grid-area: val;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 3px 6px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.threshold-row > .case-actions {
+  grid-area: actions;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 0;
+  padding-top: 1px;
+}
+
+.threshold-row.unchecked .threshold-title,
+.threshold-row.unchecked .direction {
+  color: var(--text-secondary);
+}
+
+.threshold-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+/* Quick-select chips: wrap as a group instead of overflowing the panel. */
+.metric-check-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--grid);
+}
+
+.metric-check-actions button {
+  font-size: 12px;
+  padding: 4px 10px;
+  white-space: nowrap;
+}
+
+.metric-check-actions .muted {
+  flex: 1 1 100%;
+  margin: 0;
+}
+
+.run-row-buttons {
+  margin-top: 12px;
+  flex-wrap: nowrap;
+}
+
+#open-dashboard,
+#open-advanced {
+  margin-top: 8px;
+}
+
+#open-dashboard {
+  margin-top: 12px;
+}
+
+.golden-missing {
+  margin: 6px 0;
+  padding: 6px 8px;
+  border-left: 3px solid var(--status-critical);
+  color: var(--text-primary);
+}
+
+.threshold-row .no-cases {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.run-row.skipped .run-row-title {
+  color: var(--text-secondary);
+}
+
+.threshold-row .direction {
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.threshold-row .case-button {
+  padding: 1px 6px;
+  font-size: 11px;
+}
+
+/* The open one: click it again, or the metric's name, to close. */
+.threshold-row .case-button.active {
+  border-color: var(--accent, #c96442);
+  color: var(--accent, #c96442);
+}
+
+.threshold-row.cases-open > .threshold-title {
+  cursor: pointer;
+}
+
+.case-panel {
+  margin: 2px 0 8px 26px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.case-panel .error {
+  color: var(--status-critical);
+}
+
+.case-list {
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+.case-list > li {
+  margin-bottom: 6px;
+  overflow-wrap: anywhere;
+}
+
+.case-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.case-head .case-question {
+  min-width: 0;
+}
+
+.case-delete {
+  flex: none;
+  padding: 1px 6px;
+  font-size: 11px;
+}
+
+/* Your own G-Eval metric: "＋ New" under the G-Eval heading and its form
+   (lib/geval-builder.js). */
+.geval-bar { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; margin: 2px 0 6px 8px; }
+.geval-panel { align-self: stretch; margin-left: 0; }
+.geval-form { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.geval-form h3 { margin: 0; font-size: 13px; }
+.geval-form p { margin: 0; }
+.geval-field { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--text-secondary); min-width: 0; }
+.geval-field input, .geval-field textarea, .geval-field select { width: 100%; box-sizing: border-box; font: inherit; color: var(--text-primary); }
+.geval-field textarea { resize: vertical; }
+.geval-params { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; }
+.geval-params[hidden] { display: none; }
+.geval-params > p { flex-basis: 100%; }
+.geval-params legend { font-size: 11px; color: var(--text-secondary); padding: 0 4px; }
+.geval-param { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-primary); }
+.geval-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+.geval-threshold { width: 80px; }
+.geval-preview summary { cursor: pointer; font-size: 12px; color: var(--text-secondary); }
+.geval-code {
+  margin: 6px 0 0; padding: 8px; border-radius: 4px; background: var(--surface-raised);
+  font: 11px var(--mono, ui-monospace, monospace); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.geval-error { color: var(--status-critical); font-size: 12px; }
+.geval-error:empty { display: none; }
+.case-button.armed { border-color: var(--status-critical); color: var(--status-critical); }
+
+.case-error {
+  color: var(--status-critical);
+}
+
+.case-delete.armed {
+  border-color: var(--status-critical);
+  color: var(--status-critical);
+}
+
+.case-turns {
+  margin: 2px 0;
+  padding-left: 16px;
+}
+
+.case-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.case-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.case-field textarea,
+.case-field input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.threshold-env-row {
+  margin-top: 4px;
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.threshold-env-row label.grow {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.threshold-env-row select {
+  width: 100%;
+}
+
+/* Run mode / Parallel metrics: fixed label column so the selects line up. */
+label.row.run-mode {
+  display: grid;
+  grid-template-columns: 8.5em minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 0;
+}
+
+label.row.run-mode > span {
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+label.row.run-mode select {
+  width: 100%;
+  min-width: 0;
+}
+
+label.row.consistency-check {
+  align-items: flex-start;
+  margin-top: 10px;
+  gap: 8px;
+}
+
+label.row.consistency-check > input {
+  margin-top: 2px;
+  flex: none;
+}
+
+.threshold-input {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.threshold-input input {
+  width: 4.5em;
+}
+
+#target-form textarea,
+#mcp-form textarea {
+  width: 100%;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+}
+
+/* The chatbot picker and its buttons: on a narrow panel the buttons drop
+   below the picker as one group instead of squeezing it. */
+.target-row { flex-wrap: wrap; align-items: stretch; }
+.target-row > .grow { flex: 1 1 160px; }
+.target-row > .grow select { width: 100%; min-height: 34px; }
+.target-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.target-actions button { white-space: nowrap; }
+
+/* "Add a chatbot": website chatbot or MCP server, and an MCP server's
+   transport. Native radios (arrow keys move between them), drawn as segments. */
+.kind-switch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-top: 8px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-raised);
+}
+.kind-switch .kind-option {
+  position: relative;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: row;
+  min-width: 0;
+  cursor: pointer;
+}
+.kind-option input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.kind-option span {
+  flex: 1;
+  padding: 5px 8px;
+  border-radius: 6px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.kind-option small { font-size: 11px; opacity: 0.85; }
+.kind-option:hover span { color: var(--text-primary); }
+.kind-option input:checked + span {
+  background: var(--button-primary);
+  color: #fff;
+  font-weight: 600;
+}
+.kind-option input:focus-visible + span {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.field-group { display: flex; flex-direction: column; gap: 2px; }
+.field-caption { font-size: 12px; color: var(--text-secondary); }
+.field-group .kind-switch { margin-top: 0; }
+.mcp-fields { margin-top: 0; }
+
+/* An MCP server's tools, from Test & list tools. */
+.mcp-tool-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.mcp-tool-list li {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--grid);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.mcp-tool-list li:last-child { border-bottom: 0; }
+.mcp-tool-name { font-family: var(--mono, ui-monospace, monospace); font-weight: 600; color: var(--text-primary); }
+.mcp-tool-desc { display: block; }
+#mcp-test-status:empty { display: none; }
+
+/* Test data for every metric: the question after a chatbot is added, then the
+   build's steps and which metrics still have no test cases. */
+.testdata {
+  margin: 8px 0 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  font-size: 12px;
+}
+.testdata p { margin: 0 0 6px; overflow-wrap: anywhere; }
+.testdata-head { display: flex; align-items: flex-start; gap: 6px; }
+.testdata-head p { flex: 1; min-width: 0; }
+.testdata-head p:empty { display: none; }
+.testdata-head button { margin-left: auto; }
+#testdata-question:focus { outline: none; }
+#testdata-question:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#testdata-ask { flex-wrap: wrap; }
+.testdata-steps {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.testdata-steps:empty { display: none; }
+.build-step {
+  display: grid;
+  grid-template-columns: 1.3em minmax(0, 1fr);
+  gap: 6px;
+  align-items: start;
+}
+.build-mark { text-align: center; font-weight: 700; color: var(--text-muted); }
+.build-label { font-weight: 600; color: var(--text-primary); }
+.build-state { color: var(--text-muted); }
+.build-detail { display: block; color: var(--text-secondary); overflow-wrap: anywhere; }
+.build-done .build-mark { color: var(--success-text); }
+.build-running .build-mark { color: var(--accent); animation: build-pulse 1.1s ease-in-out infinite; }
+.build-error .build-mark,
+.build-error .build-state { color: var(--status-critical); }
+.build-skipped .build-label { color: var(--text-secondary); font-weight: 400; }
+@keyframes build-pulse { 50% { opacity: 0.3; } }
+.testdata-metrics:empty { display: none; }
+.testdata-metrics { margin-top: 8px; }
+.testdata-missing { margin: 4px 0 0; padding-left: 18px; }
+.testdata-missing li { margin: 3px 0; overflow-wrap: anywhere; }
+.testdata-add { margin-left: 6px; padding: 0 6px; font-size: 11px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .build-running .build-mark { animation: none; }
+}
+
+/* What a running judge is doing right now: which golden, and chatbot or judge. */
+.run-row-detail {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* A "not run" reason: hover for the full text, click to unfold it in place. */
+.run-row.skipped .run-row-detail { cursor: pointer; }
+.run-row.skipped .run-row-detail:hover { color: var(--text-secondary); text-decoration: underline dotted; }
+.run-row-detail.expanded { white-space: normal; overflow: visible; overflow-wrap: anywhere; line-height: 1.45; }
+
+.run-bar .run-bar-fill {
+  transition: width 0.4s ease;
+}
+
+/* ---- Look: the dashboard's palette (warm paper, terracotta accent) so the
+   panel and dashboard read as one app. Only colours, surfaces and states
+   change here; the layout rules above stay as they are. */
+:root {
+  --page: #f7f3ec;
+  --surface-1: #fffdf9;
+  --surface-raised: #f3ede3;
+  --text-primary: #231f1b;
+  --text-secondary: #5b534b;
+  --text-muted: #8f867c;
+  --grid: #e7dfd3;
+  --border: rgba(35, 31, 27, 0.12);
+  --accent: #c0654a;
+  --button-primary: #c0654a;
+  --series-1: #c0654a;
+  --warn: #b7791f;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+
+/* Dark look: lib/theme-mode.js sets data-theme (dark by default). */
+:root[data-theme="dark"] {
+  --page: #1b1816;
+  --surface-1: #24201d;
+  --surface-raised: #2d2825;
+  --text-primary: #f3ede3;
+  --text-secondary: #cfc6ba;
+  --text-muted: #9a9086;
+  --grid: #3a332d;
+  --border: rgba(243, 237, 227, 0.12);
+  --accent: #d9785b;
+  --button-primary: #c0654a;
+  --series-1: #d9785b;
+  --warn: #e0a24a;
+}
+
+
+.panel-header h1 { font-size: 17px; letter-spacing: 0.01em; }
+.panel-header h1::before {
+  content: "";
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 8px;
+  border-radius: 3px;
+  background: var(--accent);
+  vertical-align: 1px;
+}
+
+.card {
+  border-radius: 10px;
+  padding: 12px 14px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+.card h2 { font-size: 13px; letter-spacing: 0.01em; }
+.card > h2:first-child,
+.card-heading h2 { border-left: 3px solid var(--accent); padding-left: 8px; }
+
+button {
+  border-radius: 6px;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+button:not(:disabled):hover { border-color: var(--accent); }
+button:not(:disabled):active { transform: translateY(1px); }
+button.primary:not(:disabled):hover { filter: brightness(1.08); }
+
+input,
+select,
+textarea { transition: border-color 0.15s ease, box-shadow 0.15s ease; }
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+/* Disclosures ("Add a chatbot", "Judge settings"...): a chevron that turns. */
+summary { list-style: none; font-weight: 600; }
+summary::-webkit-details-marker { display: none; }
+summary::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 8px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+  vertical-align: 2px;
+}
+details[open] > summary::before { transform: rotate(45deg); }
+summary:hover { color: var(--accent); }
+
+/* Lists: rows light up on hover; their buttons stay quiet until then. */
+.golden-list li,
+.document-row { transition: background-color 0.15s ease; border-radius: 6px; }
+.golden-list li:hover,
+.document-row:hover { background: var(--surface-raised); }
+.golden-list li { padding: 7px 6px; }
+.golden-list li button { opacity: 0.55; }
+.golden-list li:hover button,
+.golden-list li button:focus-visible { opacity: 1; }
+
+/* Notices: amber edge for "add this to run more metrics", not an error red. */
+.golden-missing {
+  border-radius: 6px;
+  border-left-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+
+.run-banner { border-radius: 8px; }
+.run-bar { height: 7px; border-radius: 4px; }
+.run-bar-fill { background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 70%, #fff)); }
+.run-row-chip { font-family: var(--mono); }
+
+@media (prefers-reduced-motion: reduce) {
+  button,
+  input,
+  select,
+  textarea,
+  summary::before,
+  .golden-list li { transition: none; }
+}

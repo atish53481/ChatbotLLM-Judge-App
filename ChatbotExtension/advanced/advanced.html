@@ -78,6 +78,7 @@
           <label class="row">Judge price, USD per million tokens
             <input id="judge-price" type="number" min="0" step="0.01" class="num-input" placeholder="not set"></label>
           <label class="row"><input id="use-calibration" type="checkbox"> Give the judge my calibration labels as examples (G-Eval metrics)</label>
+          <label class="row"><input id="cache-judge" type="checkbox" checked> Cache judge results (reuse identical evaluations to save tokens; recommended when running many metrics)</label>
         </div>
         <div class="row"><button id="save-run-options" type="button" class="primary">Save run options</button></div>
       </section>

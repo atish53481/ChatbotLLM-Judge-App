@@ -271,7 +271,10 @@ function actionPlan(metrics, latestByKey, detailsByKey, thresholds, caseIds) {
       return el(
         "div",
         { className: "plan-item" },
-        el("h3", {}, metric.title, " ", resultCell(run)),
+        el("h3", {}, metric.title, 
+      metric.source === "deepteam" ? el("small", { className: "metric-source" }, " · DeepTeam") : 
+      el("small", { className: "metric-source" }, " · DeepEval"), 
+      " ", resultCell(run)),
         dl(target),
         improvementBlock(metric, details),
       );
@@ -325,7 +328,10 @@ function metricSection(metric, run, details, thresholds, caseIds, options = DEFA
   const { threshold, direction } = judgedWith(metric, details, thresholds);
   const block = (row) => caseBlock(metric, row, direction, threshold, caseIds.get(row), options);
   const parts = [
-    el("h3", {}, metric.title, " ", resultCell(run)),
+    el("h3", {}, metric.title, 
+      metric.source === "deepteam" ? el("small", { className: "metric-source" }, " · DeepTeam") : 
+      el("small", { className: "metric-source" }, " · DeepEval"), 
+      " ", resultCell(run)),
     dl(metricMeaning(metric)),
   ];
   // Details (from the run's stored result) match this run only if they are not older than it.
