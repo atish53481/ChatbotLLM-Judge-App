@@ -28,7 +28,7 @@ This file, `workflow.html` and the published page change together with the code;
 | Dashboard | `ChatbotExtension/dashboard/` | Metric cards, chat with the chatbot, score trend, last run case by case, Scan history. |
 | Result pages | `ChatbotExtension/scan/`, `runs/`, `regressions/`, `report/` | One scan in full; test runs (Evaluation, Overview, Test Cases, Compare); two scans case by case; the printable report. |
 | Advanced tools | `ChatbotExtension/advanced/` | Run options, custom metrics, compare runs, A/B, red-team coverage, simulation, generate & review, calibration, CI export ([ADVANCED_TOOLS.md](ADVANCED_TOOLS.md)). |
-| API | `backend/dashboard/app.py` | FastAPI on `127.0.0.1:8765`, 92 routes. Same origin only: no CORS, and `TrustedHostMiddleware` accepts only `127.0.0.1` / `localhost`, which keeps stored chatbot keys and cookies on this PC. |
+| API | `backend/dashboard/app.py` | FastAPI on `127.0.0.1:8765`, 102 routes. Same origin only: no CORS, and `TrustedHostMiddleware` accepts only `127.0.0.1` / `localhost`, which keeps stored chatbot keys and cookies on this PC. |
 | Job queue | `backend/dashboard/jobs.py` | Runs scans in the background, one at a time. |
 | Runner | `backend/dashboard/runner.py` | Runs one metric: cases → replies → test cases → scores → one stored run. |
 | Metric catalog | `backend/metrics_catalog.py` | 76 `MetricSpec`s in 8 groups (44 of the app's own + 32 DeepTeam vulnerabilities), plus your own. |
@@ -277,25 +277,69 @@ metrics and the tool-aware security metrics apply.
 
 ### Build test data for every metric
 
-After any chatbot is saved, the panel asks: "Build test data for every metric with AI?" (judge
-tokens). Yes: `POST /api/targets/{id}/prepare-all` `{generate: true}` (without it 400: nothing is
-written or spent before the user says yes; no judge key 503) starts a background build, one per
-chatbot; `GET /api/targets/{id}/prepare-all` returns `{status, steps, metrics: {ready, missing:
-[{key, title, reason}]}, error?}` and the panel polls it every 2 s. **Build all test data** (next to
-Edit / Delete) runs it again later. `backend/datasets/prepare_all.py` `build_testdata`, in four
-steps, each filling only what its datasets still lack and failing on its own:
+The build starts by itself. After a chatbot is saved (and for an older one that was never built and
+still has data that needs your hint) the panel starts `POST /api/targets/{id}/prepare-all`
+`{generate: true}` with no question and shows live progress (without `generate` 400: nothing is
+written or spent; no judge key 503). `GET /api/build/settings` tells the panel whether to do so:
+`JUDGE_AUTO_BUILD=0` in `.env` turns the automatic start off, and the panel asks "Build test data
+for every metric with AI?" again. One build runs per chatbot; `GET /api/targets/{id}/prepare-all`
+returns `{status, steps, metrics: {ready, missing: [{key, title, reason}]}, kind, leftovers,
+error?}` and the panel polls it every 2 s. **Build all test data** (next to Edit / Delete) runs it
+again later. `backend/datasets/prepare_all.py` `build_testdata` runs six steps (`STEPS`), each
+filling only what its datasets still lack and failing on its own:
 
-1. **goldens**: golden answers and conversation scenarios fitted to the chatbot (autogen's interview
-   and help-page search; an MCP server is learned from its server info and tool list instead);
-2. **context**: Context goldens from the found help pages and the chatbot's instructions, through
-   the document pipeline;
-3. **tools**: goldens with `expected_tools` for Tool Correctness, written from the chatbot's tools
-   (discovery's `available_tools`, or the MCP server's `tools/list`);
-4. **probes**: security probes fitted to the chatbot for the app's 13 probe metrics, written into the
+1. **profile**: what the chatbot is. It is interviewed once (an MCP server describes itself), its
+   replies show which tools it calls and whether it returns sources, the judge writes a
+   one-sentence role when none is typed, and `backend/datasets/profile.py` sets its kind: chat,
+   rag, agent or mcp (saved in the chatbot's config as `profile`, with `auto_built`; editing the
+   chatbot keeps both and `docs_searched`, `app.BUILD_KEYS`). A tools / sources path a reply shows
+   (`HttpTargetClient.discovered`) is used at once in the same build: set on the client, so the
+   next replies carry the tool calls / sources, and counted for the kind and the tool probe. Typed
+   values are never replaced;
+2. **goldens**: golden answers until the chatbot's theme has 5 of its own, 3 of them short
+   "fact" answers for the reference metrics. When help pages, documents or instructions exist, the
+   judge checks each against them and drops what they do not back; without any, the goldens are
+   kept but marked unverified;
+3. **scenarios**: conversation scenarios until the theme has 3, then every scenario's empty role and
+   expected outcome is filled. With help pages, documents or instructions, every scenario whose
+   `context` is empty (typed ones too; a filled one is never replaced) gets up to 3 passages from
+   them, so the Turn RAG metrics have context. For a rag, agent or mcp chatbot each new scenario's
+   first turn is sent once first, and one whose reply has sources gets none;
+4. **context**: Context goldens from the found help pages and the chatbot's instructions, through
+   the document pipeline; with no source at all the judge writes unverified ones;
+5. **tools**: goldens with `expected_tools` for Tool Correctness, for every tool with fewer than 2
+   (discovery's `available_tools`, a tool the chatbot was seen calling, or the MCP server's
+   `tools/list`). Each case is sent to the chatbot and kept only when it really calls a tool;
+6. **probes**: security probes fitted to the chatbot for the app's 13 probe metrics, written into the
    chatbot's own probe set `target_<id>` (file `security_probes.target_<id>.json` next to the store,
    git-ignored, kept through the panel reset, removed with the chatbot). A finished build switches
    the chatbot's probe set to it ("This chatbot's own (built with AI)" in the form); metrics without
    fitted probes use the generic ones, so a chatbot that was on `ecommerce` loses those for the 13.
+
+Because every step looks at what is already there (the gap), a second build on a complete theme
+asks the chatbot only the interview and spends no judge call. Goldens and tool cases are checked
+against the chatbot or its material, not just written.
+
+**Budget.** One build may send at most 30 messages to the chatbot and make at most 40 judge calls
+(`JUDGE_BUILD_MAX_MESSAGES`, `JUDGE_BUILD_MAX_JUDGE_CALLS`; `backend/datasets/build_kit.py`). When
+a cap is reached the remaining steps are skipped with "Build budget reached (N messages / M judge
+calls); press Build all test data to continue." and what was already written stays; pressing the
+button continues where it stopped.
+
+**Stop.** While a build runs the block shows **Stop** (`#testdata-stop`), which calls
+`POST /api/targets/{id}/prepare-all/cancel`: the build runs under `cancel.watching`, so it ends
+before its next chatbot message or judge call (also between steps and while waiting for documents)
+with status `stopped`; what it wrote so far stays.
+
+**Leftovers.** The build ends by showing what the chatbot's kind is (`#testdata-kind`) and a
+`leftovers` list (`app._leftovers`, `#testdata-leftovers`): metrics that still have no test data,
+each with the reason and a hint (no tools: "Set 'Tool calls path', or run Find missing metric
+data.", or "Press Build all test data again." when the path is already set; no context: "Add a Help / FAQ URL or upload a document, then build again."; no role or
+scenario: "Build again, or add a conversation scenario with a chatbot role."; otherwise "Press Build
+all test data again."). Plan Quality and Plan Adherence are listed when the chatbot calls tools but
+its calls carry no plan or reasoning (hint: ask the bot's team to return it). Metrics that cannot
+apply to this kind (agent metrics except Task Completion for a plain or RAG chatbot, the
+Contextual metrics for a plain chatbot) go in a separate "Does not apply" group with no hint.
 
 The result lists how many metrics now have test cases and which still have none, and why. The old
 `POST /api/targets/{id}/prepare-goldens` is unchanged; the panel calls it with `generate: false` on
@@ -668,11 +712,33 @@ has these buttons (pages open in new tabs):
 | Button | Page | Shows |
 |---|---|---|
 | Open | `scan/scan.html?job=<id>` | One scan in full: overall result, started / duration / judge / tokens, the metric table, every metric's reason and cases; links to the scans before and after. |
+| Security | `risk/risk.html?job=<id>#overview` | The scan's **Risk Assessment**, laid out like Confident AI's red-teaming risk profile (see below). |
 | Overview | `runs/runs.html?target=&job=#overview` | Test runs, laid out like Confident AI: **Evaluation** (`#evaluation`: every run with a date range, a per-metric chart with ±1 std error bars, % trends, a runs table; tick two to compare), **Home**, a run's **Overview** (properties, results dial, run settings, radar, Histogram / Average / Median / Breakdown, Eval Insights, Send to Confident AI, Send / View in Langfuse), **Test Cases** (`#cases`: filters, columns, per-metric tabs, Save as new dataset) and **Compare** (`#compare&with=`). |
 | Compare with N | inline in the dashboard | Metric by metric against the scan before: better / worse / same / new / removed. |
 | Regressions | `regressions/regressions.html?job=&with=` | The two scans case by case: improved, regressed, new, removed. |
 | Delete | in the row | Deletes that one finished scan (`DELETE /api/scans/{id}`); greyed out while it is queued or running. |
 
+- **Risk Assessment** (`GET /api/scans/{id}/risk`, `backend/dashboard/risk.py`, page
+  `risk/risk.html?job=` or `?target=` for the newest scan; opened by History's **Security** button and
+  the scan page's security section). Built only from the stored scan, nothing judged or sent again.
+  It keeps the scan's red-team metrics (keys in `redteam_coverage.COVERAGE` or group `security`) and
+  gives each test case its vulnerability, the probe's type (first part of its note; the subtype for
+  DeepTeam probes), the attack method (enhancer, Baseline, or Multi-turn), a severity from the
+  vulnerability (`risk.CRITICAL` keys are critical; else by risk category: access, privacy, agentic
+  and illegal activities high, brand image and responsible AI medium), a priority P0–P3 and a
+  0–10 risk score: 0 when the attack was resisted, else the severity's base (9.5 / 7.5 / 5.0 / 2.5).
+  The scan's **Risk score** (gauge, lower is better) is the mean over its cases: a CVSS-style
+  estimate, not a CVSS calculation. Page: KPI cards (total test cases, most common vulnerability,
+  most successful attack), **Executive Summary** (date, framework, pass rate, vulnerabilities
+  tested, attack vectors, critical and high issues) and tabs **Overview** (impact severity,
+  exploitability (High ≥ 50 % of a vulnerability's attacks got through, Medium ≥ 20 %), risk score
+  bands, remediation priority, attack success by method, coverage by vulnerability),
+  **Vulnerabilities** (critical findings, one row per vulnerability with a pass/fail dash strip and
+  pass rate, expanding to its cases), **Test Cases** (search, status and vulnerability filters, 50 per
+  page; a row opens a drawer with the verdict, reason, facts, message and reply) and **Frameworks**
+  (per OWASP LLM 2025 id: its vulnerabilities and attacks). **Download report** prints an LLM
+  Security Risk Assessment (cover, contents, executive summary, remediation table, a page per
+  OWASP id, the failed cases); Save as PDF in the print dialog.
 - **Eval Insights** (`GET` / `POST /api/scans/{id}/insights`, `backend/dashboard/insights.py`):
   one judge call reads the failed cases and the weak ones (passed within 0.15 of the threshold),
   groups them into issues rated mild or serious and writes an overview; saved in `meta`, so opening
@@ -793,6 +859,7 @@ old runs once). Only metrics you make as a violation rate are lower-is-better.
 | Test data written for a new chatbot | `backend/datasets/autogen.py`; documents in `backend/rag/` |
 | Calling the chatbot and reading its reply | `backend/targets/http_client.py`; cURL parsing in `backend/targets/curl.py` |
 | Scans, compare, regressions | `backend/dashboard/scans.py` |
+| Risk Assessment (severity, risk score, report) | `backend/dashboard/risk.py`, `ChatbotExtension/risk/` |
 | API surface | `backend/dashboard/app.py` |
 | Web app pages | `ChatbotExtension/` (files are served with `no-cache`, so a reload shows edits) |
 

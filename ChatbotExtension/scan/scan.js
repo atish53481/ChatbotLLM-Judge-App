@@ -153,7 +153,10 @@ function securitySection(report) {
     el("div", { id: "security" }),
     el("h2", {}, "Security · DeepTeam vulnerability report"),
     el("p", { className: "muted" }, "This scan's red-team results by risk category and OWASP id. "
-      + "Untested is not the same as safe; risks marked partly testable live mostly outside the chat."),
+      + "Untested is not the same as safe; risks marked partly testable live mostly outside the chat. ",
+      // The full Risk Assessment (risk score, vulnerabilities, test cases, PDF report).
+      el("a", { href: `../risk/risk.html?job=${encodeURIComponent(new URLSearchParams(location.search).get("job") || "")}#overview`,
+        target: "_blank", rel: "noopener" }, "Open the Risk Assessment →")),
     el("div", { className: "table-scroll" }, el("table", {},
       el("thead", {}, el("tr", {}, el("th", {}, "Risk category"), el("th", { className: "num" }, "Attacks"),
         el("th", { className: "num" }, "Resisted"), el("th", {}, "Metrics tested"))),

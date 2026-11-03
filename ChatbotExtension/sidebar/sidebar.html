@@ -136,6 +136,7 @@
     <div id="testdata" class="testdata hidden">
       <div class="testdata-head">
         <p id="testdata-status" class="small" role="status"></p>
+        <button type="button" id="testdata-stop" class="small-button hidden" title="Stop the build before its next message or judge call; what it wrote so far stays.">Stop</button>
         <button type="button" id="testdata-close" class="small-button hidden" aria-label="Dismiss the test data status" title="Dismiss">×</button>
       </div>
       <p id="testdata-question" class="small hidden" tabindex="-1">Build test data for every metric with AI? It interviews the chatbot, reads its help pages, lists its tools and writes goldens, scenarios, tool tests and security probes fitted to it. Uses judge tokens.</p>
@@ -144,8 +145,10 @@
         <button type="button" id="testdata-yes" class="primary small-button">Build test data with AI</button>
         <button type="button" id="testdata-no" class="small-button">No, I'll enter my own</button>
       </div>
+      <p id="testdata-kind" class="small hidden"></p>
       <ol id="testdata-steps" class="testdata-steps" aria-label="Build steps"></ol>
       <div id="testdata-metrics" class="testdata-metrics"></div>
+      <div id="testdata-leftovers" class="testdata-leftovers hidden"></div>
     </div>
     <details id="add-target">
       <summary id="target-form-summary">Add a chatbot or MCP server</summary>

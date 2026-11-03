@@ -48,11 +48,15 @@ headers (never in the arguments), and press **Test & list tools**. The app plays
 **Agent model** (a model on your judge's provider) picks a tool for each test message; left empty,
 the judge model does it and the run says so. Agent and security metrics then score what the tools did.
 
-**Test data for every metric**: after saving any chatbot the panel asks "Build test data for every
-metric with AI?". Yes interviews the chatbot (or reads the MCP server's tools), reads its help pages,
-and has the judge write golden answers, scenarios, Context goldens, tool tests and security probes
-fitted to it, then lists any metric that still has no test case and why. **Build all test data**
-runs it again later and only fills what is missing. It uses judge tokens.
+**Test data for every metric**: right after you save a chatbot the app builds its test data by
+itself (set `JUDGE_AUTO_BUILD=0` to be asked first). It asks the chatbot what it is and which tools it
+calls (or reads the MCP server's tools), reads its help pages, and has the judge write only what is
+missing: golden answers, conversation scenarios, Context goldens, tool tests and security probes
+fitted to it, checked against the chatbot or its help pages where it can. A build sends at most 30
+messages and makes 40 judge calls (`JUDGE_BUILD_MAX_MESSAGES`, `JUDGE_BUILD_MAX_JUDGE_CALLS`), then
+lists any metric that still has no test case with why and what to do, and the metrics that do not
+apply to this kind of chatbot. **Build all test data** runs it again later and fills only what is
+missing. It uses judge tokens.
 
 If what you want to score is itself a model with an OpenAI-compatible chat API
 (OpenAI, Groq, a local Ollama or LM Studio, your Command Code provider, …) there is
@@ -198,6 +202,16 @@ and the risks nothing tested; risks that chatting with the bot can only partly c
 (Advanced tools → Run options → Scorer; pass/fail per case). For an agent whose tool calls the app
 can read (**Tool calls path**), the security metrics also judge the tools it called, so an agent
 that refuses in words but still runs the tool fails. Red-team metrics export to CI with their probes.
+
+**Risk Assessment.** Each scan's **Security** button (dashboard History) opens a risk profile laid
+out like Confident AI's: total test cases, most common vulnerability and most successful attack;
+an executive summary with pass rate, vulnerabilities tested, attack vectors and critical / high
+issues; a 0–10 risk score gauge (lower is better: the mean over cases, where a resisted attack
+scores 0 and one that got through scores its vulnerability's severity); Overview charts (severity,
+exploitability, risk bands, remediation priority, attack success by method, coverage), a
+Vulnerabilities list with critical findings, a searchable Test Cases table whose rows open the
+message and reply, and an OWASP Frameworks tab. **Download report** prints an LLM Security Risk
+Assessment you can save as PDF. Nothing is judged again: it reads the stored scan.
 
 Security metrics send the red-team probes from that file — pick **Generic** (any assistant, the default) or **E-commerce** (orders, refunds) under the target's **Security probes**; set the target's **Chatbot role** in the side panel so Domain Misuse, Non-Advice and Role Violation know what the bot is meant to be.
 

@@ -24,6 +24,7 @@ from backend import cancel, confident_upload, langfuse_upload, storage, traffic,
 from backend.dashboard import hardening
 from backend.dashboard import insights as scan_insights
 from backend.dashboard import scans as scan_history
+from backend.dashboard import risk as risk_assessment
 from backend.dashboard.compare import compare_runs
 from backend.dashboard import jobs as jobs_module
 from backend.dashboard.jobs import MAX_METRIC_CONCURRENCY, MIN_METRIC_CONCURRENCY, JobFailed, JobQueue
@@ -788,6 +789,11 @@ def api_update_target(target_id: int, body: TargetCreate):
     for key in DISCOVERY_KEYS:
         if key not in config and key in existing["config"]:
             config[key] = existing["config"][key]
+    # Nor of what Build all test data learned: dropping these would make the next
+    # panel load start a full (paid) build again.
+    for key in BUILD_KEYS:
+        if key not in config and key in existing["config"]:
+            config[key] = existing["config"][key]
     # Paths a scan found in the replies (_save_found_paths) are empty in a form
     # loaded before they were found, or refilled from a pasted cURL whose one reply
     # showed none: a save that leaves them empty keeps the found ones.
@@ -1470,6 +1476,51 @@ def _metrics_summary(row: dict) -> dict:
     return {"ready": ready, "missing": missing}
 
 
+# What to tell the user for a metric the build could not fill, by what its reason mentions.
+LEFTOVER_HINTS = (
+    (("tool",), "Set 'Tool calls path', or run Find missing metric data."),
+    (("context", "source"), "Add a Help / FAQ URL or upload a document, then build again."),
+    (("role", "scenario"), "Build again, or add a conversation scenario with a chatbot role."),
+)
+LEFTOVER_DEFAULT_HINT = "Press Build all test data again."
+PLAN_HINT = "Ask the bot's team to return the agent's plan or reasoning with each tool call."
+NOT_APPLICABLE = "Does not apply to this target"
+
+
+def _leftover_hint(reason: str, config: dict | None = None) -> str:
+    text = reason.lower()
+    for words, hint in LEFTOVER_HINTS:
+        if any(w in text for w in words):
+            if "tool" in words and (config or {}).get("tools_path"):
+                return LEFTOVER_DEFAULT_HINT  # the path is set: another build can fill it
+            return hint
+    return LEFTOVER_DEFAULT_HINT
+
+
+def _leftovers(row: dict, metrics: dict | None = None) -> list[dict]:
+    """Metrics the build could not give test data, with why and what to do:
+    the metrics with no cases, plan metrics when the bot sends no reasoning, and
+    metrics that do not apply to this kind of chatbot. `metrics` is
+    _metrics_summary(row) when the caller has it already."""
+    profile = row["config"].get("profile") or {}
+    kind = profile.get("kind", "")
+    found: dict[str, dict] = {}
+    for m in (metrics or _metrics_summary(row))["missing"]:
+        found[m["key"]] = {"key": m["key"], "title": m["title"], "reason": m["reason"],
+                           "hint": _leftover_hint(m["reason"], row["config"])}
+    if profile.get("tools_seen") and not profile.get("tool_reasoning_seen"):
+        for key in ("plan_quality", "plan_adherence"):
+            spec = SPECS_BY_KEY.get(key)
+            found[key] = {"key": key, "title": spec.title if spec else key,
+                          "reason": "The bot's tool calls carry no plan or reasoning.", "hint": PLAN_HINT}
+    for spec in all_specs():
+        agent = spec.group == "agent" and spec.key != "task_completion" and kind in ("chat", "rag")
+        rag = (spec.key.startswith("contextual_") or spec.key.startswith("turn_contextual_")) and kind == "chat"
+        if agent or rag:
+            found[spec.key] = {"key": spec.key, "title": spec.title, "reason": NOT_APPLICABLE, "hint": ""}
+    return list(found.values())
+
+
 def _build_view(target_id: int) -> dict:
     with _builds_lock:
         state = _builds.get(target_id)
@@ -1480,9 +1531,57 @@ def _build_view(target_id: int) -> dict:
     row = storage.get_target(_conn, target_id)
     view = {"status": status, "steps": steps,
             "metrics": _metrics_summary(row) if row else {"ready": 0, "missing": []}}
+    if row:
+        view["leftovers"] = _leftovers(row, view["metrics"])
+        view["kind"] = (row["config"].get("profile") or {}).get("kind", "")
+    else:
+        view["leftovers"], view["kind"] = [], ""
     if error:
         view["error"] = error
     return view
+
+
+@app.get("/api/build/settings")
+def api_build_settings():
+    """Whether the side panel starts the test-data build by itself for a new chatbot."""
+    return {"auto_build": os.getenv("JUDGE_AUTO_BUILD", "1") != "0"}
+
+
+def _ready_documents(theme: str) -> list[tuple[str, str]]:
+    """(filename, text) of the theme's ready documents; one whose file or text
+    cannot be read is left out."""
+    folder = DOCUMENTS_DIR / theme
+    found = []
+    for doc in storage.list_documents(_conn, theme):
+        if doc["status"] != "ready":
+            continue
+        try:
+            paths = [Path(doc["enhanced_path"])] if doc.get("enhanced_path") else []
+            paths += sorted(folder.glob(f"{doc['id']}_*")) if folder.is_dir() else []
+            path = next((p for p in paths if p.is_file()), None)
+            text = extract_text(path).strip() if path else ""
+        except Exception:  # noqa: BLE001 - an unreadable document is skipped, not a build error
+            continue
+        if text:
+            found.append((doc["filename"], text))
+    return found
+
+
+def _merge_learned(latest: dict, outcome: dict) -> dict:
+    """The latest config with what the build learned added: only values the config
+    lacks (never over a typed one); an MCP server's tools are not saved (it lists
+    its own each time)."""
+    config = dict(latest["config"])
+    learned = outcome.get("learned") or {}
+    if learned.get("persona") and not str(config.get("persona") or "").strip():
+        config["persona"] = learned["persona"]
+    if latest["type"] != "mcp" and learned.get("available_tools"):
+        tools = [t for t in config.get("available_tools") or [] if isinstance(t, dict)]
+        names = {str(t.get("name", "")) for t in tools}
+        config["available_tools"] = tools + [t for t in learned["available_tools"] if t["name"] not in names]
+    config["profile"] = outcome.get("profile") or config.get("profile") or {}
+    config["auto_built"] = True
+    return config
 
 
 def _wait_documents(ids: list[int]) -> list[dict]:
@@ -1492,7 +1591,12 @@ def _wait_documents(ids: list[int]) -> list[dict]:
         docs = [d for d in (storage.get_document(_conn, i) for i in ids) if d]
         if all(d["status"] in ("ready", "error") for d in docs) or time.monotonic() > deadline:
             return docs
-        time.sleep(DOCUMENT_POLL_S)
+        cancel.sleep(DOCUMENT_POLL_S)  # Stop ends the wait (the documents still finish)
+
+
+def _build_stopped(target_id: int) -> bool:
+    with _builds_lock:
+        return bool((_builds.get(target_id) or {}).get("stop"))
 
 
 def _run_build(target_id: int, judge) -> None:
@@ -1512,25 +1616,44 @@ def _run_build(target_id: int, judge) -> None:
             target = storage.get_target(_conn, target_id)
         client = _client_or_400(target)
         known = {d["filename"] for d in storage.list_documents(_conn, theme) if d["status"] != "error"}
-        outcome = prepare_all.build_testdata(
-            target, theme=theme, judge=judge, client=client, report=report, known_documents=known,
-            queue_document=lambda th, source, stem, text: _queue_text_document(th, source, stem, text, judge),
-            wait_documents=_wait_documents, find_pages=find_help_pages)
-        # What the build found, saved on the chatbot (re-read: it may have been edited meanwhile).
-        latest = storage.get_target(_conn, target_id)
-        if latest is not None:
-            config = dict(latest["config"])
-            if latest["type"] != "mcp" or outcome["help_pages"]:  # its site was searched (as prepare-goldens does)
-                config["docs_searched"] = True
-                if outcome["help_pages"] and not config.get("help_url"):
-                    config["help_url"] = outcome["help_pages"][0]
-            own_set = probes_store.target_set(target_id)
-            if probes_store.load_probes(probe_set=own_set):
-                config["probe_set"] = own_set  # runs now send the probes fitted to it
-            if config != latest["config"]:
-                storage.update_target(_conn, target_id, latest["name"], latest["type"], config)
+        # Stop (POST .../prepare-all/cancel) sets the flag; every chatbot message and
+        # judge call of the build checks it first and raises RunCancelled.
+        with cancel.watching(lambda: _build_stopped(target_id)):
+            outcome = prepare_all.build_testdata(
+                target, theme=theme, judge=judge, client=client, report=report, known_documents=known,
+                queue_document=lambda th, source, stem, text: _queue_text_document(th, source, stem, text, judge),
+                wait_documents=_wait_documents, find_pages=find_help_pages,
+                documents=_ready_documents(theme))
+        # What the build found, saved on the chatbot (re-read: it may have been edited
+        # meanwhile; under the lock a scan's found paths are saved with).
+        with _found_lock:
+            latest = storage.get_target(_conn, target_id)
+            if latest is not None:
+                config = _merge_learned(latest, outcome)
+                for field, path in (getattr(client, "discovered", None) or {}).items():
+                    if path and not config.get(field):  # paths the replies showed, never over a typed one
+                        config[field] = path
+                if latest["type"] != "mcp" or outcome["help_pages"]:  # its site was searched (as prepare-goldens does)
+                    config["docs_searched"] = True
+                    if outcome["help_pages"] and not config.get("help_url"):
+                        config["help_url"] = outcome["help_pages"][0]
+                own_set = probes_store.target_set(target_id)
+                if probes_store.load_probes(probe_set=own_set):
+                    config["probe_set"] = own_set  # runs now send the probes fitted to it
+                if config != latest["config"]:
+                    storage.update_target(_conn, target_id, latest["name"], latest["type"], config)
         with _builds_lock:
             _builds[target_id]["status"] = "done"
+    except RunCancelled:
+        # Stopped by the user: what was written so far stays; the step that was
+        # running is marked stopped.
+        traffic.log("== test-data build for chatbot %s stopped", target_id)
+        with _builds_lock:
+            state = _builds[target_id]
+            for step in state["steps"].values():
+                if step["status"] == "running":
+                    step.update(status="skipped", detail="Stopped.")
+            state["status"] = "stopped"
     except Exception as e:  # noqa: BLE001 - shown as the build's error, never raised
         detail = e.detail if isinstance(e, HTTPException) else f"{type(e).__name__}: {e}"
         traffic.log("== test-data build for chatbot %s failed: %s", target_id, detail)
@@ -1563,8 +1686,21 @@ def api_prepare_all(target_id: int, body: PrepareAll):
     with _builds_lock:
         if _builds.get(target_id, {}).get("status") == "running":
             return _build_view(target_id)
-        _builds[target_id] = {"status": "running", "steps": {}, "error": None}
+        _builds[target_id] = {"status": "running", "steps": {}, "error": None, "stop": False}
     _start_job(lambda: _run_build(target_id, judge))
+    return _build_view(target_id)
+
+
+@app.post("/api/targets/{target_id}/prepare-all/cancel")
+def api_prepare_all_cancel(target_id: int):
+    """Stop: the running build ends before its next chatbot message or judge call
+    (status "stopped"); what it wrote so far stays. Without a running build it
+    changes nothing."""
+    _target_or_404(target_id)
+    with _builds_lock:
+        state = _builds.get(target_id)
+        if state and state.get("status") == "running":
+            state["stop"] = True
     return _build_view(target_id)
 
 
@@ -1577,6 +1713,8 @@ def api_prepare_all_status(target_id: int):
 
 # Target config keys the discovery assistant owns (backend/targets/discovery.py).
 DISCOVERY_KEYS = ("discovery", "inferred_instructions", "available_tools")
+# Target config keys Build all test data owns (_run_build): kept by a save from the form.
+BUILD_KEYS = ("auto_built", "profile", "docs_searched")
 
 
 class DiscoverRequest(BaseModel):
@@ -1781,12 +1919,17 @@ class ConversationCreate(BaseModel):
     chatbot_role: str = Field(default="", max_length=500)
     expected_outcome: str = Field(default="", max_length=2000)
     user_turns: list[str] = Field(min_length=1, max_length=20)
+    # Facts the bot should rest on; left out of an edit, the saved ones stay.
+    context: list[str] | None = Field(default=None, max_length=50)
 
 
 def _conversation_fields(body: ConversationCreate) -> dict:
     if not any(turn.strip() for turn in body.user_turns):
         raise HTTPException(status_code=400, detail="a scenario needs at least one user turn")
-    return body.model_dump()
+    fields = body.model_dump()
+    if fields["context"] is None:
+        del fields["context"]
+    return fields
 
 
 @app.get("/api/conversations")
@@ -1819,7 +1962,12 @@ def api_conversations_from_goldens(body: ConversationsFromGoldens):
 
 @app.put("/api/conversations/{conversation_id}")
 def api_update_conversation(conversation_id: str, body: ConversationCreate):
-    row = conversations_store.update_conversation(conversation_id, _conversation_fields(body))
+    fields = _conversation_fields(body)
+    if "context" not in fields:  # the edit did not mention it: keep what the scenario has
+        old = next((c for c in conversations_store.load_conversations() if c["id"] == conversation_id), None)
+        if old and old.get("context"):
+            fields["context"] = old["context"]
+    row = conversations_store.update_conversation(conversation_id, fields)
     if row is None:
         raise HTTPException(status_code=404, detail="conversation scenario not found")
     return row
@@ -2492,6 +2640,34 @@ def api_scan_security(job_id: int):
                                        "by_enhancement": result.get("by_enhancement")}),
         })
     return coverage_report(runs, {s.key: s.title for s in all_specs()})
+
+
+def _probe_notes(target_id: int | None) -> dict[str, str]:
+    """probe id -> its note (type · OWASP ids · source), across every probe store
+    the scan may have read: the shared file, the chatbot's own set, the daily refresh."""
+    rows = list(probes_store.load_probes())
+    try:
+        row = storage.get_target(_conn, target_id) if target_id is not None else None
+        probe_set = ((row or {}).get("config") or {}).get("probe_set")
+        if probe_set and probes_store.is_target_set(probe_set):
+            rows += probes_store.load_probes(probe_set=probe_set)
+        rows += probe_refresh.load_latest().get("probes", [])
+    except Exception:  # noqa: BLE001 - notes only label the cases
+        pass
+    return {r["id"]: r.get("note") or "" for r in rows if r.get("id")}
+
+
+@app.get("/api/scans/{job_id}/risk")
+def api_scan_risk(job_id: int):
+    """The Risk Assessment of one scan (backend/dashboard/risk.py): its red-team
+    test cases with severity, attack method and a 0-10 risk score, summary KPIs,
+    overview distributions, vulnerabilities and OWASP sections. Read-only."""
+    scan = scan_history.get_scan(_conn, job_id)
+    if scan is None:
+        raise HTTPException(status_code=404, detail="scan not found")
+    specs = all_specs()
+    return risk_assessment.assessment(scan, {s.key: s.title for s in specs}, {s.key: s.group for s in specs},
+                                      _probe_notes(scan.get("target_id")))
 
 
 @app.get("/api/scans/{job_id}/compare")

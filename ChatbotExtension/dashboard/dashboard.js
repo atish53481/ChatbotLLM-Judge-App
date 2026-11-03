@@ -1055,8 +1055,8 @@ async function renderHistory() {
           // Opens the scan's full report in its own tab (scan/scan.html).
           el("a", { className: "button-link", href: `../scan/scan.html?job=${scan.job_id}`,
             target: "_blank", rel: "noopener" }, "Open"),
-          // This scan's DeepTeam vulnerability report (risk categories + OWASP).
-          el("a", { className: "button-link", href: `../scan/scan.html?job=${scan.job_id}#security`,
+          // This scan's Risk Assessment (risk/risk.html: KPIs, risk score, vulnerabilities, cases, PDF report).
+          el("a", { className: "button-link", href: `../risk/risk.html?job=${scan.job_id}#overview`,
             target: "_blank", rel: "noopener" }, "Security"),
           // Overview / Test Cases view of this run (runs/runs.html).
           el("a", { className: "button-link", href: `../runs/runs.html?target=${target.id}&job=${scan.job_id}#overview`,

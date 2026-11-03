@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Risk Assessment</title>
+  <link rel="stylesheet" href="../lib/theme.css">
+  <link rel="stylesheet" href="risk.css">
+  <link rel="stylesheet" href="../lib/skin.css">
+  <script src="../lib/theme-mode.js"></script>
+</head>
+<body class="rk-body">
+  <div class="rk-shell">
+    <aside class="rk-nav" aria-label="Red teaming">
+      <div class="rk-brand"><span class="rk-logo" aria-hidden="true">LJ</span> LLM Judge</div>
+      <label class="rk-pick">Chatbot <select id="target"></select></label>
+      <nav>
+        <p class="rk-group">Red Teaming</p>
+        <a href="#overview" data-tab="overview">◈ Risk Profile</a>
+        <a href="#frameworks" data-tab="frameworks">▤ Frameworks</a>
+        <p class="rk-group">Evaluate</p>
+        <a id="nav-runs" href="../runs/runs.html#evaluation">◷ Test runs</a>
+        <a id="nav-scan" href="../scan/scan.html">▦ Scan details</a>
+        <p class="rk-group">App</p>
+        <a href="../index.html">← Side panel &amp; dashboard</a>
+      </nav>
+      <label class="rk-pick rk-pick-scan">Assessment (scan) <select id="scan"></select></label>
+      <button type="button" class="theme-toggle rk-theme" aria-label="Switch light or dark theme">◐ Theme</button>
+    </aside>
+    <main id="view" class="rk-view" aria-live="polite">
+      <p class="rk-muted">Loading…</p>
+    </main>
+  </div>
+  <div id="drawer-backdrop" class="rk-backdrop" hidden></div>
+  <aside id="drawer" class="rk-drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" hidden></aside>
+  <section id="print" class="rk-print" aria-hidden="true"></section>
+  <script src="../lib/api.js"></script>
+  <script src="../lib/announce.js"></script>
+  <script src="../lib/ui.js"></script>
+  <script src="risk.js"></script>
+</body>
+</html>

@@ -50,7 +50,7 @@ def load_conversations(theme: str | None = None) -> list[dict]:
 
 
 def _clean(fields: dict) -> dict:
-    return {
+    row = {
         "theme": fields["theme"],
         "name": fields["name"].strip(),
         "scenario": fields.get("scenario", "").strip(),
@@ -58,6 +58,11 @@ def _clean(fields: dict) -> dict:
         "expected_outcome": fields.get("expected_outcome", "").strip(),
         "user_turns": [t.strip() for t in fields["user_turns"] if t.strip()],
     }
+    # Optional source passages for the Turn RAG metrics when the bot returns none.
+    context = [str(c).strip() for c in fields.get("context") or [] if str(c).strip()]
+    if context:
+        row["context"] = context
+    return row
 
 
 # Scenarios built from goldens for a theme with none of its own.

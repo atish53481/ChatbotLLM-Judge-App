@@ -403,8 +403,8 @@ footer p { margin: 0; max-width: 80ch; }
       <span class="step-no">5</span>
       <div class="step-body">
         <h3>Build its test data</h3>
-        <p>A new chatbot gets a golden set of its own. Answer yes to <b>Build test data for every metric</b> and the app asks the chatbot what it does (an MCP server: its tool list), looks for its FAQ and help pages (up to 12 fetches), and has the judge write golden answers, conversation scenarios, Context goldens from those pages, tool tests for Tool Correctness and security probes fitted to it, then lists any metric still without test cases and why. <b>Build all test data</b> runs it again and fills only what is missing. Answer no to type your own.</p>
-        <ul class="calls" aria-label="Calls"><li>POST /api/targets/{id}/prepare-all</li><li>GET /api/targets/{id}/prepare-all</li><li>POST /api/documents</li><li>POST /api/documents/url</li><li>POST /api/goldens</li></ul>
+        <p>A new chatbot gets a golden set of its own, and its test data is built automatically right after you save it (<code>JUDGE_AUTO_BUILD=0</code> turns that off and the panel asks first). Six steps, each filling only the gap: <b>profile</b> (the app asks the chatbot what it is, which tools it calls and whether it returns sources, and sets its kind: chat, RAG, agent or MCP), <b>goldens</b> (until it has 5, 3 of them short answers; checked against its help pages and documents when there are any), <b>scenarios</b> (until 3, with role, expected outcome and source passages filled in), <b>context</b> (Context goldens from its FAQ pages), <b>tools</b> (tool tests for Tool Correctness, kept only when the chatbot really calls a tool) and <b>probes</b> (security probes fitted to it). A build sends at most 30 messages and makes at most 40 judge calls (<code>JUDGE_BUILD_MAX_MESSAGES</code>, <code>JUDGE_BUILD_MAX_JUDGE_CALLS</code>); past that it stops with &ldquo;Build budget reached&rdquo; and keeps what it wrote. <b>Stop</b> ends a running build before its next message or judge call (<code>POST /api/targets/{id}/prepare-all/cancel</code>, status &ldquo;stopped&rdquo;), keeping what it wrote. A tool-calls or sources path a reply shows is used at once, in the same build. It then lists the metrics still without test cases, each with why and what to do, and a separate &ldquo;Does not apply&rdquo; group for metrics that do not fit this kind of chatbot. <b>Build all test data</b> runs it again and fills only what is missing. Answer no to type your own.</p>
+        <ul class="calls" aria-label="Calls"><li>POST /api/targets/{id}/prepare-all</li><li>GET /api/targets/{id}/prepare-all</li><li>POST /api/targets/{id}/prepare-all/cancel</li><li>POST /api/documents</li><li>POST /api/documents/url</li><li>POST /api/goldens</li></ul>
       </div>
     </li>
     <li>
@@ -427,7 +427,7 @@ footer p { margin: 0; max-width: 80ch; }
       <span class="step-no">8</span>
       <div class="step-body">
         <h3>Read the results</h3>
-        <p>The side panel shows Latest scores, and a browser notification says when the scan ends. The dashboard has a card per metric, the score trend and the last run case by case. <b>History</b> lists every scan and opens the scan page, the test-run pages (Overview, Test Cases, Compare, Eval Insights), Regressions and the PDF report, and sends a scan to Confident AI.</p>
+        <p>The side panel shows Latest scores, and a browser notification says when the scan ends. The dashboard has a card per metric, the score trend and the last run case by case. <b>History</b> lists every scan and opens the scan page, the test-run pages (Overview, Test Cases, Compare, Eval Insights), the Risk Assessment, Regressions and the PDF report, and sends a scan to Confident AI.</p>
         <ul class="calls" aria-label="Calls"><li>GET /api/runs/latest</li><li>GET /api/targets/{id}/scans</li><li>GET /api/scans/{id}</li><li>GET /api/scans/{id}/insights</li></ul>
       </div>
     </li>
@@ -829,7 +829,7 @@ footer p { margin: 0; max-width: 80ch; }
       <div class="flow-arrow" aria-hidden="true"></div>
       <div class="flow-cell">
         <p class="cell-kicker">Read through <code>scans.py</code></p>
-        <ul class="api"><li>GET /api/targets/{id}/scans</li><li>GET /api/scans/{id}</li><li>GET /api/scans/{id}/compare?with=</li><li>GET /api/scans/{id}/cases?with=</li><li>GET, POST /api/scans/{id}/insights</li><li>POST /api/scans/{id}/confident</li></ul>
+        <ul class="api"><li>GET /api/targets/{id}/scans</li><li>GET /api/scans/{id}</li><li>GET /api/scans/{id}/compare?with=</li><li>GET /api/scans/{id}/cases?with=</li><li>GET, POST /api/scans/{id}/insights</li><li>GET /api/scans/{id}/risk</li><li>POST /api/scans/{id}/confident</li></ul>
       </div>
       <div class="flow-arrow" aria-hidden="true"></div>
       <div class="flow-cell">
@@ -839,6 +839,7 @@ footer p { margin: 0; max-width: 80ch; }
           <li><b>Scan page</b>: one scan in full, with every metric's cases</li>
           <li><b>Test runs</b>: Evaluation, Overview, Test Cases, Compare, and Eval Insights (the judge groups failed and weak cases into issues)</li>
           <li><b>Regressions</b>: two scans case by case, improved or regressed</li>
+          <li><b>Risk Assessment</b> (History's Security button): KPI cards, executive summary, a 0–10 risk score gauge, Overview / Vulnerabilities / Test Cases / Frameworks tabs, a case drawer and a printable LLM Security Risk Assessment report</li>
           <li><b>Confident AI</b>: Send, then View in Confident AI</li><li><b>Langfuse</b>: Send, then View in Langfuse (one trace per scan, a span per metric and per case)</li>
         </ul>
       </div>
@@ -942,7 +943,8 @@ footer p { margin: 0; max-width: 80ch; }
         <tr><td>Default goldens, scenarios and probes</td><td><code>backend/datasets/*.default.json</code></td></tr>
         <tr><td>Test data written for a new chatbot</td><td><code>backend/datasets/autogen.py</code>; documents in <code>backend/rag/</code></td></tr>
         <tr><td>Scans, compare, regressions</td><td><code>backend/dashboard/scans.py</code></td></tr>
-        <tr><td>The HTTP API (92 routes)</td><td><code>backend/dashboard/app.py</code></td></tr>
+        <tr><td>Risk Assessment: severity, risk score, the security report</td><td><code>backend/dashboard/risk.py</code>, <code>ChatbotExtension/risk/</code></td></tr>
+        <tr><td>The HTTP API (102 routes)</td><td><code>backend/dashboard/app.py</code></td></tr>
         <tr><td>The web app</td><td><code>ChatbotExtension/</code>, no build step; files are served with <code>no-cache</code>, so a reload shows edits</td></tr>
         <tr><td>Check nothing broke</td><td><code>.venv\Scripts\python -m pytest</code>, the offline suite CI runs, which spends no judge tokens</td></tr>
       </tbody>
@@ -953,5 +955,5 @@ footer p { margin: 0; max-width: 80ch; }
 </main>
 
 <footer class="wrap">
-  <p>Live page: <a href="https://claude.ai/artifact/JxkuyFH5iLH8ZdzoszZ4Qv">claude.ai/artifact/JxkuyFH5iLH8ZdzoszZ4Qv</a>. Source: <code>docs/workflow.html</code> in the repository; the text version is <code>docs/WORKFLOW.md</code>. Both are updated with every change to the app (“Keeping the docs current” in <code>CLAUDE.md</code>). Last drawn from the code on 2 November 2026. Numbers in the pass-and-fail table are examples; every other count comes from the code.</p>
+  <p>Live page: <a href="https://claude.ai/artifact/JxkuyFH5iLH8ZdzoszZ4Qv">claude.ai/artifact/JxkuyFH5iLH8ZdzoszZ4Qv</a>. Source: <code>docs/workflow.html</code> in the repository; the text version is <code>docs/WORKFLOW.md</code>. Both are updated with every change to the app (“Keeping the docs current” in <code>CLAUDE.md</code>). Last drawn from the code on 3 November 2026. Numbers in the pass-and-fail table are examples; every other count comes from the code.</p>
 </footer>

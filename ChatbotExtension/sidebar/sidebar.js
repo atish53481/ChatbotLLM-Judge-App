@@ -22,6 +22,8 @@ const state = {
   addKind: "http",
   // Chatbots askToLearn already ran for in this panel load.
   learned: new Set(),
+  // Chatbots whose build the panel started by itself in this page load.
+  autoStarted: new Set(),
   // Metric keys ticked to run (saved as "checkedMetrics"; all by default).
   checked: new Set(),
   runControl: null,
@@ -611,10 +613,25 @@ async function prepareGoldens(saved) {
 // test data with AI) or the user enters it (No, I'll enter my own).
 async function askToLearn(target) {
   await prepareGoldens(target);
-  state.askBuildFor = target.id;
+  const auto = await autoBuildOn();
+  if (auto) state.autoStarted.add(target.id);
+  else state.askBuildFor = target.id;
   // Its theme changed to its own set: reload so its goldens and scenarios show
   // (and onTargetChanged shows the question).
   await loadTargets(target.id);
+  // Automatic build: no question, the build starts and shows its progress.
+  if (auto) startBuild(target).catch((error) => setBuildStatus(plainError(error), "error"));
+}
+
+// Whether new chatbots build their test data without asking. Any failure
+// means no: the question is the safe default.
+async function autoBuildOn() {
+  try {
+    const out = await api("/api/build/settings");
+    return Boolean(out && out.auto_build);
+  } catch {
+    return false;
+  }
 }
 
 // The chatbot's website, from the pasted request, as a first guess at its help page.
@@ -1050,8 +1067,13 @@ function hideBuild() {
   $("testdata-question").classList.add("hidden");
   $("testdata-ask").classList.add("hidden");
   $("testdata-close").classList.add("hidden");
+  $("testdata-stop").classList.add("hidden");
   $("testdata-steps").replaceChildren();
   $("testdata-metrics").replaceChildren();
+  $("testdata-kind").textContent = "";
+  $("testdata-kind").classList.add("hidden");
+  $("testdata-leftovers").replaceChildren();
+  $("testdata-leftovers").classList.add("hidden");
   setBuildStatus("");
   updateBuildButton();
 }
@@ -1070,7 +1092,27 @@ async function showBuildFor(target) {
   }
   const current = currentTarget();
   if (!current || current.id !== target.id || state.build) return;
-  if (build && build.status === "running") await followBuild(target, { first: build });
+  if (build && build.status === "running") {
+    await followBuild(target, { first: build });
+    return;
+  }
+  // An already built chatbot: show what it is and what is still missing.
+  if (build && (KIND_LABELS[build.kind] || (Array.isArray(build.leftovers) && build.leftovers.length))) {
+    $("testdata").classList.remove("hidden");
+    renderKind(build.kind);
+    renderLeftovers(build.leftovers);
+  }
+  // Never built automatically and some data still needs the user's hint: build once.
+  const config = target.config || {};
+  const hinted = Array.isArray(build && build.leftovers) && build.leftovers.some((item) => item && item.hint);
+  if (build && hinted && !config.auto_built && !state.autoStarted.has(target.id)) {
+    // Marked before any await, so overlapping calls and failed starts do not retry.
+    state.autoStarted.add(target.id);
+    if (!(await autoBuildOn())) return;
+    const now = currentTarget();
+    if (!now || now.id !== target.id || state.build) return;
+    await startBuild(target);
+  }
 }
 
 async function startBuild(target) {
@@ -1161,6 +1203,9 @@ function renderBuild(target, build) {
       + "It runs on the backend; you can keep working.");
   } else if (build.status === "error") {
     setBuildStatus(`The build stopped${build.error ? `: ${build.error}` : "."}`, "error");
+  } else if (build.status === "stopped") {
+    setBuildStatus(`Build stopped for ${target.name}. What it wrote so far is kept; `
+      + "press Build all test data to continue.");
   } else if (build.status === "done") {
     setBuildStatus(failed
       ? `Test data built for ${target.name}; ${failed} step${failed === 1 ? "" : "s"} failed (see below).`
@@ -1171,6 +1216,45 @@ function renderBuild(target, build) {
   $("testdata-steps").replaceChildren(...steps.map(buildStepRow));
   $("testdata-metrics").replaceChildren(...(running ? [] : buildMetricsSummary(build.metrics)));
   $("testdata-close").classList.toggle("hidden", running);
+  const stop = $("testdata-stop");
+  stop.classList.toggle("hidden", !running);
+  if (!running) stop.disabled = false;
+  renderKind(build.kind);
+  renderLeftovers(build.leftovers);
+}
+
+const NOT_APPLICABLE = "Does not apply to this target";
+const KIND_LABELS = {
+  agent: "Detected: Agent (calls tools)",
+  rag: "Detected: RAG bot (returns sources)",
+  chat: "Detected: Chatbot",
+  mcp: "Detected: MCP server",
+};
+
+function renderKind(kind) {
+  const line = $("testdata-kind");
+  const label = KIND_LABELS[kind] || "";
+  line.textContent = label;
+  line.classList.toggle("hidden", !label);
+}
+
+// What the build could not fill: "Title: reason. hint", and the ones that do
+// not apply to this chatbot under their own heading. All text, never markup.
+function renderLeftovers(leftovers) {
+  const box = $("testdata-leftovers");
+  const items = (Array.isArray(leftovers) ? leftovers : []).filter((item) => item && typeof item === "object");
+  const row = (item) => el("li", {}, `${item.title || item.key}: ${String(item.reason || "").replace(/\.+$/, "")}${item.hint ? `. ${item.hint}` : "."}`);
+  const isNa = (item) => item.reason === NOT_APPLICABLE;
+  const open = items.filter((item) => !isNa(item));
+  const na = items.filter(isNa);
+  const parts = [];
+  if (open.length) parts.push(el("ul", { className: "testdata-missing" }, ...open.map(row)));
+  if (na.length) {
+    parts.push(el("p", { className: "small" }, el("strong", {}, "Does not apply")));
+    parts.push(el("ul", { className: "testdata-missing" }, ...na.map(row)));
+  }
+  box.replaceChildren(...parts);
+  box.classList.toggle("hidden", !parts.length);
 }
 
 // One step: a mark and a word for its status (not colour alone), and its detail.
@@ -1262,6 +1346,22 @@ $("testdata-no").addEventListener("click", async () => {
   await loadGoldens();
   $("add-golden").open = true;
   $("golden-question").focus();
+});
+
+// Stop: the backend ends the build before its next chatbot message or judge
+// call; the follow loop then shows it stopped.
+$("testdata-stop").addEventListener("click", async () => {
+  const build = state.build;
+  if (!build) return;
+  const stop = $("testdata-stop");
+  stop.disabled = true;
+  try {
+    await api(`/api/targets/${build.targetId}/prepare-all/cancel`, { method: "POST", body: {} });
+    setBuildStatus("Stopping the build…");
+  } catch (error) {
+    stop.disabled = false;
+    setBuildStatus(`Could not stop the build: ${plainError(error)}`, "error");
+  }
 });
 
 $("testdata-close").addEventListener("click", () => {

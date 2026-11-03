@@ -47,6 +47,10 @@ the page; reopening it follows the run again.
 - **Fresh start and history**: each page load starts with empty scores. Every run
   stays stored in `judge.db`; the dashboard's **History** tab lists them all, with
   **Delete** per run and **Delete all**.
+- **Risk Assessment** (`risk/risk.html?job=`): a scan's red-team results as a security
+  report (KPIs, risk score gauge, Overview / Vulnerabilities / Test Cases / Frameworks,
+  a case drawer, and **Download report** to print a PDF). Open it with a History row's
+  **Security** button.
 
 After changing these files, hard-refresh the page (Ctrl+Shift+R) so the browser
 does not keep old copies.

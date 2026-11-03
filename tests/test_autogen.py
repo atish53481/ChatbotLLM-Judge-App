@@ -114,3 +114,105 @@ def test_generate_builds_goldens_and_scenarios_for_this_chatbot(app_module, clie
     # Done once: asking again does not offer (or spend tokens on) the same work.
     again = client.post(f"/api/targets/{bot['id']}/prepare-goldens", json={}).json()
     assert autogen.SOURCE_CHATBOT not in again["can_generate"]
+
+
+class FakeJudge:
+    """Answers with whichever payload was given; records every call."""
+
+    def __init__(self, dataset=None, verdicts=None, outcomes=None, raw=None):
+        self.payload = (dataset if dataset is not None else
+                        {"verdicts": verdicts} if verdicts is not None else
+                        {"outcomes": outcomes} if outcomes is not None else None)
+        self.raw, self.calls = raw, []
+
+    def generate(self, prompt):
+        self.calls.append(prompt)
+        return (self.raw if self.raw is not None else json.dumps(self.payload)), 0.0
+
+
+def test_write_dataset_drops_duplicates_and_long_facts():
+    judge = FakeJudge(dataset={"goldens": [
+        {"question": "Do you ship to Canada?", "expected_answer": "Yes, 10-14 days.", "category": "happy_path"},
+        {"question": "do you ship to canada", "expected_answer": "Yes.", "category": "edge_case"},
+        {"question": "Refund window?", "expected_answer": "30 days.", "category": "fact"},
+        {"question": "Express cost?", "expected_answer": " ".join(["word"] * 16), "category": "fact"}],
+        "scenarios": []})
+    goldens, _ = autogen.write_dataset(judge, [], [("u", "text")], n_goldens=5, n_scenarios=3, n_short=3,
+                                       existing=["Refund window?"])
+    assert [g["question"] for g in goldens] == ["Do you ship to Canada?"]
+    assert goldens[0]["categories"] == ["happy_path"]
+    prompt = judge.calls[0]
+    assert "never quote" in prompt.lower() and "out_of_scope" in prompt and "multi_intent" in prompt
+
+
+def test_check_grounded():
+    judge = FakeJudge(verdicts=["supported", "unsupported"])
+    rows = [{"question": "a", "expected_answer": "b"}] * 2
+    assert autogen.check_grounded(judge, rows, "material") == [True, False]
+    no_call = FakeJudge()
+    assert autogen.check_grounded(no_call, rows[:1], "") == [False] and no_call.calls == []
+    assert autogen.check_grounded(FakeJudge(verdicts=["supported"]), rows, "m") == [False, False]
+    assert autogen.check_grounded(FakeJudge(raw="nope"), rows, "m") == [False, False]
+
+
+def test_repair_fills_only_empty_fields():
+    sc = [{"id": "c1", "chatbot_role": "", "expected_outcome": "Typed outcome", "user_turns": ["a", "b"]},
+          {"id": "c2", "chatbot_role": "Typed role", "expected_outcome": "", "user_turns": ["a", "b"]}]
+    judge = FakeJudge(outcomes={"c2": "Gets the refund timeline."})
+    assert dict(autogen.repair_scenarios(judge, sc, "Shop bot.", "m")) == {
+        "c1": {"chatbot_role": "Shop bot."}, "c2": {"expected_outcome": "Gets the refund timeline."}}
+    # malformed outcomes: role fix stays, no outcome field
+    bad = autogen.repair_scenarios(FakeJudge(raw="nope"), sc, "Shop bot.", "m")
+    assert dict(bad) == {"c1": {"chatbot_role": "Shop bot."}}
+
+
+def test_write_dataset_malformed_json_raises():
+    with pytest.raises(Exception):
+        autogen.write_dataset(FakeJudge(raw="not json"), [], [("u", "t")], n_goldens=5, n_scenarios=3, n_short=3)
+
+
+def test_write_dataset_caps_facts_apart_from_the_other_goldens():
+    others = [{"question": f"Question number {i} about shoes?", "expected_answer": "Explains it.",
+               "category": "happy_path"} for i in range(6)]
+    facts = [{"question": f"Fact {w}?", "expected_answer": "Yes.", "category": "Fact"} for w in ("one", "two")]
+    judge = FakeJudge(dataset={"goldens": others + facts, "scenarios": []})
+    goldens, _ = autogen.write_dataset(judge, [], [("u", "t")], n_goldens=2, n_scenarios=0, n_short=2)
+    cats = [g["categories"][0] for g in goldens]
+    assert cats.count("Fact") == 2 and cats.count("happy_path") == 4  # facts kept, not cut first
+    long_fact = FakeJudge(dataset={"goldens": [{"question": "Cost?", "expected_answer": " ".join(["w"] * 16),
+                                                "category": "FACT"}], "scenarios": []})
+    assert autogen.write_dataset(long_fact, [], [("u", "t")], n_goldens=1, n_scenarios=0, n_short=1)[0] == []
+
+
+def test_repair_writes_context_for_the_scenarios_that_need_it():
+    sc = [{"id": "c1", "chatbot_role": "r", "expected_outcome": "o", "user_turns": ["a", "b"]},
+          {"id": "c2", "chatbot_role": "r", "expected_outcome": "", "user_turns": ["a", "b"]}]
+    material = "Alpha one.\nBeta   two. Gamma three. Delta four."
+    judge = FakeJudge(dataset={"outcomes": {"c2": "Gets it."},
+                               "contexts": {"c1": ["alpha one.", "Beta two.", "Invented fact.", "Gamma three.",
+                                                   "Delta four."], "c2": ["Alpha one."]}})
+    fixes = dict(autogen.repair_scenarios(judge, sc, "Shop bot.", material, need_context=["c1"]))
+    # Only passages found in the material (case and spacing aside), at most 3; c2 did not ask for any.
+    assert fixes == {"c1": {"context": ["alpha one.", "Beta two.", "Gamma three."]},
+                     "c2": {"expected_outcome": "Gets it."}}
+    assert len(judge.calls) == 1 and "passages" in judge.calls[0]
+    # Context only: still one call; an invented passage is dropped; a long one is cut to 1500 chars.
+    long = "word " * 400
+    only = FakeJudge(dataset={"contexts": {"c1": ["Not in the material.", long]}})
+    got = dict(autogen.repair_scenarios(only, sc[:1], "", "Intro. " + long, need_context=["c1"]))
+    assert got == {"c1": {"context": [long.strip()[:autogen.PASSAGE_CHARS]]}} and len(only.calls) == 1
+    invented = FakeJudge(dataset={"contexts": {"c1": ["Made up."]}})
+    assert autogen.repair_scenarios(invented, sc[:1], "", "m", need_context=["c1"]) == []
+    # Nothing to repair: no call.
+    none = FakeJudge(dataset={})
+    assert autogen.repair_scenarios(none, sc[:1], "Shop bot.", "m") == [] and none.calls == []
+
+
+def test_interview_lets_stop_through():
+    from backend.cancel import RunCancelled
+
+    class Stopped:
+        def chat(self, message, history=None):
+            raise RunCancelled("stop")
+    with pytest.raises(RunCancelled):
+        autogen.interview(Stopped())
