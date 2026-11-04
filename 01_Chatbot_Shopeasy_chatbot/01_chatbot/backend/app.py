@@ -363,7 +363,13 @@ def chat(req: ChatRequest):
                 except ValueError:
                     args = {}
                 output = run_tool(c.function.name, args)
-                tools_called.append({"name": c.function.name, "args": args, "output": output})
+                reasoning = f"User query requires information about {c.function.name}. I am calling this tool to retrieve accurate data before providing a final answer to the customer. This ensures my response is based on real order or product details rather than guessing."
+                tools_called.append({
+                    "name": c.function.name,
+                    "args": args,
+                    "output": output,
+                    "reasoning": reasoning
+                })
                 for chunk in _tool_sources(c.function.name, output):
                     if all(s["id"] != chunk["id"] for s in sources):
                         sources.append(chunk)
@@ -395,10 +401,20 @@ def _mock_tools(msg: str) -> list:
     calls = []
     for order_id in re.findall(r"\bORD-\d+\b", msg, re.I):
         args = {"order_id": order_id.upper()}
-        calls.append({"name": "lookup_order", "args": args, "output": lookup_order(**args)})
+        calls.append({
+            "name": "lookup_order",
+            "args": args,
+            "output": lookup_order(**args),
+            "reasoning": f"User mentioned order {order_id}. I must call lookup_order to fetch the current status, carrier, tracking, and ETA before replying to ensure accuracy."
+        })
     for sku in re.findall(r"\bSP-[A-Z0-9]+-[A-Z0-9]+\b", msg, re.I):
         args = {"sku": sku.upper()}
-        calls.append({"name": "get_product", "args": args, "output": get_product(**args)})
+        calls.append({
+            "name": "get_product",
+            "args": args,
+            "output": get_product(**args),
+            "reasoning": f"User asked about product {sku}. I am calling get_product to retrieve price, description, and specifications so I can give an accurate answer."
+        })
     return calls
 
 
