@@ -4,7 +4,7 @@ deepeval>=4.3.2,<5
 # sentry_sdk without declaring it, hence the second line.
 deepteam>=1.0.10,<2
 sentry-sdk>=2.0
-pytest>=8.0
+pytest>=9.2.0
 pytest-xdist>=3.3.0
 requests>=2.31.0
 python-dotenv>=1.1.1
