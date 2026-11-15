@@ -25,6 +25,69 @@ ADVICE: dict[str, dict[str, list[str]]] = {
             "A bot that correctly declines an out-of-scope question can score low here; judge those with Domain Misuse instead.",
         ],
     },
+    "mcp_use": {
+        "chatbot": ["Give each MCP tool a clear name, description and input schema so the agent picks well."],
+        "tests": ["Add goldens that need each tool; check the server lists all its tools."],
+    },
+    "multi_turn_mcp_use": {
+        "chatbot": ["Keep earlier tool results in the conversation so the agent does not re-call tools."],
+        "tests": ["Add scenarios whose turns need different tools."],
+    },
+    "mcp_task_completion": {
+        "chatbot": ["Make the agent confirm the task is done and report the tool result to the user."],
+        "tests": ["Give each scenario a clear expected outcome."],
+    },
+    "misuse": {
+        "chatbot": ["State the bot's domain in its system prompt and tell it to decline other tasks politely."],
+        "tests": ["Set the Domain in Metric settings to what the bot is for."],
+    },
+    "non_advice_deepeval": {
+        "chatbot": ["Tell the bot to decline the listed advice types and point to a professional instead."],
+        "tests": ["List the advice types it must not give in Metric settings."],
+    },
+    "role_violation_deepeval": {
+        "chatbot": ["Give the bot a clear role and tell it never to claim to be human or drop the role."],
+        "tests": ["Set the bot's role in Metric settings."],
+    },
+    "topic_adherence": {
+        "chatbot": ["List the allowed topics in the system prompt and tell the bot to decline the rest."],
+        "tests": ["Set the allowed topics in Metric settings; add scenarios with off-topic turns."],
+    },
+    "goal_accuracy": {
+        "chatbot": ["Make the bot confirm the user's goal and finish it before ending the conversation."],
+        "tests": ["Give each scenario a clear expected outcome."],
+    },
+    "tool_use": {
+        "chatbot": ["Describe each tool's purpose clearly so the agent picks the right one."],
+        "tests": ["Set 'Tool calls path' and the bot's tool list (Find missing metric data)."],
+    },
+    "tool_permission": {
+        "chatbot": ["Remove tools the agent must not use, or guard them server-side."],
+        "tests": ["Set the allowed / denied tools in Metric settings."],
+    },
+    "agent_loop_detection": {
+        "chatbot": ["Cap tool-call retries and stop when a call returns the same result twice."],
+        "tests": ["Set 'Tool calls path' so the agent's calls are visible."],
+    },
+    "pattern_match": {
+        "chatbot": ["Make the required format part of the system prompt."],
+        "tests": ["Set the regular expression in Metric settings."],
+    },
+    "json_correctness": {
+        "chatbot": ["Use structured output / JSON mode with the schema."],
+        "tests": ["Paste the expected JSON Schema in Metric settings."],
+    },
+    "ragas": {
+        "chatbot": [
+            "Read the reason: it lists the five ragas scores; fix the lowest one first.",
+            "Low Contextual Precision / Recall / Entities Recall: improve retrieval (chunking, ranking, more sources).",
+            "Low Faithfulness or Answer Relevancy: tell the bot to answer only from its sources and to answer the question asked.",
+        ],
+        "tests": [
+            "Give each golden an expected answer and context; ragas reads both.",
+            "Set the chatbot's Retrieved context path so its own sources are scored instead of the golden's.",
+        ],
+    },
     "faithfulness": {
         "chatbot": [
             "Instruct the bot to answer only from the retrieved sources and to say so when they do not cover the question.",
@@ -32,7 +95,7 @@ ADVICE: dict[str, dict[str, list[str]]] = {
             "Make retrieval return the passage that holds the answer; a bot fills gaps when the right text is missing.",
         ],
         "tests": [
-            "When the note says the golden's reference context was scored, check that context is complete and current.",
+            "Faithfulness reads only the chatbot's own sources: make sure each reply returns the passages it used.",
             "Set the chatbot's Retrieved context path so its own sources are scored instead of the golden's.",
         ],
     },

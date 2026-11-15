@@ -272,20 +272,18 @@ def test_conversation_built_from_goldens_says_so(tmp_path):
     assert AUTO_SCENARIO_NOTE in result["note"]
 
 
-def test_retrieval_metric_falls_back_to_golden_context_and_says_so(tmp_path):
+def test_retrieval_metric_scores_only_the_chatbots_own_sources(tmp_path):
     conn, target_id = _db(tmp_path)
     golden = {**_case("q"), "expected_answer": "a", "context": ["golden fact"]}
-    spec = _fake_spec([golden], _fake_metric([0.9], [True]))
+    metric = _fake_metric([0.9], [True])
+    spec = _fake_spec([golden], metric)
     spec.needs_retrieval = True
     spec.scores_on = ("input", "expected_output", "retrieval_context")
 
-    # The chatbot returns no retrieved context: the golden's context is scored, labelled.
+    # The chatbot returns no retrieved context: the case is left out, not scored on the golden's.
     result = run_spec(spec, judge=object(), target=CannedChatbot(), target_id=target_id, conn=conn)
-    assert result["status"] == "pass"
-    row = result["rows"][0]
-    assert row["context"] == ["golden fact"] and row["context_source"] == "golden"
-    assert row["expected_output"] == "a" and row["input"] == "q"
-    assert "reference context" in result["note"]
+    assert result["status"] == "error" and "no sources" in result["error"]
+    assert not metric.measure.called if hasattr(metric.measure, "called") else True
 
     # A chatbot that returns its sources is scored on them.
     target = MagicMock()

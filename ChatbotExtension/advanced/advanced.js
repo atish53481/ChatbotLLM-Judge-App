@@ -109,6 +109,19 @@ loaders["run-options"] = async () => {
         fillSelect(select, (schema.options || []).map((o) => ({ value: o, label: (schema.labels && schema.labels[o]) || strategyLabel(o) })), saved ?? schema.default);
         return el("label", {}, select, el("span", { className: "secondary small" }, schema.label || name));
       }
+      if (schema.type === "text") {
+        // Free text (a domain, topics, a regex, a JSON schema): sent as a string.
+        const text = el("input", {
+          type: "text", className: "text-input", "data-metric": m.key, "data-setting": name, "data-choice": "1",
+          value: saved ?? schema.default ?? "", placeholder: schema.default || "",
+        });
+        return el("label", {}, text, el("span", { className: "secondary small" }, schema.label || name));
+      }
+      if (schema.type === "bool") {
+        const box = el("input", { type: "checkbox", "data-metric": m.key, "data-setting": name, "data-bool": "1" });
+        box.checked = Boolean(saved ?? schema.default);
+        return el("label", {}, box, el("span", { className: "secondary small" }, schema.label || name));
+      }
       const input = el("input", {
         type: "number", min: schema.min, max: schema.max, step: 1, className: "num-input",
         "data-metric": m.key, "data-setting": name, value: saved ?? schema.default,
@@ -144,7 +157,7 @@ $("save-run-options").addEventListener("click", () => guarded(async () => {
   const metricSettings = {};
   for (const input of $("metric-settings").querySelectorAll("input[data-metric], select[data-metric]")) {
     if (input.value === "") continue;
-    const value = input.dataset.choice ? input.value : Number(input.value);
+    const value = input.dataset.bool ? input.checked : input.dataset.choice ? input.value : Number(input.value);
     metricSettings[input.dataset.metric] = { ...(metricSettings[input.dataset.metric] || {}), [input.dataset.setting]: value };
   }
   const maxLatency = numberOrNull($("max-latency"));
@@ -432,7 +445,7 @@ loaders.coverage = async () => {
 async function tickMetrics(keys) {
   const known = state.metrics.map((m) => m.key);
   const saved = await settings.get("checkedMetrics", null);
-  const base = saved ?? state.metrics.filter((m) => m.source !== "deepteam").map((m) => m.key);
+  const base = saved ?? state.metrics.filter((m) => m.source !== "deepteam" && !m.opt_in).map((m) => m.key);
   await settings.set("checkedMetrics", [...new Set([...base, ...keys])].filter((k) => known.includes(k)));
   setStatus(`Ticked ${keys.length} metric(s) in the side panel's Metrics to run.`);
 }

@@ -85,7 +85,12 @@ FRAMEWORK_LABELS = {
     "owasp_llm": "OWASP Top 10 for LLM Applications 2025",
     "owasp_agentic": "OWASP Top 10 for Agentic Applications 2026",
     "owasp_mcp": "OWASP MCP Top 10 2025",
+    "nist": "NIST AI Risk Management Framework (Measure)",
+    "mitre": "MITRE ATLAS",
+    "eu_ai_act": "EU AI Act",
 }
+# Frameworks DeepTeam maps straight to its vulnerabilities (deepteam_sync.build_catalog).
+DEEPTEAM_ONLY_FRAMEWORKS = ("nist", "mitre", "eu_ai_act")
 
 # OWASP ids that chatting with the bot can check only in part: the risk lives
 # mostly outside the conversation (dependencies, training data, servers, logs),
@@ -137,8 +142,16 @@ def frameworks() -> dict:
            for i in _ASI_ITEMS]
     mcp = [{"id": rid, "title": title, "metrics": sorted(set(keys) & known), **_partial(rid)}
            for rid, (title, keys) in OWASP_MCP_2025.items()]
-    return {key: {"label": FRAMEWORK_LABELS[key], "items": items}
-            for key, items in (("owasp_llm", llm), ("owasp_agentic", asi), ("owasp_mcp", mcp))}
+    out = {key: {"label": FRAMEWORK_LABELS[key], "items": items}
+           for key, items in (("owasp_llm", llm), ("owasp_agentic", asi), ("owasp_mcp", mcp))}
+    catalog = deepteam_sync.load_catalog().get("frameworks", {})
+    for key in DEEPTEAM_ONLY_FRAMEWORKS:
+        items = [{"id": i["id"], "title": i["title"],
+                  "metrics": sorted(set(_keys(i.get("vulnerabilities", []))) & known), "partial": False}
+                 for i in catalog.get(key, [])]
+        if items:
+            out[key] = {"label": FRAMEWORK_LABELS[key], "items": items}
+    return out
 
 
 def coverage_report(latest_runs: list[dict], titles: dict[str, str]) -> dict:

@@ -45,7 +45,7 @@ function categoryLabels() {
 
 function isTicked(metric) {
   // Nothing saved yet: what the side panel ticks by default, every metric but the DeepTeam ones.
-  return state.checked ? state.checked.has(metric.key) : metric.source !== "deepteam";
+  return state.checked ? state.checked.has(metric.key) : metric.source !== "deepteam" && !metric.opt_in;
 }
 
 // The cards the totals and Run all visible work on: this category, ticked in the side panel.

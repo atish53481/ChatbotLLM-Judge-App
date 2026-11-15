@@ -228,7 +228,7 @@ footer p { margin: 0; max-width: 80ch; }
   </ol>
   <dl class="facts">
     <div><dt>Address</dt><dd><code>127.0.0.1:8765</code>, this PC only</dd></div>
-    <div><dt>Metrics</dt><dd>76 in 8 groups (32 from DeepTeam), plus your own</dd></div>
+    <div><dt>Metrics</dt><dd>90 in 8 groups (32 from DeepTeam, RAGAS optional), plus your own</dd></div>
     <div><dt>Judge</dt><dd>Any OpenAI-compatible API, Groq by default</dd></div>
     <div><dt>Data</dt><dd>SQLite <code>judge.db</code> and JSON datasets</dd></div>
   </dl>
@@ -419,7 +419,7 @@ footer p { margin: 0; max-width: 80ch; }
       <span class="step-no">7</span>
       <div class="step-body">
         <h3>Run the judge</h3>
-        <p>Tick metrics under <b>Metrics to run</b>. Each has a threshold, and <b>Thresholds for</b> applies a preset for Local Development, PR, Staging or Production. Pick <b>Run mode</b> (1, 2, 3, 5 or all cases per metric) and <b>Parallel metrics</b>, then press <b>Run judge</b>, or <b>Run all visible</b> on the dashboard. The scan keeps running if you close the page; <b>Stop</b> ends every queued and running scan.</p>
+        <p>Tick metrics under <b>Metrics to run</b>. Each has a threshold, and <b>Thresholds for</b> applies a preset for Local Development, PR, Staging or Production. Pick <b>Run mode</b> (1, 2, 3, 5 or all cases per metric) and <b>Parallel metrics</b>, then press <b>Run judge</b>, or <b>Run all visible</b> on the dashboard. The scan keeps running if you close the page; <b>Stop</b> ends every queued and running scan. Hover a metric's name to see its category, single- or multi-turn, and which DeepEval test-case fields it needs (Input, Expected output, Context, Retrieval context, Turns, Tools…).</p>
         <ul class="calls" aria-label="Calls"><li>POST /api/jobs</li><li>GET /api/jobs/{id} every 1 s</li><li>POST /api/jobs/cancel-all</li></ul>
       </div>
     </li>
@@ -477,8 +477,8 @@ footer p { margin: 0; max-width: 80ch; }
         <rect class="node" x="640" y="34" width="384" height="176" rx="8"/>
         <text x="656" y="56"><tspan class="tmt">goldens</tspan><tspan class="ts" dx="8">14 metrics</tspan></text>
         <text class="ts" x="656" y="73">Answer Relevancy, Correctness, Helpfulness, agent, text match</text>
-        <text x="656" y="96"><tspan class="tmt">goldens_with_context</tspan><tspan class="ts" dx="8">7 metrics</tspan></text>
-        <text class="ts" x="656" y="113">Faithfulness, Hallucination, Summarization, Contextual ×3…</text>
+        <text x="656" y="96"><tspan class="tmt">goldens_with_context</tspan><tspan class="ts" dx="8">8 metrics</tspan></text>
+        <text class="ts" x="656" y="113">Faithfulness, Hallucination, Summarization, RAGAS, Contextual ×3…</text>
         <text x="656" y="136"><tspan class="tmt">goldens_with_tools</tspan><tspan class="ts" dx="8">1 metric</tspan></text>
         <text class="ts" x="656" y="153">Tool Correctness, from each golden's expected tools</text>
         <text x="656" y="176"><tspan class="tmt">goldens_without_context</tspan><tspan class="ts" dx="8">1 metric</tspan></text>
@@ -692,7 +692,7 @@ footer p { margin: 0; max-width: 80ch; }
     <div><dt>Attack <span>· 1</span></dt><dd>Multi-turn Jailbreak: the judge writes each escalating user turn (4 by default) and the rubric scores the whole transcript.</dd></div>
   </dl>
   <dl class="notes">
-    <div><dt>Where context comes from</dt><dd>The chatbot's own sources (Retrieved context path) win. Without them, a chatbot can have the app find some: passages from its uploaded documents (BM25, top 3) or up to 3 public pages its reply links to. The golden's context is the last resort. Each row's <code>context_source</code> says which was used.</dd></div>
+    <div><dt>Where context comes from</dt><dd>The chatbot's own sources (Retrieved context path) win. Without them, a chatbot can have the app find some: passages from its uploaded documents (BM25, top 3) or up to 3 public pages its reply links to. The golden's context is never used in their place: without sources, those cases are not applicable. Each row's <code>context_source</code> says which was used.</dd></div>
     <div><dt>What a run records</dt><dd>One <code>runs</code> row: average score, passed, cases run, judge model, tokens and calls, chatbot calls, duration, latency p50 / p95, judge cost. Its <code>result_json</code> holds every case row (input, actual output, expected output, context, score, passed, reason, latency) and notes such as a judge model change since the last run.</dd></div>
   </dl>
 </section>
@@ -837,7 +837,7 @@ footer p { margin: 0; max-width: 80ch; }
         <ul>
           <li><b>Dashboard History</b>: scans numbered 1, 2, 3… per chatbot, compared metric by metric with the scan before, each with its own Delete</li>
           <li><b>Scan page</b>: one scan in full, with every metric's cases</li>
-          <li><b>Test runs</b>: Evaluation, Overview, Test Cases, Compare, and Eval Insights (the judge groups failed and weak cases into issues)</li>
+          <li><b>Test runs</b>: Evaluation, Overview, Test Cases, Compare, and Eval Insights (the judge groups failed and weak cases into issues); a run's Overview has <b>Download report</b>, which saves that run as one self-contained HTML file (properties, settings, metric results, failures, case scores)</li>
           <li><b>Regressions</b>: two scans case by case, improved or regressed</li>
           <li><b>Risk Assessment</b> (History's Security button): KPI cards, executive summary, a 0–10 risk score gauge, Overview / Vulnerabilities / Test Cases / Frameworks tabs, a case drawer and a printable LLM Security Risk Assessment report</li>
           <li><b>Confident AI</b>: Send, then View in Confident AI</li><li><b>Langfuse</b>: Send, then View in Langfuse (one trace per scan, a span per metric and per case)</li>
@@ -881,7 +881,7 @@ footer p { margin: 0; max-width: 80ch; }
       <div class="cat-head"><h3>Retrieval</h3><span class="count">3</span></div>
       <p class="ds">goldens_with_context</p>
       <ul><li>Contextual Precision</li><li>Contextual Recall</li><li>Contextual Relevancy</li></ul>
-      <p class="why">Grade the chatbot's own retrieval, or the golden's context. Sources the app finds itself never count here.</p>
+      <p class="why">Grade the chatbot's own retrieval only. Sources the app finds itself never count here.</p>
     </article>
     <article class="cat">
       <div class="cat-head"><h3>Safety</h3><span class="count">3</span></div>
@@ -955,5 +955,5 @@ footer p { margin: 0; max-width: 80ch; }
 </main>
 
 <footer class="wrap">
-  <p>Live page: <a href="https://claude.ai/artifact/JxkuyFH5iLH8ZdzoszZ4Qv">claude.ai/artifact/JxkuyFH5iLH8ZdzoszZ4Qv</a>. Source: <code>docs/workflow.html</code> in the repository; the text version is <code>docs/WORKFLOW.md</code>. Both are updated with every change to the app (“Keeping the docs current” in <code>CLAUDE.md</code>). Last drawn from the code on 4 November 2026 (Test cases > Add now works directly on multi-turn metrics; deepeval updated to >=4.3.2; judge result cache added; every metric now clearly labelled DeepEval or DeepTeam in side panel and report; security metrics support "Generate similar security probes with AI" from user question using DeepTeam, OWASP, Agentic, MCP, RAG topics; when opening or adding test cases the panel automatically scrolls into view; UI polished to match demo and confident-demo GIFs). Numbers in the pass-and-fail table are examples; every other count comes from the code.</p>
+  <p>Live page: <a href="https://claude.ai/artifact/JxkuyFH5iLH8ZdzoszZ4Qv">claude.ai/artifact/JxkuyFH5iLH8ZdzoszZ4Qv</a>. Source: <code>docs/workflow.html</code> in the repository; the text version is <code>docs/WORKFLOW.md</code>. Both are updated with every change to the app (“Keeping the docs current” in <code>CLAUDE.md</code>). Last drawn from the code on 15 November 2026 (metric groups now ordered Quality, Retrieval, Agent, Conversational, G-Eval, Safety, Text match, Security, Custom; RAGAS averages only the sub-scores ragas returns instead of failing the scan on a NaN, install with datasets&lt;5; the test-run Overview's Download report saves a run as one HTML file; Test cases > Add now works directly on multi-turn metrics; deepeval updated to >=4.3.2; judge result cache added; every metric now clearly labelled DeepEval or DeepTeam in side panel and report; security metrics support "Generate similar security probes with AI" from user question using DeepTeam, OWASP, Agentic, MCP, RAG topics; when opening or adding test cases the panel automatically scrolls into view; UI polished to match demo and confident-demo GIFs). Numbers in the pass-and-fail table are examples; every other count comes from the code.</p>
 </footer>

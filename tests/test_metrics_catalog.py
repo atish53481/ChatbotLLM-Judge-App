@@ -111,7 +111,9 @@ def test_every_spec_builds_its_metric(monkeypatch, spec):
     """Test that every metric spec can build its metric without network calls."""
     monkeypatch.setenv("JUDGE_API_KEY", "fake-key")
     judge_instance = judge.build_judge()
-    metric = spec.build_metric(judge_instance, deepeval_threshold(spec, spec.threshold))
+    # Tool Permission cannot run without an allow or deny list (DeepEval refuses).
+    extra = {"denied_tools": "delete_account"} if spec.key == "tool_permission" else {}
+    metric = spec.build_metric(judge_instance, deepeval_threshold(spec, spec.threshold), **extra)
     assert metric.threshold == deepeval_threshold(spec, spec.threshold)
 
 
@@ -126,16 +128,18 @@ DEEPTEAM_KEYS = {s.key for s in DEEPTEAM_SPECS}
 assert len(DEEPTEAM_KEYS) == 32
 
 EXPECTED_GROUPS = {
-    "safety": {"bias", "toxicity", "pii_leakage", "no_prompt_leak"},
+    "safety": {"bias", "toxicity", "pii_leakage", "no_prompt_leak", "misuse", "non_advice_deepeval",
+               "role_violation_deepeval"},
     "conversational": {"conversation_completeness", "knowledge_retention", "role_adherence",
                        "turn_relevancy", "turn_faithfulness", "turn_contextual_precision",
-                       "turn_contextual_recall", "turn_contextual_relevancy"},
+                       "turn_contextual_recall", "turn_contextual_relevancy", "topic_adherence", "goal_accuracy"},
     "agent": {"task_completion", "tool_correctness", "argument_correctness", "plan_quality",
-              "plan_adherence", "step_efficiency"},
-    "reference": {"bleu", "rouge_l", "exact_match"},
+              "plan_adherence", "step_efficiency", "tool_use", "tool_permission", "agent_loop_detection", "mcp_use",
+              "multi_turn_mcp_use", "mcp_task_completion"},
+    "reference": {"bleu", "rouge_l", "exact_match", "pattern_match", "json_correctness"},
     "rag_retrieval": {"contextual_precision", "contextual_recall", "contextual_relevancy"},
     "rag_quality": {"faithfulness", "answer_relevancy", "hallucination", "correctness", "summarization",
-                    "prompt_alignment", "robustness", "self_check"},
+                    "prompt_alignment", "robustness", "self_check", "ragas"},
     "rag_geval": {"citation_quality", "helpfulness"},
     "security": {"prompt_injection", "jailbreak", "encoded_injection", "data_exfiltration",
                  "social_engineering", "domain_misuse", "non_advice", "role_violation",
@@ -220,7 +224,7 @@ def test_harmful_content_is_a_security_probe_metric():
 
 
 def test_catalog_has_31_specs():
-    assert len(ALL_SPECS) == 44 + 32  # + the DeepTeam vulnerability metrics
+    assert len(ALL_SPECS) == 58 + 32  # incl. RAGAS; + the DeepTeam vulnerability metrics
 
 
 def test_every_spec_has_card_copy():
@@ -240,8 +244,8 @@ def test_ui_categories_follow_the_mock():
     by_cat = {c: {s.key for s in ALL_SPECS if s.ui_category == c} for c in UI_CATEGORIES}
     assert by_cat["quality"] == {"answer_relevancy", "faithfulness", "hallucination", "summarization",
                                 "prompt_alignment", "robustness", "self_check"}
-    assert by_cat["retrieval"] == {"contextual_precision", "contextual_recall", "contextual_relevancy"}
-    assert by_cat["safety"] == {"bias", "toxicity", "pii_leakage"}
+    assert by_cat["retrieval"] == {"contextual_precision", "contextual_recall", "contextual_relevancy", "ragas"}
+    assert by_cat["safety"] == {"bias", "toxicity", "pii_leakage", "misuse", "non_advice_deepeval", "role_violation_deepeval"}
     assert by_cat["geval"] == {"correctness", "no_prompt_leak", "citation_quality", "helpfulness"}
     assert by_cat["conversational"] == EXPECTED_GROUPS["conversational"]
     assert by_cat["agent"] == EXPECTED_GROUPS["agent"]
@@ -305,13 +309,12 @@ def test_shipped_generic_theme_fits_any_chatbot():
     assert all(len(c["user_turns"]) >= 2 for c in scenarios)
 
 
-def test_grounded_goldens_send_their_facts_with_the_question():
+def test_goldens_never_send_their_facts_with_the_question():
     grounded = {"question": "When does it open?", "expected_answer": "6 am",
                 "context": ["Opens at 6 am.", "Closes at 10 pm."], "context_in_prompt": True}
     plain = {"question": "Who are you?", "expected_answer": "An AI.", "context": []}
     for key in ("faithfulness", "hallucination", "answer_relevancy", "correctness"):
-        prompt = SPECS_BY_KEY[key].prompt(grounded)
-        assert "Opens at 6 am.\nCloses at 10 pm." in prompt and prompt.endswith("When does it open?")
+        assert SPECS_BY_KEY[key].prompt(grounded) == "When does it open?"
         assert SPECS_BY_KEY[key].prompt(plain) == "Who are you?"
 
 

@@ -360,18 +360,15 @@ def test_turn_rag_scores_the_chatbots_context_on_each_turn(tmp_path):
     assert result["rows"][0]["context_source"] == "chatbot"
 
 
-def test_turn_rag_falls_back_to_the_scenarios_context(tmp_path):
+def test_turn_rag_never_uses_the_scenarios_context(tmp_path):
     conn, target_id = _db(tmp_path)
     metric = _recording_metric()
     scenario = {**SCENARIO, "context": ["Refunds are accepted within 30 days."]}
     spec = _with(catalog.get_spec("turn_contextual_recall"), metric=metric, items=[scenario, SCENARIO])
     result = run_spec(spec, judge=object(), target=ToolBot(), target_id=target_id, conn=conn)
-    assert result["status"] == "pass", result
-    assert len(metric.cases) == 1  # the scenario without context was not applicable
-    assistant = [t for t in metric.cases[0].turns if t.role == "assistant"]
-    assert assistant[0].retrieval_context == ["Refunds are accepted within 30 days."]
-    assert result["rows"][0]["context_source"] == "golden"
-    assert "not applicable" in result["note"].lower()
+    # The chatbot reports no sources: the scenario's reference context is not scored instead.
+    assert metric.cases == []
+    assert result["status"] == "error"
 
 
 def test_turn_rag_does_not_apply_without_any_context(tmp_path):

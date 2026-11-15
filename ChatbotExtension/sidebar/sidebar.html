@@ -404,7 +404,7 @@
       <form id="golden-form" class="stack">
         <label>Question <textarea id="golden-question" rows="2" required></textarea></label>
         <label>Expected answer <textarea id="golden-answer" rows="3" required></textarea></label>
-        <label>Context (one fact per line; needed by Faithfulness, Hallucination, Summarization and the Contextual metrics) <textarea id="golden-context" rows="3"></textarea></label>
+        <label>Context (one true fact per line; read by Hallucination and Summarization. Faithfulness and the Contextual metrics read the chatbot's own sources, never this) <textarea id="golden-context" rows="3"></textarea></label>
         <label>Categories (comma separated, optional) <input id="golden-categories"></label>
         <label>Expected tools (comma separated, optional; for Tool Correctness) <input id="golden-tools" spellcheck="false" placeholder="e.g. lookup_order, send_email"></label>
         <div class="row">

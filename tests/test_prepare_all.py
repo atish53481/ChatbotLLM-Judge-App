@@ -184,20 +184,18 @@ def test_uploaded_documents_reach_the_judge():
     assert any("Returns accepted within 45 days." in p for p in judge.prompts)
 
 
-def test_no_material_writes_unverified_context_goldens():
+def test_no_material_never_invents_context_goldens():
     judge = Judge()
     _out, reports, queued = _build({"id": 22, "type": "http", "config": {"persona": "p"}}, judge, Bot(),
                                    theme="bare", find_pages=lambda c: [])
-    rows = [g for g in goldens_store.load_goldens(theme="bare") if g["source"] == "auto_unverified" and g["context"]]
-    assert len(rows) == prepare_all.CASES_MIN
-    assert all(len(" ".join(g["context"]).split()) >= 60 for g in rows)
-    assert _last(reports)["context"][0] == "done" and queued == []
-    assert "without a source document (unverified)" in _last(reports)["context"][1]
-    # A second build finds enough Context goldens and spends no call on them.
-    judge2 = Judge()
-    _o, reports2, _q = _build({"id": 22, "type": "http", "config": {"persona": "p"}}, judge2, Bot(),
-                              theme="bare", find_pages=lambda c: [])
-    assert _last(reports2)["context"][0] == "skipped" and "context" not in judge2.calls
+    own = goldens_store.load_goldens(theme="bare")
+    # Production rule: no help page, instructions or document means no invented passage.
+    assert not [g for g in own if g["source"] == "auto_unverified" and g["context"]]
+    assert _last(reports)["context"] == ("skipped", prepare_all.NO_CONTEXT_SOURCE) and queued == []
+    assert "context" not in judge.calls
+    # Unchecked golden answers wait for review: runs skip drafts.
+    unverified = [g for g in own if g["source"] == "auto_unverified"]
+    assert unverified and all(g.get("status") == goldens_store.DRAFT for g in unverified)
 
 
 def _last(reports):
@@ -390,8 +388,8 @@ def test_an_mcp_server_is_learned_from_its_own_description():
     assert len(conversations_store.load_conversations(theme="mcp_theme")) >= prepare_all.SCENARIOS_MIN
     assert [g["expected_tools"] for g in goldens_store.load_goldens(theme="mcp_theme") if g.get("expected_tools")] \
         == [["echo"]] * prepare_all.TOOL_GOLDENS_PER_TOOL  # only the cases the agent really ran a tool for
-    # No help pages, instructions or documents: unverified Context goldens stand in.
-    assert queued == [] and steps["context"][0] == "done"
+    # No help pages, instructions or documents: no Context goldens are invented.
+    assert queued == [] and steps["context"][0] == "skipped"
 
 
 # --- API -----------------------------------------------------------------------
@@ -429,11 +427,13 @@ def test_prepare_all_builds_and_reports(app_module, client, offline_judge, monke
     assert status["tools"] == "skipped"  # an HTTP chatbot that lists no tools
     saved = {t["id"]: t for t in client.get("/api/targets").json()}[bot["id"]]["config"]
     assert saved["theme"] == "shoe_builder" and saved["probe_set"] == f"target_{bot['id']}"
-    # No help page, instructions or documents: the judge wrote unverified Context goldens for its theme.
+    # No help page, instructions or documents: no Context goldens are invented, and the
+    # unchecked golden answers are drafts that runs skip until reviewed.
     assert before > 0 and view["metrics"]["ready"] > 0
-    assert status["context"] == "done"
+    assert status["context"] == "skipped"
     own = goldens_store.load_goldens(theme="shoe_builder")
-    assert len([g for g in own if g["source"] == "auto_unverified" and g["context"]]) == prepare_all.CASES_MIN
+    assert not [g for g in own if g["source"] == "auto_unverified" and g["context"]]
+    assert all(g.get("status") == goldens_store.DRAFT for g in own if g["source"] == "auto_unverified")
     # The fitted probes are what a run sends, and are listed (and deletable) as probes.
     cases = client.get(f"/api/metrics/jailbreak/cases?target_id={bot['id']}").json()
     assert cases["probe_set"] == f"target_{bot['id']}"

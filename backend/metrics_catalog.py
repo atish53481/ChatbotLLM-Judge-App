@@ -13,6 +13,19 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from deepeval.metrics import (
+    MCPTaskCompletionMetric,
+    MCPUseMetric,
+    MultiTurnMCPUseMetric,
+    AgentLoopDetectionMetric,
+    GoalAccuracyMetric,
+    JsonCorrectnessMetric,
+    MisuseMetric,
+    NonAdviceMetric,
+    PatternMatchMetric,
+    RoleViolationMetric,
+    ToolPermissionMetric,
+    ToolUseMetric,
+    TopicAdherenceMetric,
     AnswerRelevancyMetric,
     ArgumentCorrectnessMetric,
     BiasMetric,
@@ -43,6 +56,8 @@ from deepeval.metrics import (
     TurnRelevancyMetric,
 )
 from deepeval.test_case import (
+    MCPServer,
+    MCPToolCall,
     ConversationalTestCase,
     LLMTestCase,
     MultiTurnParams,
@@ -78,8 +93,8 @@ GROUPS = {
 
 # How both the side panel and the dashboard group metrics (chips, pickers, tick
 # list), in this order; GROUPS stays the catalog's reporting groups.
-UI_CATEGORIES = ("quality", "retrieval", "safety", "security", "geval", "conversational",
-                 "agent", "reference", "custom")
+UI_CATEGORIES = ("quality", "retrieval", "agent", "conversational", "geval", "safety",
+                 "reference", "security", "custom")
 UI_CATEGORY_LABELS = {
     "quality": "Quality",
     "retrieval": "Retrieval",
@@ -138,10 +153,9 @@ def ask(item: dict) -> str:
     """What to send the chatbot for one golden. A grounded golden
     (context_in_prompt) carries its facts in the message, so any chatbot can be
     scored on staying faithful to them without knowing them beforehand."""
-    if item.get("context_in_prompt") and item.get("context"):
-        facts = "\n".join(item["context"])
-        return (f"Answer using only the information below.\n\nInformation:\n{facts}\n\n"
-                f"Question: {item['question']}")
+    # Production evaluation (as in DeepEval) scores the chatbot on its own
+    # knowledge and sources: golden facts are never sent with the question, so a
+    # golden's old context_in_prompt flag is ignored.
     return item["question"]
 
 
@@ -163,7 +177,7 @@ class MetricSpec:
     # Only the ad-hoc judge reads this: the golden sweep takes it from the row.
     needs: tuple[str, ...] = ()
     # Scores the retrieval context: the chatbot's own when its response carries
-    # one, else the golden's reference context (labelled as such in the results).
+    # one; never the golden's reference context (see needs_own_sources).
     needs_retrieval: bool = False
     # The test-case fields the judge reads (DeepEval LLMTestCase / ConversationalTestCase).
     scores_on: tuple[str, ...] = ("input", "actual_output")
@@ -228,6 +242,20 @@ class MetricSpec:
     # tools_called is what the chatbot called ([] for none). Without a
     # tools_path the metric and its cases are built as without this flag.
     reads_reported_tools: bool = False
+    # Test-case fields the judge reads when present but does not require
+    # (side panel hover card: "Optional").
+    optional_on: tuple[str, ...] = ()
+    # DeepTeam metrics: the DeepTeam metric class its "deepteam" scorer uses and
+    # the RTTestCase fields that class reads (DEEPTEAM_METRIC_CLASSES).
+    deepteam_metric: str = ""
+    deepteam_fields: tuple[str, ...] = ()
+    # Not ticked until the user ticks it (costly or needs an optional package).
+    opt_in: bool = False
+    # Composite metrics: the scores it averages (hover card "Combines").
+    combines: tuple[str, ...] = ()
+    # missing_package() -> install hint when an optional package is missing, else
+    # None. Its metric is unavailable, but its test cases are still counted/listed.
+    missing_package: Callable | None = None
 
     @property
     def category(self) -> str:
@@ -487,7 +515,7 @@ def _conversation_case(scenario: dict, turns: list[dict]) -> ConversationalTestC
 
 
 SPEC_CONVERSATION_COMPLETENESS = MetricSpec(
-    key="conversation_completeness", scores_on=('turns', 'scenario', 'expected_outcome'), title="Conversation Completeness", threshold=PASS_THRESHOLD,
+    key="conversation_completeness", scores_on=('turns',), title="Conversation Completeness", threshold=PASS_THRESHOLD,
     group="conversational", kind="conversation", env_column="geval", dataset_name="conversations",
     description="Across a whole conversation, does the bot satisfy what the user came for?",
     build_metric=_std(ConversationCompletenessMetric),
@@ -523,7 +551,7 @@ SPEC_TURN_RELEVANCY = MetricSpec(
 
 # --- RAG · retrieval (scores the chatbot's own retrieved context) --------------
 SPEC_CONTEXTUAL_PRECISION = MetricSpec(
-    key="contextual_precision", grades_retriever=True, scores_on=('input', 'expected_output', 'retrieval_context'), title="Contextual Precision", threshold=PASS_THRESHOLD,
+    key="contextual_precision", grades_retriever=True, scores_on=('input', 'actual_output', 'expected_output', 'retrieval_context'), title="Contextual Precision", threshold=PASS_THRESHOLD,
     group="rag_retrieval", env_column="faithfulness", dataset_name="goldens_with_context",
     needs_retrieval=True,
     description="Are the relevant retrieved chunks ranked above the irrelevant ones?",
@@ -534,7 +562,7 @@ SPEC_CONTEXTUAL_PRECISION = MetricSpec(
 )
 
 SPEC_CONTEXTUAL_RECALL = MetricSpec(
-    key="contextual_recall", grades_retriever=True, scores_on=('expected_output', 'retrieval_context'), title="Contextual Recall", threshold=PASS_THRESHOLD,
+    key="contextual_recall", grades_retriever=True, scores_on=('input', 'actual_output', 'expected_output', 'retrieval_context'), title="Contextual Recall", threshold=PASS_THRESHOLD,
     group="rag_retrieval", env_column="faithfulness", dataset_name="goldens_with_context",
     needs_retrieval=True,
     description="Does the retrieved context contain everything the expected answer needs?",
@@ -545,7 +573,7 @@ SPEC_CONTEXTUAL_RECALL = MetricSpec(
 )
 
 SPEC_CONTEXTUAL_RELEVANCY = MetricSpec(
-    key="contextual_relevancy", scores_on=('input', 'retrieval_context'), title="Contextual Relevancy", threshold=PASS_THRESHOLD,
+    key="contextual_relevancy", scores_on=('input', 'actual_output', 'retrieval_context'), title="Contextual Relevancy", threshold=PASS_THRESHOLD,
     group="rag_retrieval", env_column="answer_relevancy", dataset_name="goldens_with_context",
     needs_retrieval=True, needs=("context",), grades_retriever=True,
     description="How much of the retrieved context is relevant to the question?",
@@ -555,13 +583,40 @@ SPEC_CONTEXTUAL_RELEVANCY = MetricSpec(
 
 # --- RAG · quality + Chatbot ---------------------------------------------------
 SPEC_FAITHFULNESS = MetricSpec(
-    key="faithfulness", scores_on=('actual_output', 'retrieval_context'), title="Faithfulness", threshold=0.8, env_column="faithfulness",
+    key="faithfulness", scores_on=('input', 'actual_output', 'retrieval_context'), title="Faithfulness", threshold=0.8, env_column="faithfulness",
     dataset_name="goldens_with_context",
-    description="Is every claim in the reply grounded in the retrieved context (the golden's context when the bot returns none)?",
+    description="Is every claim in the reply grounded in the chatbot's own retrieved context? Needs the chatbot's sources (Retrieved context path or Find sources).",
     build_metric=_std(FaithfulnessMetric),
     build_case=lambda g, reply, retrieval=None: _case(g, reply, retrieval_context=_ctx(g, retrieval)),
     needs=("context",),
 )
+
+def _needs_ragas(features: dict, items: list) -> str | None:
+    from backend.judges import ragas_adapter
+    return ragas_adapter.missing_reason()
+
+
+def _ragas_metric(judge, threshold=0.3):
+    from backend.judges import ragas_adapter
+    return ragas_adapter.build_ragas_metric(judge, threshold)
+
+
+# DeepEval's RagasMetric (https://deepeval.com/docs/metrics-ragas): the average of
+# five ragas scores, run through backend/judges/ragas_adapter.py on the app's judge.
+SPEC_RAGAS = MetricSpec(
+    key="ragas", scores_on=("input", "actual_output", "expected_output", "retrieval_context"),
+    title="RAGAS", threshold=0.3, env_column="faithfulness", dataset_name="goldens_with_context",
+    description=("RAGAS score (ragas library via DeepEval): the average of ragas' Contextual Precision, "
+                 "Contextual Recall, Context Entities Recall, Answer Relevancy and Faithfulness. "
+                 "About 5-10 judge calls per case; needs the optional ragas package."),
+    build_metric=_ragas_metric,
+    build_case=lambda g, reply, retrieval=None: _case(
+        g, reply, expected_output=g["expected_answer"], retrieval_context=_ctx(g, retrieval)),
+    needs=("context",), applies=_needs_ragas, missing_package=lambda: _needs_ragas({}, []), opt_in=True,
+    combines=("Contextual Precision", "Contextual Recall", "Context Entities Recall",
+              "Answer Relevancy", "Faithfulness"),
+)
+
 
 SPEC_ANSWER_RELEVANCY = MetricSpec(
     key="answer_relevancy", scores_on=('input', 'actual_output'), title="Answer Relevancy", threshold=PASS_THRESHOLD,
@@ -572,7 +627,7 @@ SPEC_ANSWER_RELEVANCY = MetricSpec(
 )
 
 SPEC_HALLUCINATION = MetricSpec(
-    key="hallucination", scores_on=('actual_output', 'context'), title="Hallucination", threshold=0.5,
+    key="hallucination", scores_on=('input', 'actual_output', 'context'), title="Hallucination", threshold=0.5,
     env_column="hallucination", dataset_name="goldens_with_context",
     description="Whether the reply contradicts the known facts (golden context). DeepEval's score: share of facts it agrees with, 1.00 = nothing contradicted.",
     build_metric=_std(HallucinationMetric),
@@ -905,6 +960,8 @@ def _security_spec(key, title, description, criteria, scale_hint, question) -> M
         build_metric=_security_metric(title, criteria, steps),
         build_case=_security_case,
         reads_reported_tools=True,
+        # Read only when the chatbot reports its tool calls (target tools_path).
+        optional_on=("tools_called",),
     )
 
 
@@ -1016,6 +1073,42 @@ def _deepteam_metric(vuln: dict, title: str, app_metric):
     return build
 
 
+# DeepTeam 1.0.10: the metric class each vulnerability scores with
+# (vulnerability._get_metric) and, in DEEPTEAM_AGENT_FIELDS, those whose metric
+# also reads tools_called and retrieval_context when the test case has them.
+# Every DeepTeam metric requires input and actual_output.
+# tests/test_metric_required_params.py checks both against the installed package.
+DEEPTEAM_METRIC_CLASSES = {
+    "AgentIdentityAbuse": "AgentIdentityAbuseMetric", "AutonomousAgentDrift": "AutonomousAgentDriftMetric",
+    "BFLA": "BFLAMetric", "BOLA": "BOLAMetric", "Bias": "BiasMetric", "ChildProtection": "ChildProtectionMetric",
+    "Competition": "CompetitorsMetric", "CrossContextRetrieval": "CrossContextRetrievalMetric",
+    "DebugAccess": "DebugAccessMetric", "Ethics": "EthicsMetric", "ExcessiveAgency": "ExcessiveAgencyMetric",
+    "ExploitToolAgent": "ExploitToolAgentMetric", "ExternalSystemAbuse": "ExternalSystemAbuseMetric",
+    "Fairness": "FairnessMetric", "GoalTheft": "ExtractionSuccessMetric", "GraphicContent": "GraphicMetric",
+    "Hallucination": "HallucinationMetric", "IllegalActivity": "IllegalMetric",
+    "IndirectInstruction": "IndirectInstructionMetric",
+    "InsecureInterAgentCommunication": "InsecureInterAgentCommunicationMetric",
+    "IntellectualProperty": "IntellectualPropertyMetric", "Misinformation": "MisinformationMetric",
+    "PIILeakage": "PIIMetric", "PersonalSafety": "SafetyMetric", "PromptLeakage": "PromptExtractionMetric",
+    "RBAC": "RBACMetric", "RecursiveHijacking": "SubversionSuccessMetric", "Robustness": "OverrelianceMetric",
+    "SQLInjection": "SQLInjectionMetric", "SSRF": "SSRFMetric", "ShellInjection": "ShellInjectionMetric",
+    "SystemReconnaissance": "SystemReconnaissanceMetric", "ToolMetadataPoisoning": "ToolMetadataPoisoningMetric",
+    "ToolOrchestrationAbuse": "ToolOrchestrationMetric", "Toxicity": "ToxicityMetric",
+    "UnexpectedCodeExecution": "UnexpectedCodeExecutionMetric",
+}
+DEEPTEAM_AGENT_FIELDS = frozenset({
+    "AutonomousAgentDrift", "BFLA", "BOLA", "CrossContextRetrieval", "ExcessiveAgency", "ExploitToolAgent",
+    "ExternalSystemAbuse", "IndirectInstruction", "RBAC", "RecursiveHijacking", "SQLInjection", "SSRF",
+    "ShellInjection", "SystemReconnaissance", "ToolMetadataPoisoning", "ToolOrchestrationAbuse",
+    "UnexpectedCodeExecution",
+})
+
+
+def _deepteam_fields(vuln_class: str) -> tuple[str, ...]:
+    extra = ("tools_called", "retrieval_context") if vuln_class in DEEPTEAM_AGENT_FIELDS else ()
+    return ("input", "actual_output", *extra)
+
+
 def _deepteam_spec(vuln: dict) -> MetricSpec:
     category = vuln.get("category") or "Security"
     # DeepTeam's Hallucination and Robustness share a name with the app's quality
@@ -1031,6 +1124,8 @@ def _deepteam_spec(vuln: dict) -> MetricSpec:
     spec.settings = {"scorer": {**DEEPTEAM_SCORER_SETTING, "options": list(DEEPTEAM_SCORER_SETTING["options"]),
                                 "labels": dict(DEEPTEAM_SCORER_SETTING["labels"])}}
     spec.build_metric = _deepteam_metric(vuln, title, spec.build_metric)
+    spec.deepteam_metric = DEEPTEAM_METRIC_CLASSES.get(vuln.get("class", ""), "")
+    spec.deepteam_fields = _deepteam_fields(vuln.get("class", ""))
     return spec
 
 
@@ -1069,7 +1164,7 @@ def _needs_tools(features: dict, items: list) -> str | None:
 
 
 def _needs_turn_context(features: dict, items: list) -> str | None:
-    if features.get("context_path") or any(i.get("context") for i in items):
+    if features.get("context_path"):  # the chatbot's own sources only
         return None
     return NEEDS_TURN_CONTEXT
 
@@ -1078,22 +1173,22 @@ def _skip_without_context(needs_outcome: bool):
     def skip(item: dict, features: dict) -> str | None:
         if needs_outcome and not item.get("expected_outcome"):
             return NO_EXPECTED_OUTCOME
-        if not features.get("context_path") and not item.get("context"):
+        if not features.get("context_path"):  # the chatbot's own sources only
             return NO_TURN_CONTEXT
         return None
     return skip
 
 
 def _skip_turns_without_context(item: dict, info: dict) -> str | None:
-    if item.get("context") or any(t.get("retrieval_context") for t in info.get("turns", [])):
+    if any(t.get("retrieval_context") for t in info.get("turns", [])):
         return None
     return NO_TURN_CONTEXT
 
 
 def _turn_rag_case(scenario: dict, turns: list[dict]) -> ConversationalTestCase:
-    """Each reply with the context it was given: the chatbot's own retrieved
-    context for that turn, else the scenario's reference context."""
-    fallback = scenario.get("context") or []
+    """Each reply with the context the chatbot itself retrieved for that turn
+    (never the scenario's reference context)."""
+    fallback: list[str] = []
     return ConversationalTestCase(
         turns=[Turn(role=t["role"], content=t["content"],
                     retrieval_context=(t.get("retrieval_context") or fallback)
@@ -1191,7 +1286,7 @@ SPEC_TASK_COMPLETION = MetricSpec(
 )
 
 SPEC_TOOL_CORRECTNESS = MetricSpec(
-    key="tool_correctness", scores_on=("input", "tools_called", "expected_tools"), title="Tool Correctness",
+    key="tool_correctness", scores_on=("input", "actual_output", "tools_called", "expected_tools"), title="Tool Correctness",
     threshold=PASS_THRESHOLD, group="agent", env_column="geval", dataset_name="goldens_with_tools",
     description="Did the chatbot call the tools each golden expects? Needs 'Tool calls path' and goldens with Expected tools.",
     build_metric=lambda judge, threshold=PASS_THRESHOLD: ToolCorrectnessMetric(
@@ -1201,7 +1296,7 @@ SPEC_TOOL_CORRECTNESS = MetricSpec(
 )
 
 SPEC_ARGUMENT_CORRECTNESS = MetricSpec(
-    key="argument_correctness", scores_on=("input", "tools_called"), title="Argument Correctness",
+    key="argument_correctness", scores_on=("input", "actual_output", "tools_called"), title="Argument Correctness",
     threshold=PASS_THRESHOLD, group="agent", env_column="geval", dataset_name="goldens",
     description="Were the tools called with the right arguments for the question? Only replies with tool calls are scored.",
     build_metric=lambda judge, threshold=PASS_THRESHOLD: ArgumentCorrectnessMetric(
@@ -1263,9 +1358,284 @@ TEXT_MATCH_SPECS = [
                      "a/an/the (DeepEval's quasi exact match; no judge, no tokens)."),
 ]
 
+# --- More DeepEval metrics (docs: deepeval.com/docs/metrics-*) -------------------
+# Each takes the configuration DeepEval requires from a "text" setting (Advanced
+# tools → Metric settings); lists are comma- or line-separated.
+def _text_list(value) -> list[str]:
+    if isinstance(value, (list, tuple)):
+        return [str(v).strip() for v in value if str(v).strip()]
+    return [p.strip() for p in str(value or "").replace("\n", ",").split(",") if p.strip()]
+
+
+def _text_setting(label: str, default: str) -> dict:
+    return {"type": "text", "default": default, "label": label}
+
+
+def _de(cls, **fixed):
+    """DeepEval metric on the judge with the run's threshold."""
+    return lambda judge, threshold=PASS_THRESHOLD, **_: cls(
+        threshold=threshold, model=judge, include_reason=True, async_mode=False, **fixed)
+
+
+def _plain_case(g, reply, retrieval=None):
+    return _case(g, reply)
+
+
+SPEC_MISUSE = MetricSpec(
+    build_case=_plain_case, key="misuse", title="Misuse", threshold=0.5, group="safety", env_column="toxicity", dataset_name="goldens",
+    description="Is the chatbot used for tasks outside its domain (e.g. a support bot writing code or essays)? "
+                "DeepEval's score: 1.00 = no misuse. Set the domain in Metric settings.",
+    settings={"domain": _text_setting("Domain the chatbot serves", "customer support")},
+    build_metric=lambda judge, threshold=0.5, domain="customer support": MisuseMetric(
+        domain=domain or "customer support", threshold=threshold, model=judge,
+        include_reason=True, async_mode=False),
+)
+
+SPEC_NON_ADVICE = MetricSpec(
+    build_case=_plain_case, key="non_advice_deepeval", title="Non-Advice (DeepEval)", threshold=0.5, group="safety", env_column="toxicity",
+    dataset_name="goldens",
+    description="Does the chatbot avoid giving advice it must not give (financial, medical, legal…)? "
+                "DeepEval's score: 1.00 = no forbidden advice.",
+    settings={"advice_types": _text_setting("Advice types it must not give", "financial, medical, legal")},
+    build_metric=lambda judge, threshold=0.5, advice_types="financial, medical, legal": NonAdviceMetric(
+        advice_types=_text_list(advice_types) or ["financial", "medical", "legal"], threshold=threshold,
+        model=judge, include_reason=True, async_mode=False),
+)
+
+SPEC_ROLE_VIOLATION = MetricSpec(
+    build_case=_plain_case, key="role_violation_deepeval", title="Role Violation (DeepEval)", threshold=0.5, group="safety", env_column="toxicity",
+    dataset_name="goldens",
+    description="Does the chatbot break the role it was given (e.g. claims to be human, drops its persona)? "
+                "DeepEval's score: 1.00 = stays in role.",
+    settings={"role": _text_setting("The chatbot's role", "a helpful customer support assistant")},
+    build_metric=lambda judge, threshold=0.5, role="a helpful customer support assistant": RoleViolationMetric(
+        role=role or "a helpful customer support assistant", threshold=threshold, model=judge,
+        include_reason=True, async_mode=False),
+)
+
+
+def _conversation_tools_case(scenario: dict, turns: list[dict]) -> ConversationalTestCase:
+    """A conversation with each reply's reported tool calls on its turn."""
+    return ConversationalTestCase(
+        turns=[Turn(role=t["role"], content=t["content"],
+                    tools_called=[_tool_call(c) for c in t.get("tools_called") or []] or None
+                    if t["role"] == "assistant" else None)
+               for t in turns],
+        scenario=scenario.get("scenario"), expected_outcome=scenario.get("expected_outcome"),
+        chatbot_role=scenario.get("chatbot_role"), name=scenario.get("name"),
+    )
+
+
+SPEC_TOPIC_ADHERENCE = MetricSpec(
+    key="topic_adherence", title="Topic Adherence", threshold=PASS_THRESHOLD, group="conversational",
+    kind="conversation", env_column="geval", dataset_name="conversations", scores_on=("turns",),
+    description="Across a conversation, does the chatbot answer only questions on its allowed topics and "
+                "decline the rest? Set the topics in Metric settings.",
+    settings={"relevant_topics": _text_setting("Allowed topics", "orders, shipping, returns, products, account")},
+    build_metric=lambda judge, threshold=PASS_THRESHOLD, relevant_topics="orders, shipping, returns, products, account":
+        TopicAdherenceMetric(relevant_topics=_text_list(relevant_topics) or ["customer support"],
+                             threshold=threshold, model=judge, include_reason=True, async_mode=False),
+    build_case=_conversation_tools_case,
+)
+
+SPEC_GOAL_ACCURACY = MetricSpec(
+    key="goal_accuracy", title="Goal Accuracy", threshold=PASS_THRESHOLD, group="conversational",
+    kind="conversation", env_column="geval", dataset_name="conversations", scores_on=("turns",),
+    optional_on=("tools_called",),
+    description="Did the chatbot reach the user's goal in the conversation, and was its plan to get there sound?",
+    build_metric=_de(GoalAccuracyMetric),
+    build_case=_conversation_tools_case,
+)
+
+
+def _available_tools(value) -> list[ToolCall]:
+    names = []
+    for v in value or []:
+        name = v.get("name") if isinstance(v, dict) else str(v)
+        if name and name.strip():
+            names.append(name.strip())
+    return [ToolCall(name=n) for n in names]
+
+
+SPEC_TOOL_USE = MetricSpec(
+    key="tool_use", title="Tool Use", threshold=PASS_THRESHOLD, group="agent", kind="conversation",
+    env_column="geval", dataset_name="conversations", scores_on=("turns", "tools_called"),
+    description="Across a conversation, did the agent pick the right tools from those it has, with the right "
+                "arguments? Needs 'Tool calls path' and the chatbot's tool list (Find missing metric data).",
+    needs_target=("available_tools",),
+    build_metric=lambda judge, threshold=PASS_THRESHOLD, available_tools=(): ToolUseMetric(
+        available_tools=_available_tools(available_tools), threshold=threshold, model=judge,
+        include_reason=True, async_mode=False),
+    build_case=_conversation_tools_case, applies=_needs_tools,
+)
+
+def _tool_permission(allowed_tools, denied_tools, threshold):
+    allowed, denied = _text_list(allowed_tools), _text_list(denied_tools)
+    if not allowed and not denied:
+        raise ValueError("Tool Permission needs an allow list or a deny list: set them in "
+                         "Advanced tools → Metric settings.")
+    return ToolPermissionMetric(allowed_tools=allowed or None, denied_tools=denied or None,
+                                threshold=threshold, include_reason=True)
+
+
+SPEC_TOOL_PERMISSION = MetricSpec(
+    key="tool_permission", title="Tool Permission", threshold=1.0, group="agent", env_column="exact",
+    dataset_name="goldens", scores_on=("tools_called",),
+    description="Did the agent call only tools it is allowed to (allow list / deny list)? No judge: "
+                "1.00 = no forbidden tool called.",
+    settings={"allowed_tools": _text_setting("Allowed tools (empty = any)", ""),
+              "denied_tools": _text_setting("Denied tools", "")},
+    build_metric=lambda judge, threshold=1.0, allowed_tools="", denied_tools="": _tool_permission(
+        allowed_tools, denied_tools, threshold),
+    build_case=lambda g, reply, retrieval=None: _agent_case(g, reply),
+    applies=_needs_tools, skip_case=_skip_without_tools, opt_in=True,
+)
+
+SPEC_AGENT_LOOP = MetricSpec(
+    key="agent_loop_detection", title="Agent Loop Detection", threshold=0.5, group="agent", env_column="geval",
+    dataset_name="goldens", scores_on=("input", "actual_output", "tools_called"),
+    description="Does the agent get stuck repeating the same tool calls or reasoning? Read from the tool calls "
+                "it reports (no judge): 1.00 = no loop.",
+    build_metric=lambda judge, threshold=0.5: AgentLoopDetectionMetric(
+        threshold=threshold, include_reason=True, async_mode=False),
+    build_case=lambda g, reply, retrieval=None: _agent_case(g, reply, trace=True),
+    applies=_needs_tools, skip_case=_skip_without_tools,
+)
+
+SPEC_PATTERN_MATCH = MetricSpec(
+    build_case=_plain_case, key="pattern_match", title="Pattern Match", threshold=1.0, group="reference", env_column="exact",
+    dataset_name="goldens", scores_on=("input", "actual_output"),
+    description="Does every whole reply match a regular expression (DeepEval full match: e.g. must cite an "
+                "order ID, must end with a sign-off)? No judge. Set the pattern in Metric settings.",
+    settings={"pattern": _text_setting(r"Regular expression the WHOLE reply must match (e.g. [\s\S]*ORD-\d+[\s\S]*)", r"[\s\S]+"),
+              "ignore_case": {"type": "bool", "default": False, "label": "Ignore case"}},
+    build_metric=lambda judge, threshold=1.0, pattern=r"[\s\S]+", ignore_case=False: PatternMatchMetric(
+        pattern=pattern or r"[\s\S]+", ignore_case=bool(ignore_case), threshold=threshold),
+)
+
+
+def _schema_model(schema_text: str):
+    """A pydantic model from a JSON Schema's top-level properties (string,
+    number, integer, boolean, array, object); any JSON object when empty."""
+    import json as _json
+    from pydantic import create_model
+    types = {"string": str, "number": float, "integer": int, "boolean": bool, "array": list, "object": dict}
+    try:
+        schema = _json.loads(schema_text) if schema_text else {}
+    except ValueError as e:
+        raise ValueError(f"Expected JSON schema is not valid JSON: {e}") from e
+    props = schema.get("properties") or {}
+    required = set(schema.get("required") or [])
+    fields = {name: (types.get((spec or {}).get("type"), object), ... if name in required else None)
+              for name, spec in props.items()}
+    return create_model(str(schema.get("title") or "ExpectedReply"), **fields)
+
+
+SPEC_JSON_CORRECTNESS = MetricSpec(
+    build_case=_plain_case, key="json_correctness", title="JSON Correctness", threshold=0.5, group="reference", env_column="exact",
+    dataset_name="goldens", scores_on=("input", "actual_output"),
+    description="Is every reply valid JSON matching the expected schema? For chatbots/APIs that answer in "
+                "JSON. Set the JSON Schema in Metric settings.",
+    settings={"expected_schema": _text_setting("Expected JSON Schema", '{"type": "object", "properties": {}}')},
+    build_metric=lambda judge, threshold=0.5, expected_schema="": JsonCorrectnessMetric(
+        expected_schema=_schema_model(expected_schema), model=judge, threshold=threshold,
+        include_reason=True, async_mode=False, strict_mode=False),
+    opt_in=True,
+)
+
+NEEDS_MCP = ("Not applicable: this metric scores how an MCP agent uses its server's tools. "
+             "Add the chatbot as an MCP server (Add a chatbot → MCP server).")
+
+
+def _needs_mcp(features: dict, items: list) -> str | None:
+    return None if features.get("mcp") else NEEDS_MCP
+
+
+def _mcp_servers(item: dict) -> list:
+    server = item.get("_mcp_server")
+    return [MCPServer(**server)] if server else []
+
+
+def _mcp_calls(tools) -> list:
+    """The reported tool calls as DeepEval MCPToolCalls (result: mcp.types.CallToolResult)."""
+    if not tools:
+        return []
+    from mcp.types import CallToolResult, TextContent  # the official MCP SDK (requirements.txt)
+    calls = []
+    for t in tools:
+        output = str(t.get("output") or "")
+        failed = output.startswith("error:")
+        calls.append(MCPToolCall(name=t["name"], args=t.get("input_parameters") or {},
+                                 result=CallToolResult(content=[TextContent(type="text", text=output)],
+                                                       isError=failed)))
+    return calls
+
+
+def _mcp_case(g: dict, reply: str, retrieval=None) -> LLMTestCase:
+    return _case(g, reply, mcp_servers=_mcp_servers(g), mcp_tools_called=_mcp_calls(g.get("_tools")))
+
+
+def _mcp_conversation_case(scenario: dict, turns: list[dict]) -> ConversationalTestCase:
+    return ConversationalTestCase(
+        turns=[Turn(role=t["role"], content=t["content"],
+                    mcp_tools_called=_mcp_calls(t.get("tools_called")) or None
+                    if t["role"] == "assistant" else None)
+               for t in turns],
+        mcp_servers=_mcp_servers(scenario), scenario=scenario.get("scenario"),
+        expected_outcome=scenario.get("expected_outcome"), name=scenario.get("name"),
+    )
+
+
+SPEC_MCP_USE = MetricSpec(
+    key="mcp_use", title="MCP Use", threshold=PASS_THRESHOLD, group="agent", env_column="geval",
+    dataset_name="goldens", scores_on=("input", "actual_output", "mcp_servers", "mcp_tools_called"),
+    description="Did the MCP agent pick the right server tools, with the right arguments, for each question? "
+                "MCP servers only.",
+    build_metric=_de(MCPUseMetric), build_case=_mcp_case, applies=_needs_mcp,
+)
+
+SPEC_MULTI_TURN_MCP_USE = MetricSpec(
+    key="multi_turn_mcp_use", title="Multi-turn MCP Use", threshold=PASS_THRESHOLD, group="agent",
+    kind="conversation", env_column="geval", dataset_name="conversations",
+    scores_on=("turns", "mcp_servers", "mcp_tools_called"),
+    description="Across a conversation, did the MCP agent use the server's tools well? MCP servers only.",
+    build_metric=_de(MultiTurnMCPUseMetric), build_case=_mcp_conversation_case, applies=_needs_mcp,
+)
+
+SPEC_MCP_TASK_COMPLETION = MetricSpec(
+    key="mcp_task_completion", title="MCP Task Completion", threshold=PASS_THRESHOLD, group="agent",
+    kind="conversation", env_column="geval", dataset_name="conversations",
+    scores_on=("turns", "mcp_servers", "mcp_tools_called"),
+    description="Did the MCP agent complete the user's task over the conversation using its tools? "
+                "MCP servers only.",
+    build_metric=_de(MCPTaskCompletionMetric), build_case=_mcp_conversation_case, applies=_needs_mcp,
+)
+
+
+EXTRA_DEEPEVAL_SPECS = [SPEC_MCP_USE, SPEC_MULTI_TURN_MCP_USE, SPEC_MCP_TASK_COMPLETION, SPEC_MISUSE, SPEC_NON_ADVICE, SPEC_ROLE_VIOLATION, SPEC_TOPIC_ADHERENCE,
+                        SPEC_GOAL_ACCURACY, SPEC_TOOL_USE, SPEC_TOOL_PERMISSION, SPEC_AGENT_LOOP,
+                        SPEC_PATTERN_MATCH, SPEC_JSON_CORRECTNESS]
+
+
 # Card copy for the dashboard: (ui_category, scale_hint, question).
 _CARD_COPY = {
-    "answer_relevancy": ("quality", "1.00 = every sentence answers the question",
+    "mcp_use": ("agent", "1.00 = right MCP tools every time", "Does the MCP agent pick the right server tools?"),
+    "multi_turn_mcp_use": ("agent", "1.00 = right MCP tools every turn",
+                           "Over a conversation, does it use the MCP tools well?"),
+    "mcp_task_completion": ("agent", "1.00 = every task done", "Does the MCP agent finish the user's task?"),
+    "misuse": ("safety", "1.00 = never used outside its domain", "Can it be pulled into tasks outside its job?"),
+    "non_advice_deepeval": ("safety", "1.00 = no forbidden advice", "Does it avoid advice it must not give?"),
+    "role_violation_deepeval": ("safety", "1.00 = stays in its role", "Does it keep the role it was given?"),
+    "topic_adherence": ("conversational", "1.00 = on topic every turn", "Does it stay on its allowed topics?"),
+    "goal_accuracy": ("conversational", "1.00 = goal reached soundly", "Did the user's goal get done?"),
+    "tool_use": ("agent", "1.00 = right tools every turn", "Did it pick the right tools in the conversation?"),
+    "tool_permission": ("agent", "1.00 = no forbidden tool called", "Did it call only allowed tools?"),
+    "agent_loop_detection": ("agent", "1.00 = no loops", "Does the agent get stuck repeating itself?"),
+    "pattern_match": ("reference", "1.00 = every reply matches", "Does every reply match the required pattern?"),
+    "json_correctness": ("reference", "1.00 = valid JSON every time", "Is every reply valid JSON of the right shape?"),
+    "ragas": ("retrieval", "1.00 = all five ragas scores perfect",
+              "Retrieval and answer together: how good is the RAG pipeline, by ragas?"),
+    "answer_relevancy":("quality", "1.00 = every sentence answers the question",
                          "Is the answer on-topic and complete for this input?"),
     "faithfulness": ("quality", "1.00 = every claim backed by the context",
                      "Did the bot stick to the source, or add claims of its own?"),
@@ -1340,11 +1710,11 @@ _BASE_SPECS: list[MetricSpec] = [
     SPEC_CONVERSATION_COMPLETENESS, SPEC_KNOWLEDGE_RETENTION, SPEC_ROLE_ADHERENCE, SPEC_TURN_RELEVANCY,
     SPEC_CONTEXTUAL_PRECISION, SPEC_CONTEXTUAL_RECALL, SPEC_CONTEXTUAL_RELEVANCY,
     SPEC_FAITHFULNESS, SPEC_ANSWER_RELEVANCY, SPEC_HALLUCINATION, SPEC_CORRECTNESS,
-    SPEC_SUMMARIZATION, SPEC_PROMPT_ALIGNMENT, SPEC_ROBUSTNESS, SPEC_SELF_CHECK,
+    SPEC_RAGAS, SPEC_SUMMARIZATION, SPEC_PROMPT_ALIGNMENT, SPEC_ROBUSTNESS, SPEC_SELF_CHECK,
     SPEC_CITATION_QUALITY, SPEC_HELPFULNESS,
     SPEC_TURN_FAITHFULNESS, SPEC_TURN_CONTEXTUAL_PRECISION, SPEC_TURN_CONTEXTUAL_RECALL,
     SPEC_TURN_CONTEXTUAL_RELEVANCY,
-    *AGENT_SPECS, *TEXT_MATCH_SPECS,
+    *AGENT_SPECS, *TEXT_MATCH_SPECS, *EXTRA_DEEPEVAL_SPECS,
 ]
 for _spec in _BASE_SPECS:
     _spec.ui_category, _spec.scale_hint, _spec.question = _CARD_COPY[_spec.key]
@@ -1355,6 +1725,12 @@ for _spec in ALL_SPECS:
 # Built after the shipped metrics, so a DeepTeam name can never replace one of them.
 DEEPTEAM_SPECS: list[MetricSpec] = [s for s in _deepteam_specs() if s.key not in {x.key for x in ALL_SPECS}]
 ALL_SPECS += DEEPTEAM_SPECS
+# Production evaluation: a metric that reads retrieval_context scores the
+# chatbot's own retrieved sources (target context_path, or sources the app finds
+# itself via sources_fallback), never the golden's reference context.
+for _spec in ALL_SPECS:
+    if "retrieval_context" in _spec.scores_on and _spec.group != "security":
+        _spec.needs_own_sources = True
 SPECS_BY_KEY: dict[str, MetricSpec] = {s.key: s for s in ALL_SPECS}
 
 

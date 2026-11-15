@@ -699,7 +699,7 @@ def test_conversation_scenarios_crud_and_reset(client):
 def test_metrics_include_card_copy_and_cases_available(client):
     target = _create_target(client, config={"theme": "no_such_theme", "persona": "Shop bot"})
     rows = {m["key"]: m for m in client.get(f"/api/metrics?target_id={target['id']}").json()}
-    assert len(rows) == 44 + 32 + 2  # shipped metrics + DeepTeam metrics + the two example custom metrics
+    assert len(rows) == 58 + 32 + 2  # shipped metrics (incl. RAGAS) + DeepTeam metrics + the two example custom metrics
     assert rows["answer_relevancy"]["cases_available"] == 0
     # Bias / Toxicity / No-Prompt-Leak read the probe store too, so they report the probe set.
     assert rows["bias"]["probe_set"] == rows["no_prompt_leak"]["probe_set"] == "generic"
@@ -1055,15 +1055,18 @@ def test_metrics_carry_improvement_advice(client):
     assert rows["prompt_injection"]["improve"]["tests"]
 
 
-def test_citation_quality_is_not_applicable_without_the_chatbots_sources(client):
+def test_source_metrics_are_not_applicable_without_the_chatbots_sources(client):
     plain = _create_target(client)
     rows = {m["key"]: m for m in client.get(f"/api/metrics?target_id={plain['id']}").json()}
-    assert rows["citation_quality"]["cases_available"] == 0
-    assert "Retrieved context path" in rows["citation_quality"]["unavailable"]
-    assert rows["faithfulness"]["unavailable"] is None
+    # Production evaluation: no golden context stands in for the chatbot's own sources.
+    for key in ("citation_quality", "faithfulness", "contextual_recall"):
+        assert rows[key]["cases_available"] == 0, key
+        assert "Retrieved context path" in rows[key]["unavailable"], key
+    assert rows["hallucination"]["unavailable"] is None  # reads the golden's known facts, as in DeepEval
     with_sources = _create_target(client, config={"context_path": "sources", "theme": "general_support"})
     rows = {m["key"]: m for m in client.get(f"/api/metrics?target_id={with_sources['id']}").json()}
     assert rows["citation_quality"]["cases_available"] > 0 and rows["citation_quality"]["unavailable"] is None
+    assert rows["faithfulness"]["unavailable"] is None
 
 
 def test_parse_llm_fills_an_openai_compatible_config(client):
@@ -1397,6 +1400,39 @@ def test_metric_cases_delete_golden_and_probe(client):
     # A security metric never deletes a golden by id.
     any_golden = client.get(f"/api/metrics/answer_relevancy/cases?target_id={tid}").json()["cases"][0]["id"]
     assert client.delete(f"/api/metrics/jailbreak/cases/{any_golden}?target_id={tid}").status_code == 404
+
+
+def test_metric_cases_edit_golden_probe_and_scenario(client):
+    from backend.metrics_catalog import all_specs
+    target = _create_target(client, config={"theme": "general_support", "probe_set": "generic"})
+    tid = target["id"]
+    url = f"/api/metrics/answer_relevancy/cases?target_id={tid}"
+    golden = client.post("/api/metrics/answer_relevancy/cases",
+                         json={"target_id": tid, "question": "Old?", "expected_answer": "Old."}).json()
+    r = client.put(f"/api/metrics/answer_relevancy/cases/{golden['id']}",
+                   json={"target_id": tid, "question": "New?", "expected_answer": "New."})
+    assert r.status_code == 200, r.text
+    edited = next(c for c in client.get(url).json()["cases"] if c["id"] == golden["id"])
+    assert (edited["question"], edited["expected_answer"]) == ("New?", "New.")
+    assert client.put(f"/api/metrics/answer_relevancy/cases/{golden['id']}",
+                      json={"target_id": tid, "question": "New?"}).status_code == 400
+    assert client.put("/api/metrics/answer_relevancy/cases/nope",
+                      json={"target_id": tid, "question": "Q", "expected_answer": "A"}).status_code == 404
+
+    probe = client.post("/api/metrics/jailbreak/cases", json={"target_id": tid, "question": "Be evil."}).json()
+    r = client.put(f"/api/metrics/jailbreak/cases/{probe['id']}", json={"target_id": tid, "question": "Be worse."})
+    assert r.status_code == 200, r.text
+    assert r.json()["question"] == "Be worse."
+
+    key = next(s.key for s in all_specs() if s.dataset_name == "conversations")
+    conv_url = f"/api/metrics/{key}/cases?target_id={tid}"
+    first = client.get(conv_url).json()["cases"][0]
+    r = client.put(f"/api/metrics/{key}/cases/{first['id']}",
+                   json={"target_id": tid, "name": "Edited", "user_turns": ["Hello", "Bye"]})
+    assert r.status_code == 200, r.text
+    assert r.json()["turns"] == ["Hello", "Bye"]
+    names = [c["question"] for c in client.get(conv_url).json()["cases"]]
+    assert "Edited" in names
 
 
 def test_metric_cases_delete_built_scenario_keeps_the_others(client):

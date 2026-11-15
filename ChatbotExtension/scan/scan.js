@@ -58,7 +58,8 @@ function summary(results, title) {
     el("thead", {}, el("tr", {}, el("th", {}, "Metric"), el("th", { className: "num" }, "Score"),
       el("th", { className: "num" }, "Minimum"), el("th", {}, "Result"), el("th", { className: "num" }, "Cases"))),
     el("tbody", {}, results.map((r) => el("tr", {},
-      el("td", {}, el("a", { href: `#metric-${r.key}` }, title(r.key))),
+      el("td", {}, el("a", { href: `#metric-${r.key}`,
+        onclick: () => { const d = document.getElementById(`metric-${r.key}`); if (d) d.open = true; } }, title(r.key))),
       el("td", { className: "num" }, formatScore(r.score)),
       el("td", { className: "num" }, minimum(r)),
       statusCell(r.status),
@@ -90,7 +91,7 @@ function notRun(skipped, title) {
 // and say under the judge's reason how the case would pass.
 function cases(rows, metric, r) {
   if (!rows || !rows.length) return el("p", { className: "muted" }, "No cases were scored.");
-  return el("div", { className: "table-scroll" }, el("table", {},
+  return el("div", { className: "table-scroll case-table" }, el("table", {},
     el("thead", {}, el("tr", {}, el("th", {}, "#"), el("th", {}, "Question"), el("th", {}, "Chatbot reply"),
       el("th", {}, "Expected"), el("th", { className: "num" }, "Score"), el("th", {}, "Result"), el("th", {}, "Judge's reason"))),
     el("tbody", {}, rows.map((row, i) => {
@@ -141,6 +142,7 @@ function metricSection(r, title, metric) {
       r.error ? el("p", { className: "reason status-error" }, r.error) : "",
       r.reason ? el("p", { className: "reason" }, r.reason) : "",
       r.note ? el("p", { className: "note" }, r.note) : "",
+      promptInstructionsBlock(r.prompt_instructions),
       cases(r.rows, metric, r)),
   );
 }
@@ -223,9 +225,22 @@ async function loadScan() {
       ...(security ? securitySection(security)
         : [el("p", { className: "muted" }, "The security report for this scan could not be loaded.")]),
     );
+    openFromHash();
   } catch (error) {
     status.textContent = `Could not load the scan: ${error.message}`;
   }
 }
+
+// Passed metrics start closed; a link to one (#metric-<key>, from the summary
+// table or a pasted URL) opens it so its cases show, then scrolls to it.
+function openFromHash() {
+  const id = decodeURIComponent(location.hash.slice(1));
+  const target = id && document.getElementById(id);
+  if (!target || target.tagName !== "DETAILS") return;
+  target.open = true;
+  target.scrollIntoView({ block: "start" });
+}
+
+window.addEventListener("hashchange", openFromHash);
 
 loadScan();

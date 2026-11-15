@@ -31,8 +31,8 @@ This file, `workflow.html` and the published page change together with the code;
 | API | `backend/dashboard/app.py` | FastAPI on `127.0.0.1:8765`, 102 routes. Same origin only: no CORS, and `TrustedHostMiddleware` accepts only `127.0.0.1` / `localhost`, which keeps stored chatbot keys and cookies on this PC. |
 | Job queue | `backend/dashboard/jobs.py` | Runs scans in the background, one at a time. |
 | Runner | `backend/dashboard/runner.py` | Runs one metric: cases → replies → test cases → scores → one stored run. |
-| Metric catalog | `backend/metrics_catalog.py` | 76 `MetricSpec`s in 8 groups (44 of the app's own + 32 DeepTeam vulnerabilities), plus your own. |
-| DeepTeam catalog | `backend/datasets/deepteam_sync.py` | Reads the installed `deepteam`: vulnerabilities, their template test cases, attacks, OWASP LLM / Agentic maps. |
+| Metric catalog | `backend/metrics_catalog.py` | 90 `MetricSpec`s in 8 groups (58 of the app's own, incl. RAGAS and 13 more DeepEval metrics, + 32 DeepTeam vulnerabilities), plus your own. |
+| DeepTeam catalog | `backend/datasets/deepteam_sync.py` | Reads the installed `deepteam`: vulnerabilities, their template test cases, attacks, OWASP LLM / Agentic, NIST AI RMF, MITRE ATLAS and EU AI Act maps (all shown on the coverage page and in the report). |
 | Chatbot client | `backend/targets/http_client.py` | Replays the request captured from the chatbot's website (`curl.py` parses the cURL). |
 | Judge | `backend/judges/judge.py` | The scoring model behind an OpenAI-compatible API (Groq by default). Never the chatbot under test. |
 | Storage | `backend/storage.py` | SQLite `judge.db`: `targets`, `runs`, `jobs`, `documents`, `meta`, `human_labels`, `pairwise_runs`. |
@@ -168,6 +168,18 @@ loop waits until the port is free again. Nothing runs while the laptop sleeps or
    3 or 5 cases per metric, or all) and **Parallel metrics**, then press **Run judge**, or **Run all
    visible** on the dashboard. The scan runs in the backend, so closing the page does not stop it;
    **Stop** ends every queued and running scan (section 6).
+   Hovering a metric's name shows a card: its category, group, single- or multi-turn, what it
+   asks, and each DeepEval test-case field (Input, Actual output, Expected output, Context,
+   Retrieval context; Turns / Scenario / Expected outcome / Chatbot role for conversation
+   metrics; Tools called / Expected tools for agents) marked Needed or Not needed, from the
+   metric's `scores_on` in `/api/metrics` (a test keeps it covering DeepEval's own required
+   params), plus where its questions come from and its score scale. Fields read only when present
+   (`optional_on`, e.g. Tools called on security probes) show as Optional; on probes, Context is
+   the probe goal + chatbot persona, added automatically. DeepTeam metrics add a second list for
+   their DeepTeam scorer: `deepteam_metric` (the class `vulnerability._get_metric` returns, e.g.
+   `BOLAMetric`) and `deepteam_fields` (always input + actual output; tools called + retrieval
+   context for the 17 agentic vulnerabilities in `metrics_catalog.DEEPTEAM_AGENT_FIELDS`), checked
+   against the installed deepteam by `tests/test_metric_required_params.py`.
    Calls: `POST /api/jobs`, `GET /api/jobs/{id}` every second, `POST /api/jobs/cancel-all`.
 8. **Read the results.** Latest scores in the side panel and a browser notification when the scan
    ends; cards, trend and the case table on the dashboard; History lists every scan and opens the
@@ -308,7 +320,10 @@ filling only what its datasets still lack and failing on its own:
    them, so the Turn RAG metrics have context. For a rag, agent or mcp chatbot each new scenario's
    first turn is sent once first, and one whose reply has sources gets none;
 4. **context**: Context goldens from the found help pages and the chatbot's instructions, through
-   the document pipeline; with no source at all the judge writes unverified ones;
+   the document pipeline; with no source at all nothing is written (the app never invents facts:
+   the step is skipped and asks for a Help / FAQ URL or a document). Golden answers the build could
+   not check against any source are saved as drafts that runs skip until you accept them
+   (Advanced tools → Drafts waiting for review);
 5. **tools**: goldens with `expected_tools` for Tool Correctness, for every tool with fewer than 2
    (discovery's `available_tools`, a tool the chatbot was seen calling, or the MCP server's
    `tools/list`). Each case is sent to the chatbot and kept only when it really calls a tool;
@@ -448,7 +463,11 @@ next start.
   still running) and `running` (all of them), each with its phase (`chat` or `judge`), cases done
   of total and the question being asked. Pages poll it every second (`ui.js followJob`); a
   reopened page finds a running job again through `GET /api/jobs?target_id=&active=1`. A finished
-  scan shows as a browser notification and a mark in the tab title.
+  scan shows as a browser notification and a mark in the tab title. In the side panel, hovering the
+  run banner or results list pauses them and opens a panel with what runs now, the tally so far and a
+  **Test cases log**: every case step the polls saw (asking the chatbot, then judging), oldest first,
+  with metric, case n/total, question and time since start (`sidebar.js caseLogBlock`, last 200 kept
+  in the browser only; steps between two polls are not seen).
 - **Stop.** `POST /api/jobs/cancel-all` stops every job of every chatbot. Queued jobs end at once.
   A running one stops at its next chatbot message, judge call or retry wait (`backend/cancel.py`
   passes the check through contextvars), and a stopped metric records nothing, so a half run never
@@ -509,7 +528,7 @@ What "ask the chatbot" sends, by metric kind:
 
 | Kind | Metrics | Sent per case |
 |---|---|---|
-| `single` | 33 | The golden's question, or the prompt the metric builds from it (Summarization sends the text to summarize; grounded goldens with `context_in_prompt` send their facts with the question). |
+| `single` | 33 | The golden's question, or the prompt the metric builds from it (Summarization sends the text to summarize). Golden facts are never sent with a question: `context_in_prompt` is ignored. |
 | `conversation` | 8 | Each user turn of a scenario in order, with the conversation so far. Turn RAG metrics read each turn's own `retrieval_context`, else the scenario's optional `context`. |
 | `multi_sample` | 2 | Robustness: the question with a typo and as a casual rewording. Self-Check: the same question several times. Always fresh replies (section 8). |
 | `attack` | 1 | Multi-turn Jailbreak: for each goal the judge writes the next escalating user turn (`ATTACKER_PROMPT`, 4 turns by default); the G-Eval rubric scores the whole transcript. |
@@ -523,8 +542,14 @@ scores may not be comparable.
 ### Metrics that switch on at run time
 
 - **Retrieval** (Contextual Precision / Recall / Relevancy and their Turn versions) grade the
-  retriever, so they read the chatbot's own sources (`context_path`) or the golden's context, never
-  context the app found itself (`MetricSpec.grades_retriever`).
+  retriever, so they read only the chatbot's own sources (`context_path`), never context the app found
+  itself (`MetricSpec.grades_retriever`) and never the golden's context.
+- **Every metric that reads `retrieval_context`** (Faithfulness, Contextual ×3, Citation Quality,
+  RAGAS, Turn RAG ×4) is production-only: it scores the chatbot's own sources or, for the
+  non-retriever ones, sources the app found itself (`sources_fallback`). Without either it is
+  unavailable (`needs_own_sources`, `runner.NEEDS_OWN_SOURCES`); a reply with no sources is a
+  not-applicable case (`runner.NO_OWN_SOURCES_CASE`). The golden's context is never used in their
+  place. Hallucination keeps reading the golden's `context`: in DeepEval it checks known facts.
 - **Agent** metrics read `ChatReply.tools_called` (target `tools_path`; OpenAI `tool_calls` or
   plain `{name, args, output, reasoning}` lists). Task Completion always runs; Tool Correctness
   needs goldens with `expected_tools`; Argument Correctness, Plan Quality / Adherence and Step
@@ -538,7 +563,10 @@ scores may not be comparable.
   `targets/instructions.resolve`: typed on the chatbot, else the captured request's system prompt,
   else rules the discovery assistant inferred, else standard production rules (`BASE_RULES` plus
   RAG, agent or role rules when the chatbot has `context_path`, `tools_path` or `persona`). The
-  run's note names the source.
+  run's note names the source. The exact rules and their source are saved with every run
+  (`prompt_instructions`) and listed on the scan page and in the report under **Prompt
+  instructions used**; before a run, the side panel shows them in Prompt Alignment's **Test cases**
+  panel and hover card for the chosen chatbot.
 
 ### Sources the app finds itself (`sources_fallback`)
 
@@ -552,8 +580,8 @@ Many chatbots don't return their sources. When a response has none at `context_p
 
 This context feeds every metric that reads `retrieval_context` except the retriever-grading ones
 above. Rows say `context_source` `knowledge_base` or `cited_pages`, and the note says the context
-is not the chatbot's own retrieval. When nothing is found the golden's context is scored; with no
-golden context either, the case is not applicable. The chatbot's own sources always win.
+is not the chatbot's own retrieval. When nothing is found the case is not applicable (the golden's context is never scored
+instead). The chatbot's own sources always win.
 
 ### Security metrics
 
@@ -716,7 +744,7 @@ has these buttons (pages open in new tabs):
 |---|---|---|
 | Open | `scan/scan.html?job=<id>` | One scan in full: overall result, started / duration / judge / tokens, the metric table, every metric's reason and cases; links to the scans before and after. |
 | Security | `risk/risk.html?job=<id>#overview` | The scan's **Risk Assessment**, laid out like Confident AI's red-teaming risk profile (see below). |
-| Overview | `runs/runs.html?target=&job=#overview` | Test runs, laid out like Confident AI: **Evaluation** (`#evaluation`: every run with a date range, a per-metric chart with ±1 std error bars, % trends, a runs table; tick two to compare), **Home**, a run's **Overview** (properties, results dial, run settings, radar, Histogram / Average / Median / Breakdown, Eval Insights, Send to Confident AI, Send / View in Langfuse), **Test Cases** (`#cases`: filters, columns, per-metric tabs, Save as new dataset) and **Compare** (`#compare&with=`). |
+| Overview | `runs/runs.html?target=&job=#overview` | Test runs, laid out like Confident AI: **Evaluation** (`#evaluation`: every run with a date range, a per-metric chart with ±1 std error bars, % trends, a runs table; tick two to compare), **Home**, a run's **Overview** (properties, results dial, run settings, radar, Histogram / Average / Median / Breakdown, Eval Insights, Send to Confident AI, Send / View in Langfuse, **Download report**: the run as one self-contained HTML file built in the browser by `runs.js downloadReport`, with properties, hyperparameters, metric results, failures and test case scores), **Test Cases** (`#cases`: filters, columns, per-metric tabs, Save as new dataset) and **Compare** (`#compare&with=`). |
 | Compare with N | inline in the dashboard | Metric by metric against the scan before: better / worse / same / new / removed. |
 | Regressions | `regressions/regressions.html?job=&with=` | The two scans case by case: improved, regressed, new, removed. |
 | Delete | in the row | Deletes that one finished scan (`DELETE /api/scans/{id}`); greyed out while it is queued or running. |
@@ -810,7 +838,7 @@ has these buttons (pages open in new tabs):
 
 ## 12. Metric catalog
 
-76 metrics in eight groups (`UI_CATEGORIES`), plus your own. Each `MetricSpec` in
+90 metrics in eight groups (`UI_CATEGORIES`, shown in this order: Quality, Retrieval, Agent, Conversational, G-Eval, Safety, Text match, Security, Custom), plus your own. Thirteen more DeepEval metrics (`EXTRA_DEEPEVAL_SPECS`): MCP Use, Multi-turn MCP Use and MCP Task Completion (MCP servers only: the server's tool list and each reply's tool calls), Misuse, Non-Advice (DeepEval), Role Violation (DeepEval) (safety, every golden), Topic Adherence and Goal Accuracy (conversation scenarios), Tool Use (scenarios, needs the chatbot's tool list), Tool Permission (opt-in, allow/deny list) and Agent Loop Detection (from reported tool calls, no judge), Pattern Match (full regex match, no judge) and JSON Correctness (opt-in, JSON Schema). Their configuration (domain, advice types, role, topics, tool lists, regex, schema) is a text setting on the Advanced tools page (Metric settings). RAGAS (DeepEval's `RagasMetric`, https://deepeval.com/docs/metrics-ragas) averages five ragas scores (Contextual Precision, Contextual Recall, Context Entities Recall, Answer Relevancy, Faithfulness) on goldens with context; it reads input, actual output, expected output and retrieval context, runs on the app's judge (`backend/judges/ragas_adapter.py`) with local embeddings, is opt-in (unticked by default) and stays unavailable, with the install command on its hover card, until `pip install ragas instructor "datasets<5"` (left out of requirements.txt because instructor forces an older openai; datasets 5 pulls huggingface_hub 2, which breaks transformers and DeepEval's click pin). It averages only the sub-scores ragas returned (ragas gives NaN when it cannot parse the judge's answer or a call times out) and names the missing ones in the reason; with none, the case is an error. `stats.summary_stats` also leaves NaN scores out. Each `MetricSpec` in
 `backend/metrics_catalog.py` holds the DeepEval metric builder, how to build an `LLMTestCase` from
 a case and a reply, the dataset, what it needs, a default threshold, a preset per environment
 (`ENVIRONMENTS`: Local Development, PR / Feature Branch, Staging / QA, Production; Bias, for

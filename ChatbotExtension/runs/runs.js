@@ -599,6 +599,8 @@ function overviewView() {
   const radarResults = state.radarCat ? scored.filter((r) => state.categories.get(r.key) === state.radarCat) : scored;
   return [
     head("Overview", `${state.target.name} · test run v${scan.version}`, confidentControl(scan), langfuseControl(scan), copy,
+      el("button", { type: "button", className: "btn", title: "Download this report as a self-contained HTML file",
+        onclick: () => downloadReport() }, "⭳ Download report"),
       el("a", { className: "btn", href: "#cases" }, "View test cases →")),
     el("div", { className: "grid grid-3" },
       el("div", { className: "card" }, el("p", { className: "card-title" }, "Test Run Properties"),
@@ -949,6 +951,134 @@ function downloadCsv(cases) {
   }
   const a = el("a", { href: URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/csv" })),
     download: `${state.target.name}-v${state.scan.version}.csv`.replace(/[^\w.-]+/g, "_") });
+  document.body.append(a);
+  a.click();
+  a.remove();
+}
+
+// The Overview as one self-contained HTML file: everything the page shows,
+// inlined so it can be shared, archived or printed without the backend.
+function downloadReport() {
+  const scan = state.scan;
+  const cases = casesOf(scan);
+  const passing = cases.filter((c) => c.passed).length;
+  const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+  const opts = scan.run_options || {}, de = opts.deepeval || {};
+  const yes = (v) => (v === undefined ? "default" : v ? "on" : "off");
+  const cost = scan.results.reduce((sum, r) => sum + (typeof r.judge_cost_usd === "number" ? r.judge_cost_usd : 0), 0);
+  const failures = cases.flatMap((c) => c.metrics.filter((m) => !m.passed).map((m) => ({ c, m })))
+    .sort((a, b) => (goodness(a.m.score, a.m.direction) ?? 1) - (goodness(b.m.score, b.m.direction) ?? 1));
+  const kv = (rows) => rows.filter(([, v]) => v != null && v !== "").map(([k, v]) => `<tr><th>${esc(k)}</th><td>${v}</td></tr>`).join("");
+  const metricRows = [...scan.results].sort((a, b) => (a.status === "pass") - (b.status === "pass")).map((r) => {
+    const rows = r.rows || [];
+    const ok = rows.filter((x) => x.passed).length;
+    const failed = rows.filter((x) => !x.passed).slice(0, 5);
+    return `<tr class="${r.status === "pass" ? "ok" : "bad"}"><td>${esc(title(r.key))}</td><td class="num">${formatScore(r.score)}</td>` +
+      `<td class="num">${r.threshold != null ? formatScore(r.threshold) : "–"}</td><td>${esc(r.direction || "higher")}</td>` +
+      `<td>${r.status === "pass" ? "Pass" : r.status === "fail" ? "Fail" : esc(r.status || "error")}</td>` +
+      `<td class="num">${ok} / ${rows.length}</td>` +
+      `<td class="why">${failed.map((x) => `${esc(x.reason || "no reason").slice(0, 160)}`).join(" — ")}</td></tr>`;
+  }).join("");
+  const failRows = failures.slice(0, 60).map(({ c, m }) =>
+    `<li><span class="m">${esc(title(m.key))}</span> <span class="c">${esc(c.input.slice(0, 180))}</span>` +
+    `<p>${esc(m.reason || "No reason given.")}</p></li>`).join("");
+  const caseRows = cases.slice().sort((a, b) => (b.passed === a.passed ? (a.score ?? 0) - (b.score ?? 0) : a.passed - b.passed))
+    .map((c) => `<tr class="${c.passed ? "ok" : "bad"}"><td>${esc(c.name)}</td><td class="clip">${esc(c.input.slice(0, 120))}</td>` +
+      `<td class="num">${formatScore(c.score)}</td><td>${c.passed ? "Pass" : "Fail"}</td>` +
+      `<td>${c.metrics.filter((m) => !m.passed).map((m) => esc(title(m.key))).join(", ") || "—"}</td></tr>`).join("");
+  const tally = scanTally(scan);
+  const html = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM Judge report · ${esc(state.target.name)} v${scan.version}</title>
+<style>
+  :root { color-scheme: light; --ok: #0c8a72; --bad: #c2237c; --border: #e4e4e7; --muted: #6b7280; --accent: #6d4aff; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 40px 48px; font: 14px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #18181b; background: #fff; }
+  header { border-bottom: 3px solid var(--accent); padding-bottom: 16px; margin-bottom: 24px; }
+  header .brand { display: flex; align-items: center; gap: 10px; color: #52525b; font-size: 12.5px; letter-spacing: .04em; text-transform: uppercase; }
+  header .logo { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 7px; background: linear-gradient(135deg, #6d4aff, #2a78d6); color: #fff; font-weight: 700; font-size: 11px; }
+  header h1 { margin: 10px 0 4px; font-size: 26px; letter-spacing: -.01em; }
+  header p { margin: 0; color: var(--muted); font-size: 13px; }
+  section { margin: 28px 0; }
+  h2 { margin: 0 0 4px; font-size: 15px; }
+  h2 + p { margin: 0 0 12px; color: var(--muted); font-size: 12.5px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 7px 10px; border-top: 1px solid var(--border); text-align: left; vertical-align: top; }
+  table.kv th { width: 40%; color: var(--muted); font-weight: 500; background: #fafafa; }
+  table.kv td { white-space: pre-wrap; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .ok .num { color: var(--ok); font-weight: 600; } .bad .num { color: var(--bad); font-weight: 600; }
+  tr.ok td:first-child { border-left: 3px solid var(--ok); } tr.bad td:first-child { border-left: 3px solid var(--bad); }
+  .why { color: #52525b; font-size: 12px; }
+  .clip { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+  .stat { border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .stat b { display: block; font-size: 24px; letter-spacing: -.01em; }
+  .stat span { color: var(--muted); font-size: 12px; }
+  .stat.pass b { color: var(--ok); } .stat.fail b { color: var(--bad); }
+  ul.fail { list-style: none; margin: 0; padding: 0; }
+  ul.fail li { padding: 10px 12px; border-top: 1px solid var(--border); }
+  ul.fail li:first-child { border-top: 0; }
+  ul.fail .m { display: inline-block; margin-right: 8px; padding: 1px 8px; border-radius: 5px; background: #fbe1ee; color: var(--bad); font-size: 11.5px; font-weight: 600; }
+  ul.fail p { margin: 4px 0 0; color: #52525b; font-size: 12.5px; }
+  footer { margin-top: 36px; padding-top: 12px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+  @media print { body { padding: 20px; } section { break-inside: avoid; } }
+</style></head>
+<body>
+<header>
+  <div class="brand"><span class="logo">LJ</span> LLM Judge · test run report</div>
+  <h1>${esc(state.target.name)} · test run v${scan.version}</h1>
+  <p>Generated ${new Date().toLocaleString()} · ${esc(tally)}</p>
+</header>
+<div class="stats">
+  <div class="stat ${passing === cases.length ? "pass" : "fail"}"><b>${passing}/${cases.length}</b><span>test cases passed (${pct(cases.length ? passing / cases.length : null)})</span></div>
+  <div class="stat ${scan.result === "passed" ? "pass" : "fail"}"><b>${scan.result || "–"}</b><span>overall result</span></div>
+  <div class="stat"><b>${formatScore(scan.average)}</b><span>average score (0–1)</span></div>
+  <div class="stat"><b>${duration(scan.started_at, scan.finished_at)}</b><span>duration</span></div>
+  <div class="stat"><b>${(scan.judge_tokens || 0).toLocaleString()}</b><span>judge tokens</span></div>
+  <div class="stat"><b>${cost ? `$${cost.toFixed(4)}` : "N/A"}</b><span>evaluation cost</span></div>
+</div>
+<section>
+  <h2>Test Run Properties</h2><p>General info on the evaluation run</p>
+  <table class="kv"><tbody>
+    ${kv([["Test run ID", `job-${scan.job_id}`], ["Dataset", themeName()],
+      ["Identifier", `${state.target.name} · v${scan.version}`],
+      ["Executed at", `${formatRunTime(scan.started_at)} (finished ${formatRunTime(scan.finished_at)})`],
+      ["Evaluation cost (USD)", cost ? `$${cost.toFixed(4)}` : "N/A"],
+      ["Judge tokens", (scan.judge_tokens || 0).toLocaleString()],
+      ["Duration", duration(scan.started_at, scan.finished_at)]])}
+  </tbody></table>
+</section>
+<section>
+  <h2>Hyperparameters</h2><p>How this test run was configured</p>
+  <table class="kv"><tbody>
+    ${kv([["Judge model", scan.judge_model || "–"], ["Chatbot", state.target.name],
+      ["Cases per run", opts.limit ? String(opts.limit) : "all"],
+      ["Parallel metrics", opts.metric_concurrency ? String(opts.metric_concurrency) : "default"],
+      ["Strict mode", yes(de.strict_mode)], ["Include reason", yes(de.include_reason)],
+      ["Consistency check", yes(opts.check_consistency)],
+      ["Attack enhancements", opts.enhancements && opts.enhancements.length ? opts.enhancements.join(", ") : ""],
+      ["Latency limit", opts.max_latency_s ? `${opts.max_latency_s}s` : ""]])}
+  </tbody></table>
+</section>
+<section>
+  <h2>Metric Results</h2><p>Failing metrics first; each score is the run's average over its test cases</p>
+  <table><thead><tr><th>Metric</th><th class="num">Score</th><th class="num">Threshold</th><th>Direction</th><th>Status</th><th class="num">Cases</th><th>What the judge said about failures</th></tr></thead>
+  <tbody>${metricRows}</tbody></table>
+</section>
+<section>
+  <h2>Failures</h2><p>${failures.length} failing metric result${failures.length === 1 ? "" : "s"} across ${cases.length - passing} failing test case${cases.length - passing === 1 ? "" : "s"}</p>
+  ${failures.length ? `<ul class="fail">${failRows}</ul>` : "<p>No failing test cases.</p>"}
+</section>
+<section>
+  <h2>Test Case Scores</h2><p>One row per test case, averaged over its metrics</p>
+  <table><thead><tr><th>Name</th><th>Input</th><th class="num">Score</th><th>Status</th><th>Failing metrics</th></tr></thead>
+  <tbody>${caseRows}</tbody></table>
+</section>
+<footer>Generated by LLM Judge · ${esc(location.href)}</footer>
+</body></html>`;
+  const name = `${state.target.name}-v${scan.version}-report`.replace(/[^\w.-]+/g, "_");
+  const a = el("a", { href: URL.createObjectURL(new Blob([html], { type: "text/html" })), download: `${name}.html` });
   document.body.append(a);
   a.click();
   a.remove();

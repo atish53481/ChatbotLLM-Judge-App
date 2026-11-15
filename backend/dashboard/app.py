@@ -428,8 +428,9 @@ def _runtime_config(row: dict) -> dict:
     reports its tool calls (McpTargetClient.tools_path), so the agent and
     tool-aware metrics apply to it."""
     config = row["config"]
-    if row.get("type") == "mcp" and not config.get("tools_path"):
-        return {**config, "tools_path": MCP_TOOLS_PATH}
+    if row.get("type") == "mcp":
+        # "_mcp": the MCP metrics apply (MetricSpec.applies features["mcp"]).
+        return {**config, "_mcp": True, "tools_path": config.get("tools_path") or MCP_TOOLS_PATH}
     return config
 
 
@@ -2172,7 +2173,8 @@ def _availability(config: dict | None):
         theme = config.get("theme") or DEFAULT_THEME
         persona = config.get("persona", "")
         probe_set = config.get("probe_set", "")
-        features = {"context_path": bool(config.get("context_path")), "tools_path": bool(config.get("tools_path"))}
+        features = {"context_path": bool(config.get("context_path")), "tools_path": bool(config.get("tools_path")),
+                    "mcp": bool(config.get("_mcp"))}
         fallback = config.get("sources_fallback") or ""
 
     def features_for(s) -> dict:
@@ -2212,6 +2214,12 @@ def _skip_reason(spec, theme: str, persona: str, probe_set: str, unavailable) ->
     return None
 
 
+def _package_only(spec, reason: str | None) -> bool:
+    """True when the metric's only blocker is an optional package not installed."""
+    package = getattr(spec, "missing_package", None)
+    return bool(reason) and callable(package) and reason == package()
+
+
 @app.get("/api/metrics")
 def api_list_metrics(target_id: int | None = None):
     """The catalog as the UI shows it: grouped, with direction, default threshold,
@@ -2235,6 +2243,14 @@ def api_list_metrics(target_id: int | None = None):
             "needs_retrieval": s.needs_retrieval,
             # What the judge reads for this metric, and the G-Eval rubric if it has one.
             "scores_on": list(s.scores_on),
+            # Read when present but not required ("Optional" on the hover card).
+            "optional_on": list(getattr(s, "optional_on", ())),
+            # DeepTeam metrics: DeepTeam's metric class and the fields it reads.
+            "deepteam_metric": getattr(s, "deepteam_metric", ""),
+            "deepteam_fields": list(getattr(s, "deepteam_fields", ())),
+            # Left unticked until the user ticks it; composite metrics list what they average.
+            "opt_in": bool(getattr(s, "opt_in", False)),
+            "combines": list(getattr(s, "combines", ())),
             "criteria": s.criteria,
             "evaluation_steps": list(s.evaluation_steps),
             "presets": s.presets(),
@@ -2245,7 +2261,9 @@ def api_list_metrics(target_id: int | None = None):
             "dataset": s.dataset_name,
             # "deepteam": one of the DeepTeam vulnerability metrics (not ticked by default).
             "source": "deepteam" if s.key in probes_store.DEEPTEAM_METRICS else "app",
-            "cases_available": 0 if unavailable(s) else _cases_available(s, theme, persona, probe_set),
+            # A metric blocked only by a missing optional package (RAGAS) still shows its cases.
+            "cases_available": 0 if unavailable(s) and not _package_only(s, unavailable(s))
+            else _cases_available(s, theme, persona, probe_set),
             # Why this metric cannot run for this chatbot (None when it can).
             "unavailable": unavailable(s),
             # Where its questions come from: the golden set or a question set of its own.
@@ -2264,6 +2282,9 @@ def api_list_metrics(target_id: int | None = None):
             "scorer_options": getattr(s, "scorer_options", []),
             "reads_reported_tools": getattr(s, "reads_reported_tools", False),
             "needs_target": list(s.needs_target),
+            # Prompt Alignment: the exact rules a run would use for this chatbot, and their source.
+            "prompt_instructions": target_instructions.describe(target_instructions.resolve(config))
+            if config is not None and "instructions" in s.needs_target else None,
             # The user's own metric (editable at /api/custom-metrics), else None.
             "custom_id": custom_ids.get(s.key),
         }
@@ -2495,6 +2516,92 @@ def api_delete_metric_case(key: str, case_id: str, target_id: int | None = None)
     if not delete(case_id):
         raise HTTPException(status_code=404, detail="test case not found")
     return {"deleted": case_id}
+
+
+@app.put("/api/metrics/{key}/cases/{case_id}")
+def api_update_metric_case(key: str, case_id: str, body: MetricCaseCreate):
+    """Edits one of this metric's test cases in its store, keeping its id.
+    A golden is shared: every metric reading the golden set sees the edit."""
+    spec, (theme, persona, probe_set, _unavailable) = _cases_scope(key, body.target_id)
+    kind = _case_add_kind(spec)
+    question = body.question.strip()
+
+    if kind == "conversation":
+        turns = [t.strip() for t in body.user_turns if t.strip()]
+        if not turns:
+            raise HTTPException(status_code=400, detail="a scenario needs at least one user turn")
+        if case_id.startswith("auto_"):
+            # Built from the goldens, not stored: store them all so this one can change.
+            goldens = [g for g in goldens_store.load_goldens(theme=theme) if g.get("status") != "draft"]
+            built = conversations_store.from_goldens(goldens, theme, persona)
+            if case_id not in {row["id"] for row in built}:
+                raise HTTPException(status_code=404, detail="test case not found")
+            new_id = None
+            for row in built:
+                stored = conversations_store.add_conversation({k: v for k, v in row.items() if k != "id"})
+                if row["id"] == case_id:
+                    new_id = stored["id"]
+            case_id = new_id
+        old = next((c for c in conversations_store.load_conversations() if c["id"] == case_id), None)
+        if old is None:
+            raise HTTPException(status_code=404, detail="test case not found")
+        role = body.chatbot_role.strip() or old.get("chatbot_role", "") or persona.strip()
+        if spec.dataset_name == "conversations_with_role" and not role:
+            raise HTTPException(status_code=400, detail="this metric needs the chatbot's role")
+        fields = {**old, "name": body.name.strip() or turns[0][:60], "chatbot_role": role,
+                  "expected_outcome": body.expected_answer.strip(), "user_turns": turns}
+        row = conversations_store.update_conversation(case_id, fields)
+        if row is None:
+            raise HTTPException(status_code=404, detail="test case not found")
+        return _case_view(row, set())
+
+    if not question:
+        raise HTTPException(status_code=400, detail="a test case needs a question")
+
+    if kind == "probe" and case_id in _probe_ids(spec, probe_set):
+        old = next((p for p in probes_store.load_probes(metric=spec.key) if p["id"] == case_id), None)
+        if old is None and probes_store.is_target_set(probe_set):
+            old = next((p for p in probes_store.load_probes(probe_set=probe_set) if p["id"] == case_id), None)
+        if old is None:
+            raise HTTPException(status_code=404, detail="test case not found")
+        try:
+            row = probes_store.update_probe(case_id, {
+                "metric": spec.key, "question": question,
+                "set": old.get("set") or probe_set or probes_store.DEFAULT_PROBE_SET,
+                "note": old.get("note", ""),
+            })
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        if row is None:
+            raise HTTPException(status_code=400, detail="this probe comes from the daily refresh and cannot be edited")
+        return _case_view(row, {row["id"]})
+
+    if kind == "golden" or spec.dataset_name == "safety_probes":
+        old = next((g for g in goldens_store.load_goldens() if g["id"] == case_id), None)
+        if old is None:
+            raise HTTPException(status_code=404, detail="test case not found")
+        expected = body.expected_answer.strip()
+        context = [c.strip() for c in body.context if c.strip()]
+        tools = [t.strip() for t in body.expected_tools if t.strip()]
+        if not expected:
+            raise HTTPException(status_code=400, detail="a test case needs a question and an expected answer")
+        if spec.dataset_name == "goldens_with_context" and not context:
+            raise HTTPException(status_code=400, detail="this metric needs context (the facts the reply should rest on)")
+        if spec.dataset_name == "goldens_with_tools" and not tools:
+            raise HTTPException(status_code=400, detail="this metric needs the tools the chatbot should call")
+        if spec.dataset_name == "goldens_without_context":
+            # This metric's form has no context field: keep what the golden has.
+            context = list(old.get("context") or [])
+        row = goldens_store.update_golden(
+            case_id, old.get("theme", theme), question, expected, context,
+            list(old.get("categories") or []),
+            expected_tools=tools if spec.dataset_name == "goldens_with_tools" or tools else None,
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="test case not found")
+        return _case_view(row, set())
+
+    raise HTTPException(status_code=400, detail=f"test cases cannot be edited in {spec.title}")
 
 
 @app.post("/api/run")

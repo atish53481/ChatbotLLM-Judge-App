@@ -190,9 +190,15 @@ def test_frameworks_cover_every_owasp_id_with_a_metric():
     assert [i["id"] for i in fws["owasp_agentic"]["items"]] == [f"ASI{n:02d}" for n in range(1, 11)]
     assert [i["id"] for i in fws["owasp_mcp"]["items"]] == [f"MCP{n:02d}" for n in range(1, 11)]
     known = {s.key for s in catalog.ALL_SPECS}
-    for fw in fws.values():
+    for key, fw in fws.items():
         for item in fw["items"]:
-            assert item["metrics"] and set(item["metrics"]) <= known, item["id"]
+            assert set(item["metrics"]) <= known, item["id"]
+            if key.startswith("owasp"):
+                assert item["metrics"], item["id"]
+    # DeepTeam's NIST / MITRE ATLAS / EU AI Act maps, read from the installed package.
+    assert [i["id"] for i in fws["nist"]["items"]] == ["Measure 1", "Measure 2", "Measure 3", "Measure 4"]
+    assert fws["mitre"]["items"][0]["id"] == "Reconnaissance" and fws["eu_ai_act"]["items"][0]["id"] == "Art. 5(1)(a)"
+    assert all(i["metrics"] for i in fws["mitre"]["items"])
 
 
 def test_refresh_sources_include_deepteam_text():
@@ -204,7 +210,7 @@ def test_refresh_sources_include_deepteam_text():
 
 def test_api_frameworks_metrics_source_and_strategies(client):  # noqa: F811
     data = client.get("/api/security/frameworks").json()
-    assert set(data["frameworks"]) == {"owasp_llm", "owasp_agentic", "owasp_mcp"}
+    assert set(data["frameworks"]) == {"owasp_llm", "owasp_agentic", "owasp_mcp", "nist", "mitre", "eu_ai_act"}
     assert data["deepteam"]["version"] == "1.0.10" and data["deepteam"]["metrics"] == 32
     rows = {m["key"]: m for m in client.get("/api/metrics").json()}
     assert rows["bfla"]["source"] == "deepteam" and rows["jailbreak"]["source"] == "app"

@@ -231,6 +231,8 @@ summary {
 .run-detail li { overflow-wrap: anywhere; }
 .run-detail-head { font-weight: 600; color: var(--accent); }
 .run-detail-label { margin-top: 6px !important; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
+.run-case-log { max-height: 180px; overflow-y: auto; margin: 2px 0 4px; padding-left: 1.6em; font-size: 12px; }
+.run-case-log li { margin: 2px 0; overflow-wrap: anywhere; }
 .run-banner-running { border-left-color: var(--accent); }
 .run-banner-running .run-banner-text::before {
   content: "";
@@ -566,6 +568,8 @@ summary {
   min-width: 0;
 }
 
+.case-item-actions { flex: none; display: inline-flex; gap: 4px; }
+.case-edit,
 .case-delete {
   flex: none;
   padding: 1px 6px;
@@ -978,3 +982,65 @@ summary:hover { color: var(--accent); }
   summary::before,
   .golden-list li { transition: none; }
 }
+
+/* Hover card on a metric's name: category, kind and the DeepEval fields it needs. */
+.metric-tip {
+  position: fixed;
+  z-index: 1000;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.12));
+  border-radius: 8px;
+  background: var(--surface-raised, #fff);
+  color: var(--text-primary, #1d1f24);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+  font-size: 12px;
+  line-height: 1.4;
+  pointer-events: none;
+}
+.metric-tip[hidden] { display: none; }
+.metric-tip .tip-title { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+.metric-tip .tip-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+.metric-tip .tip-chip {
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.12));
+  color: var(--accent, #c96a4c);
+  font-size: 11px;
+}
+.metric-tip p { margin: 4px 0; }
+.metric-tip .tip-desc { color: var(--text-secondary, #555); }
+.metric-tip .tip-head {
+  margin: 8px 0 3px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary, #555);
+}
+.metric-tip .tip-head code { text-transform: none; letter-spacing: 0; font-size: 11px; }
+.metric-tip .tip-fields { list-style: none; margin: 0; padding: 0; }
+.metric-tip .tip-fields li {
+  display: grid;
+  grid-template-columns: 1.1em minmax(0, 1fr) auto;
+  column-gap: 6px;
+  padding: 2px 0;
+}
+.metric-tip .tip-fields .mark { text-align: center; }
+.metric-tip .tip-fields .state { font-size: 11px; }
+.metric-tip .tip-fields .note {
+  grid-column: 2 / -1;
+  color: var(--text-muted, #777);
+  font-size: 11px;
+}
+.metric-tip .tip-fields li.need .mark,
+.metric-tip .tip-fields li.need .state { color: var(--status-good, #2e9e74); font-weight: 600; }
+.metric-tip .tip-fields li.skip { color: var(--text-muted, #888); }
+.metric-tip .tip-fields li.opt .mark,
+.metric-tip .tip-fields li.opt .state { color: var(--warn, #9a6a12); font-weight: 600; }
+.metric-tip .tip-rules { margin: 0; padding-left: 1.4em; }
+.metric-tip .tip-rules li { margin: 1px 0; overflow-wrap: anywhere; }
+.metric-tip .tip-extra { color: var(--text-secondary, #555); }
+.metric-tip .tip-extra.tip-warn { color: var(--warn, #9a6a12); overflow-wrap: anywhere; }
+.metric-tip .tip-extra b, .metric-tip .tip-q b { color: var(--text-primary, #1d1f24); }
