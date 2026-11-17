@@ -19,7 +19,7 @@ from datetime import datetime
 import requests
 from deepeval.confident.api import Api, Endpoints, HttpMethods, _api_url_for_region, _infer_region_from_api_key
 from deepeval.test_case import ToolCall
-from deepeval.test_run.api import LLMApiTestCase
+from deepeval.test_run.api import ConversationalApiTestCase, LLMApiTestCase, TurnApi
 from deepeval.test_run.test_run import MetricScores, RemainingTestRun, TestRun, TestRunEncoder
 from deepeval.tracing.api import MetricData
 
@@ -105,9 +105,9 @@ def _json(model) -> dict:
     return json.loads(json.dumps(model.model_dump(by_alias=True, exclude_none=True), cls=TestRunEncoder))
 
 
-def _test_cases(results: list[dict], titles: dict) -> list[LLMApiTestCase]:
-    """One test case per golden (or probe), with every metric's verdict on it,
-    in the order the cases first appear (as the runs page shows them)."""
+def _grouped(results: list[dict], titles: dict) -> dict[str, dict]:
+    """Rows of the same golden / scenario / probe merged into one case, with
+    every metric's verdict on it, in the order the cases first appear."""
     cases: dict[str, dict] = {}
     for result in results:
         name = titles.get(result["key"], result["key"])
@@ -120,6 +120,44 @@ def _test_cases(results: list[dict], titles: dict) -> list[LLMApiTestCase]:
                 name=name, threshold=result.get("threshold"), success=bool(row.get("passed")),
                 score=row.get("score"), reason=row.get("reason") or None, error=row.get("error"),
                 evaluationModel=_judge_model(result), strictMode=False))
+    return cases
+
+
+_SPEAKERS = {"User: ": "user", "Bot: ": "assistant"}
+
+
+def _turns(transcript: str) -> list[TurnApi]:
+    """The runner's "User: … / Bot: …" transcript back as turns (a line that
+    starts with neither belongs to the turn above it)."""
+    turns: list[dict] = []
+    for line in (transcript or "").split("\n"):
+        prefix = next((p for p in _SPEAKERS if line.startswith(p)), None)
+        if prefix:
+            turns.append({"role": _SPEAKERS[prefix], "content": line[len(prefix):]})
+        elif turns:
+            turns[-1]["content"] += "\n" + line
+    return [TurnApi(role=t["role"], content=t["content"], order=i) for i, t in enumerate(turns)]
+
+
+def _conversational_cases(results: list[dict], titles: dict, start: int) -> list[ConversationalApiTestCase]:
+    """Multi-turn results (conversation scenarios, multi-turn attacks) as
+    DeepEval conversational test cases, so Confident AI shows each turn."""
+    out = []
+    for i, case in enumerate(_grouped(results, titles).values()):
+        row = case["row"]
+        out.append(ConversationalApiTestCase(
+            name=f"conversation_{i}", success=all(m.success for m in case["metrics"]),
+            metricsData=case["metrics"], turns=_turns(row.get("actual_output") or ""),
+            scenario=row.get("question") or row.get("input") or None,
+            expectedOutcome=row.get("expected_output") or None,
+            runDuration=row.get("latency_s") or 0.0, order=start + i))
+    return out
+
+
+def _test_cases(results: list[dict], titles: dict) -> list[LLMApiTestCase]:
+    """One test case per golden (or probe), with every metric's verdict on it,
+    in the order the cases first appear (as the runs page shows them)."""
+    cases = _grouped(results, titles)
     out = []
     for i, case in enumerate(cases.values()):
         row = case["row"]
@@ -159,36 +197,70 @@ def _hyperparameters(scan: dict, chatbot: str, theme: str) -> dict:
     return {k: str(v) for k, v in params.items() if v is not None}
 
 
-def build_test_run(scan: dict, chatbot: str, theme: str, titles: dict) -> TestRun:
+def build_test_run(scan: dict, chatbot: str, theme: str, titles: dict,
+                   conversational: set | frozenset = frozenset()) -> TestRun:
+    """`conversational` names the metrics whose rows are whole conversations
+    (sent as conversational test cases, turn by turn)."""
     results = scan.get("results") or []
-    cases = _test_cases(results, titles)
+    single = [r for r in results if r["key"] not in conversational]
+    cases = _test_cases(single, titles)
+    convs = _conversational_cases([r for r in results if r["key"] in conversational], titles, len(cases))
+    every = [*cases, *convs]
     cost = sum(r["judge_cost_usd"] for r in results if isinstance(r.get("judge_cost_usd"), (int, float)))
     return TestRun(
-        testCases=cases, metricsScores=_metric_scores(results, titles),
+        testCases=cases, conversationalTestCases=convs, metricsScores=_metric_scores(results, titles),
         identifier=f"{chatbot} · v{scan.get('version')}", hyperparameters=_hyperparameters(scan, chatbot, theme),
-        testPassed=sum(1 for c in cases if c.success), testFailed=sum(1 for c in cases if not c.success),
+        testPassed=sum(1 for c in every if c.success), testFailed=sum(1 for c in every if not c.success),
         runDuration=_seconds(scan.get("started_at"), scan.get("finished_at")),
         evaluationCost=cost or None, datasetAlias=theme)
 
 
-def test_run_body(scan: dict, chatbot: str, theme: str, titles: dict) -> dict:
+def test_run_body(scan: dict, chatbot: str, theme: str, titles: dict,
+                  conversational: set | frozenset = frozenset()) -> dict:
     """The JSON Confident AI receives for this scan (first batch and all)."""
-    return _json(build_test_run(scan, chatbot, theme, titles))
+    return _json(build_test_run(scan, chatbot, theme, titles, conversational))
 
 
-def upload(scan: dict, chatbot: str, theme: str, titles: dict, api_key: str) -> dict:
-    """Sends the scan; returns {"id", "link", "test_cases"}. Raises ValueError
-    when there is nothing to send, and the API's own error otherwise."""
-    run = build_test_run(scan, chatbot, theme, titles)
-    cases = run.test_cases
-    if not cases:
-        raise ValueError("this test run has no test cases to send")
-    api = Api(api_key=api_key)
-    run.test_cases = cases[:BATCH_SIZE]
+def _send(api: Api, run: TestRun) -> dict:
+    """POSTs the first batch, PUTs the rest; {"id", "link", "test_cases", "payload"}
+    (payload = the whole run as JSON, every batch, for the saved copy)."""
+    payload = _json(run)
+    cases, convs = run.test_cases, run.conversational_test_cases
+    run.test_cases, run.conversational_test_cases = cases[:BATCH_SIZE], convs[:BATCH_SIZE]
     data, link = api.send_request(method=HttpMethods.POST, endpoint=Endpoints.TEST_RUN_ENDPOINT, body=_json(run))
     if not isinstance(data, dict) or "id" not in data:
         raise RuntimeError("Confident AI did not accept the test run")
-    for start in range(BATCH_SIZE, len(cases), BATCH_SIZE):
-        rest = RemainingTestRun(testRunId=data["id"], testCases=cases[start:start + BATCH_SIZE], conversationalTestCases=[])
+    for start in range(BATCH_SIZE, max(len(cases), len(convs)), BATCH_SIZE):
+        rest = RemainingTestRun(testRunId=data["id"], testCases=cases[start:start + BATCH_SIZE],
+                                conversationalTestCases=convs[start:start + BATCH_SIZE])
         api.send_request(method=HttpMethods.PUT, endpoint=Endpoints.TEST_RUN_ENDPOINT, body=_json(rest))
-    return {"id": data["id"], "link": link, "test_cases": len(cases)}
+    return {"id": data["id"], "link": link, "test_cases": len(cases) + len(convs), "payload": payload}
+
+
+def upload(scan: dict, chatbot: str, theme: str, titles: dict, api_key: str,
+           conversational: set | frozenset = frozenset()) -> dict:
+    """Sends the scan; returns {"id", "link", "test_cases"} (plus
+    "conversations": the same for its multi-turn part). Confident AI refuses a
+    test run that mixes single-turn and conversational cases, so a scan with
+    both goes as two runs: "<chatbot> · vN" and "<chatbot> · vN · conversations".
+    Raises ValueError when there is nothing to send, the API's error otherwise."""
+    results = scan.get("results") or []
+    single = {**scan, "results": [r for r in results if r["key"] not in conversational]}
+    multi = {**scan, "results": [r for r in results if r["key"] in conversational]}
+    run = build_test_run(single, chatbot, theme, titles)
+    conv_run = build_test_run(multi, chatbot, theme, titles, conversational)
+    if not run.test_cases and not conv_run.conversational_test_cases:
+        raise ValueError("this test run has no test cases to send")
+    api = Api(api_key=api_key)
+    if not run.test_cases:
+        out = _send(api, conv_run)
+        out["payloads"] = [out.pop("payload")]
+        return out
+    out = _send(api, run)
+    out["payloads"] = [out.pop("payload")]
+    if conv_run.conversational_test_cases:
+        conv_run.identifier = f"{run.identifier} · conversations"
+        conv = _send(api, conv_run)
+        out["payloads"].append(conv.pop("payload"))
+        out["conversations"] = conv
+    return out

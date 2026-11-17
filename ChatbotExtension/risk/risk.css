@@ -44,7 +44,8 @@ body.rk-body { margin: 0; background: var(--page, #fff); color: var(--text-prima
 .rk-theme { margin: 0 6px; }
 
 /* --- Page --------------------------------------------------------------------- */
-.rk-view { padding: 22px 32px 56px; max-width: 1440px; width: 100%; }
+/* Fills the window beside the menu (no fixed cap). */
+.rk-view { padding: 22px clamp(16px, 2.5vw, 40px) 56px; width: 100%; min-width: 0; }
 .rk-crumbs { font-size: 12px; color: var(--text-muted); margin-bottom: 4px; overflow-wrap: anywhere; }
 .rk-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 10px 24px; margin-bottom: 16px; }
 .rk-head h1 { margin: 0; font-size: 26px; font-weight: 600; letter-spacing: -0.01em; }
@@ -100,7 +101,8 @@ body.rk-body { margin: 0; background: var(--page, #fff); color: var(--text-prima
 .rk-findings button { all: unset; cursor: pointer; display: block; font-size: 12.5px; }
 .rk-findings button:hover b, .rk-findings button:focus-visible b { text-decoration: underline; }
 .rk-vrow { border-bottom: 1px solid var(--border); }
-.rk-vrow > summary { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(0, 2fr) 64px 16px; align-items: center; gap: 14px; padding: 14px 4px; cursor: pointer; list-style: none; }
+/* name | outcome dashes | CVSS | pass rate | chevron, all on one line. */
+.rk-vrow > summary { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(0, 2fr) auto 64px 16px; align-items: center; gap: 14px; padding: 14px 4px; cursor: pointer; list-style: none; }
 .rk-vrow > summary::-webkit-details-marker { display: none; }
 .rk-vrow > summary::after { content: "⌄"; color: var(--text-muted); }
 .rk-vrow[open] > summary::after { content: "⌃"; }
@@ -207,7 +209,130 @@ body.rk-body { margin: 0; background: var(--page, #fff); color: var(--text-prima
   .rk-nav { position: static; height: auto; }
   .rk-view { padding: 16px 16px 40px; }
   .rk-exec, .rk-vulns { grid-template-columns: 1fr; }
-  .rk-vrow > summary { grid-template-columns: minmax(0, 1fr) 56px 16px; }
+  .rk-vrow > summary { grid-template-columns: minmax(0, 1fr) auto 56px 16px; }
   .rk-vrow > summary .rk-dashes { display: none; }
   .rk-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* DeepTeam-style additions: gaps, categories, heatmap, CVSS pills, mitigation, attack catalog. */
+.rk-wide { grid-column: 1 / -1; }
+.rk-gaps { grid-column: 1 / -1; border: 1px solid var(--rk-warn); border-radius: 10px; padding: 12px 16px; }
+.rk-gaps h3 { margin: 0 0 6px; }
+.rk-gaps ul { margin: 0; padding-left: 18px; }
+.rk-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.rk-chip { font-size: 12px; padding: 2px 8px; border: 1px solid var(--rk-track); border-radius: 999px; }
+.rk-cats { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.rk-cat { min-width: 0; border: 1px solid var(--rk-track); border-radius: 8px; padding: 10px 12px; }
+.rk-cat-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.rk-meter { height: 8px; border-radius: 4px; background: var(--rk-fail); overflow: hidden; margin: 8px 0 4px; }
+.rk-meter i { display: block; height: 100%; background: var(--rk-pass); }
+.rk-cvss { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+.rk-hm-scroll { overflow-x: auto; }
+.rk-hm { border-collapse: collapse; width: 100%; font-size: 13px; }
+.rk-hm th, .rk-hm td { padding: 6px 10px; border-bottom: 1px solid var(--rk-track); text-align: left; white-space: nowrap; }
+.rk-hm td { text-align: center; }
+.rk-attacks td { text-align: left; }
+.hm-0 { color: var(--rk-pass); }
+.hm-1 { background: color-mix(in srgb, var(--rk-warn) 25%, transparent); }
+.hm-2 { background: color-mix(in srgb, var(--rk-warn) 55%, transparent); }
+.hm-3 { background: color-mix(in srgb, var(--rk-fail) 55%, transparent); font-weight: 600; }
+.hm-none { opacity: .45; }
+.st-broke_through { color: var(--rk-fail); font-weight: 600; }
+.st-resisted { color: var(--rk-pass); }
+.st-not_run { opacity: .6; }
+.rk-mitigations { display: grid; gap: 10px; }
+.rk-mit { border: 1px solid var(--rk-track); border-radius: 10px; padding: 10px 14px; }
+.rk-mit summary { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; cursor: pointer; }
+.rk-mit-body h4 { margin: 12px 0 4px; }
+.rk-mit-body ol { margin: 0; padding-left: 20px; }
+.rk-prio { font-weight: 700; padding: 1px 8px; border-radius: 6px; border: 1px solid currentColor; }
+.rk-example { margin-top: 8px; padding: 8px 12px; border-left: 3px solid var(--rk-fail); }
+.rk-example p { margin: 4px 0; overflow-wrap: anywhere; }
+
+/* --- DeepTeam Report (DeepTeam's own RiskAssessment, as red_team() prints it) ------------- */
+.dt-report { display: grid; gap: 14px; }
+.dt-report h2 { margin: 0 0 10px; font-size: 15px; }
+.dt-hero { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 16px 28px; align-items: start; }
+@media (max-width: 860px) { .dt-hero { grid-template-columns: minmax(0, 1fr); } }
+.dt-eyebrow { margin: 0 0 8px; font-weight: 700; font-size: 15px; }
+.dt-cvss { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px; }
+.dt-cvss-label { font-size: 13px; color: var(--text-muted); width: 100%; }
+.dt-cvss-value { font-size: 40px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+.dt-cvss-value small { font-size: 15px; font-weight: 500; color: var(--text-muted); }
+.dt-sev { padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
+.dt-sev-low { background: var(--rk-pass-soft); color: var(--rk-pass); }
+.dt-sev-medium { background: color-mix(in srgb, var(--rk-warn) 16%, transparent); color: var(--rk-warn); }
+.dt-sev-high, .dt-sev-critical { background: var(--rk-fail-soft); color: var(--rk-fail); }
+.dt-scale { margin: 10px 0 0; font-size: 12px; }
+.dt-settings { margin: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; }
+.dt-settings div { min-width: 0; }
+.dt-settings dt { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); }
+.dt-settings dd { margin: 2px 0 0; font-size: 13px; overflow-wrap: anywhere; }
+.dt-purpose { grid-column: 1 / -1; margin: 0; font-size: 13px; color: var(--text-muted); }
+
+.dt-ov { display: grid; gap: 2px; }
+.dt-ov-row { display: grid; grid-template-columns: 104px minmax(0, 1.6fr) minmax(80px, 1fr) minmax(0, 1.3fr) 70px;
+  align-items: center; gap: 12px; padding: 8px 4px; border-top: 1px solid var(--border); font-size: 13px; }
+.dt-ov-row:first-child { border-top: 0; }
+@media (max-width: 860px) {
+  .dt-ov-row { grid-template-columns: 96px minmax(0, 1fr); }
+  .dt-ov-row .dt-bar { grid-column: 1 / -1; }
+}
+.dt-ov-name { overflow-wrap: anywhere; font-weight: 500; }
+.dt-ov-rate { font-variant-numeric: tabular-nums; color: var(--text-muted); }
+.dt-ov-err { font-size: 12px; color: var(--rk-warn); text-align: right; }
+.dt-bar { position: relative; height: 6px; border-radius: 3px; background: var(--rk-track); overflow: hidden; }
+.dt-bar-fill { position: absolute; inset: 0 auto 0 0; border-radius: 3px; }
+.dt-bar-fill.pass { background: var(--rk-pass); } .dt-bar-fill.warn { background: var(--rk-warn); } .dt-bar-fill.fail { background: var(--rk-fail); }
+
+.dt-status { display: inline-block; white-space: nowrap; padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 700; }
+.dt-status.pass { background: var(--rk-pass-soft); color: var(--rk-pass); }
+.dt-status.warn { background: color-mix(in srgb, var(--rk-warn) 16%, transparent); color: var(--rk-warn); }
+.dt-status.fail { background: var(--rk-fail-soft); color: var(--rk-fail); }
+
+.dt-cases-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin-bottom: 10px; }
+.dt-cases-head h2 { margin: 0; }
+.dt-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.dt-chip { padding: 4px 12px; border-radius: 999px; border: 1px solid var(--border); background: transparent; color: inherit; font-size: 12px; cursor: pointer; }
+.dt-chip[aria-pressed="true"] { border-color: currentColor; font-weight: 700; }
+.dt-table tbody tr { cursor: default; }
+.dt-table td.dt-text { min-width: 150px; max-width: 260px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.dt-table td.dt-reason { color: var(--text-muted); }
+.dt-table td.dt-num { text-align: center; font-variant-numeric: tabular-nums; font-weight: 600; }
+
+@media print {
+  .dt-print .dt-report { gap: 10px; }
+  .dt-print .rk-box { border: 1px solid #ccc; break-inside: avoid; }
+  .dt-print .dt-table td.dt-text { max-width: none; }
+  .dt-print .dt-chips { display: none; }
+}
+
+/* --- Mitigation, plain-language cards ------------------------------------------------------ */
+.rk-legend h3 { margin: 0 0 6px; font-size: 14px; }
+.rk-legend ul { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 13px; }
+.rk-mit > summary { display: grid; gap: 4px; }
+.rk-mit-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; }
+.rk-mit-what { margin: 0; font-size: 13px; color: var(--text-primary); opacity: 0.9; }
+.rk-fail-case { margin: 8px 0; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; }
+.rk-fail-case > summary { cursor: pointer; }
+.rk-evidence { margin: 8px 0 0; display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 6px 14px; font-size: 13px; }
+.rk-evidence dt { font-weight: 600; color: var(--text-muted); }
+.rk-evidence dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 700px) { .rk-evidence { grid-template-columns: minmax(0, 1fr); } }
+.dt-score { white-space: nowrap; }
+
+.rk-vrow > summary .rk-cvss { justify-self: end; }
+
+/* Impact of each vulnerability (DeepTeam Report, Vulnerabilities and Mitigation tabs). */
+.rk-impact { margin: 8px 0; display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 4px 14px; font-size: 13px; }
+.rk-impact dt { font-weight: 600; color: var(--text-muted); }
+.rk-impact dd { margin: 0; overflow-wrap: anywhere; }
+.dt-impacts { display: grid; gap: 10px; margin-top: 10px; }
+.dt-impact { border: 1px solid var(--border); border-left: 4px solid var(--border); border-radius: 8px; padding: 10px 14px; break-inside: avoid; }
+.dt-impact.confirmed { border-left-color: var(--rk-fail); }
+.dt-impact.held { border-left-color: var(--rk-pass, #2e9e5b); }
+.dt-impact-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.dt-impact-head b { margin-right: auto; }
+.dt-impact .rk-prio { text-transform: capitalize; }
+.dt-impact-proof { overflow-wrap: anywhere; }
+@media (max-width: 700px) { .rk-impact { grid-template-columns: minmax(0, 1fr); } }

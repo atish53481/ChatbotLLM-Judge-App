@@ -214,6 +214,11 @@ def test_api_frameworks_metrics_source_and_strategies(client):  # noqa: F811
     assert data["deepteam"]["version"] == "1.0.10" and data["deepteam"]["metrics"] == 32
     rows = {m["key"]: m for m in client.get("/api/metrics").json()}
     assert rows["bfla"]["source"] == "deepteam" and rows["jailbreak"]["source"] == "app"
+    # The side panel's framework picker: red teaming is DeepTeam, every other metric DeepEval.
+    assert rows["bfla"]["framework"] == "deepteam" and rows["jailbreak"]["framework"] == "deepteam"
+    assert rows["bias"]["framework"] == "deepeval" and rows["answer_relevancy"]["framework"] == "deepeval"
+    assert {r["framework_label"] for r in rows.values()} == {"DeepEval", "DeepTeam"}
+    assert all((r["framework"] == "deepteam") == (r["ui_category"] == "security") for r in rows.values())
     enh = client.get("/api/security/enhancers").json()
     assert [s["key"] for s in enh["strategies"]] == list(catalog.ATTACK_STRATEGIES)
 

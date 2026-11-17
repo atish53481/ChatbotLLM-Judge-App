@@ -17,7 +17,9 @@ rem runs old code: stop it. Anything else on the port is left alone.
 powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { $p = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $_.OwningProcess); if ($p.CommandLine -like '*backend.dashboard.app*') { Write-Host 'Stopping the LLM Judge backend that was already running...'; Stop-Process -Id $p.ProcessId -Force; $parent = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $p.ParentProcessId); if ($parent.CommandLine -like '*backend.dashboard.app*') { Stop-Process -Id $parent.ProcessId -Force -ErrorAction SilentlyContinue } } }"
 rem Newest package versions requirements.txt allows; runs after the old backend
 rem is stopped, since a running backend locks package files on Windows.
-rem call "%~dp0update-packages.bat"
+rem DeepEval and DeepTeam are upgraded to their newest release on every start
+rem (smoke-tested, rolled back on failure); JUDGE_AUTO_UPDATE=0 skips it.
+call "%~dp0update-packages.bat"
 echo Starting LLM Judge backend on http://127.0.0.1:8765 - please wait...
 echo Open http://127.0.0.1:8765/ in your browser to use the web app.
 ".venv\Scripts\python.exe" -m uvicorn backend.dashboard.app:app --host 127.0.0.1 --port 8765 || goto :error

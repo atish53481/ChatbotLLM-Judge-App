@@ -26,11 +26,16 @@ const state = {
   autoStarted: new Set(),
   // Metric keys ticked to run (saved as "checkedMetrics"; all by default).
   checked: new Set(),
+  // Framework to scan with ("all", "deepeval", "deepteam"; saved as "metricFramework"):
+  // the list shows, and Run judge sends, only that framework's ticked metrics.
+  framework: "all",
   runControl: null,
   // The metric whose test cases (mode "list") or Add form ("add") is open.
   openCases: { key: null, mode: null },
   // The G-Eval builder (lib/geval-builder.js) is open in the G-Eval group.
   gevalOpen: false,
+  // The custom-vulnerability builder in the Security group is open.
+  vulnOpen: false,
 };
 
 function currentTarget() {
@@ -41,9 +46,10 @@ function currentTarget() {
 function updateRunButton() {
   const button = $("run-button");
   const ready = state.judgeUp && currentTarget() !== null;
-  const count = state.checked.size;
+  const count = scopedChecked().length;
+  const framework = FRAMEWORK_LABELS[state.framework] ? `${FRAMEWORK_LABELS[state.framework]} ` : "";
   button.textContent = state.runControl !== null ? "Running…"
-    : count ? `Run judge (${count} metric${count === 1 ? "" : "s"})` : "Run judge";
+    : count ? `Run judge (${count} ${framework}metric${count === 1 ? "" : "s"})` : "Run judge";
   // The status refresh calls this every 10s; a run in flight keeps the button off.
   button.disabled = !ready || state.runControl !== null || count === 0;
   if (ready && count === 0) button.title = "Tick at least one metric";
@@ -1738,8 +1744,8 @@ function renderRunRow(line, title, result, progress) {
 $("run-button").addEventListener("click", async () => {
   const target = currentTarget();
   if (!target) return;
-  // Ticked metrics, in catalog order.
-  const keys = state.metrics.filter((m) => state.checked.has(m.key)).map((m) => m.key);
+  // Ticked metrics of the chosen framework, in catalog order.
+  const keys = scopedChecked().map((m) => m.key);
   if (!keys.length) return;
   const titles = new Map(state.metrics.map((m) => [m.key, m.title]));
   const lines = new Map();
@@ -1962,6 +1968,74 @@ async function setChecked(keys) {
   await settings.set("checkedMetrics", [...keys]);
 }
 
+// --- Framework picker: DeepEval or DeepTeam metrics (or both) ---------------
+const FRAMEWORK_LABELS = { deepeval: "DeepEval", deepteam: "DeepTeam" };
+
+// The backend sends `framework`; red teaming (group "security") is DeepTeam's.
+function frameworkOf(metric) {
+  return metric.framework || (metric.ui_category === "security" ? "deepteam" : "deepeval");
+}
+
+function inFramework(metric) {
+  return state.framework === "all" || frameworkOf(metric) === state.framework;
+}
+
+function scopedMetrics() {
+  return state.metrics.filter(inFramework);
+}
+
+function scopedChecked() {
+  return scopedMetrics().filter((m) => state.checked.has(m.key));
+}
+
+// Quick select within the chosen framework: the other framework's ticks stay as they are.
+async function setScopeChecked(keys) {
+  const scope = new Set(scopedMetrics().map((m) => m.key));
+  const next = new Set([...state.checked].filter((key) => !scope.has(key)));
+  for (const key of keys) if (scope.has(key)) next.add(key);
+  await setChecked(next);
+}
+
+// Category groups of one framework; DeepTeam's security group splits into the
+// app's attack probes and DeepTeam's vulnerability metrics.
+function frameworkGroups(metrics) {
+  return metricGroups(metrics).flatMap((group) => {
+    if (group.group !== "security") return [group];
+    return [
+      { group: "security", label: "Red-team attacks", metrics: group.metrics.filter((m) => m.source !== "deepteam") },
+      { group: "security_deepteam", label: "DeepTeam vulnerabilities", metrics: group.metrics.filter((m) => m.source === "deepteam") },
+    ].filter((g) => g.metrics.length);
+  });
+}
+
+// A framework heading with a tick that selects or clears all of its metrics.
+function frameworkHeading(framework, metrics) {
+  const keys = metrics.map((m) => m.key);
+  const ticked = keys.filter((key) => state.checked.has(key)).length;
+  const tick = el("input", {
+    type: "checkbox",
+    checked: keys.length > 0 && ticked === keys.length,
+    "aria-label": `Run all ${FRAMEWORK_LABELS[framework]} metrics`,
+  });
+  tick.indeterminate = ticked > 0 && ticked < keys.length;
+  tick.addEventListener("change", async () => {
+    const next = new Set(state.checked);
+    for (const key of keys) {
+      if (tick.checked) next.add(key);
+      else next.delete(key);
+    }
+    await setChecked(next);
+  });
+  return el("label", { className: "framework-heading" }, tick,
+    `${FRAMEWORK_LABELS[framework]} framework (${ticked}/${keys.length})`);
+}
+
+for (const radio of document.querySelectorAll('input[name="metric-framework"]')) {
+  radio.addEventListener("change", () => {
+    if (radio.checked) settings.set("metricFramework", radio.value);
+  });
+}
+
 async function renderThresholds() {
   const env = await settings.get("thresholdEnv", "default");
   const thresholds = await settings.get("thresholds", {});
@@ -1973,13 +2047,32 @@ async function renderThresholds() {
   // Nothing saved yet: every metric but the 32 DeepTeam ones (opt-in, so a first scan stays the size it was).
   const byDefault = state.metrics.filter((m) => m.source !== "deepteam" && !m.opt_in).map((m) => m.key);
   state.checked = new Set((saved ?? byDefault).filter((key) => known.has(key)));
-  $("metric-check-count").textContent = `(${state.checked.size} of ${state.metrics.length} ticked)`;
+  const framework = await settings.get("metricFramework", "all");
+  state.framework = framework === "deepeval" || framework === "deepteam" ? framework : "all";
+  for (const radio of document.querySelectorAll('input[name="metric-framework"]')) {
+    radio.checked = radio.value === state.framework;
+  }
+  for (const name of Object.keys(FRAMEWORK_LABELS)) {
+    $(`framework-count-${name}`).textContent = String(state.metrics.filter((m) => frameworkOf(m) === name).length);
+  }
+  $("framework-count-all").textContent = String(state.metrics.length);
+  const scoped = scopedMetrics();
+  $("metric-check-count").textContent = `(${scopedChecked().length} of ${scoped.length} ticked)`;
   updateRunButton();
   fillSelect($("threshold-env"), THRESHOLD_ENVS.map((e) => ({ value: e.key, label: e.label })), env);
+  // One section per framework (a heading only when both are listed), then its category groups.
+  const sections = Object.keys(FRAMEWORK_LABELS)
+    .filter((name) => state.framework === "all" || state.framework === name)
+    .map((name) => ({ name, metrics: scoped.filter((m) => frameworkOf(m) === name) }))
+    .filter((section) => section.metrics.length);
   $("threshold-table").replaceChildren(
-    ...metricGroups(state.metrics).flatMap((group) => [
+    ...sections.flatMap((section) => [
+      ...(state.framework === "all" ? [frameworkHeading(section.name, section.metrics)] : []),
+      ...frameworkGroups(section.metrics),
+    ]).flatMap((group) => group instanceof Node ? [group] : [
       groupCheckRow(group),
       ...(group.group === "geval" ? [gevalBar()] : []),
+      ...(group.group === "security" ? [vulnBar()] : []),
       ...group.metrics.flatMap((metric) => {
         const tick = el("input", {
           type: "checkbox",
@@ -2231,6 +2324,34 @@ function gevalForm() {
   return gevalBuilderForm;
 }
 
+// Your own red-team vulnerabilities (DeepTeam's CustomVulnerability), in the Security group.
+let vulnBuilderForm = null;
+function vulnForm() {
+  vulnBuilderForm ||= createVulnerabilityBuilder((row) => {
+    state.vulnOpen = false;
+    if (row) $("status").textContent = `Saved “${row.name}”: ticked, it runs with Run judge.`;
+    renderThresholds();
+  });
+  return vulnBuilderForm;
+}
+
+function vulnBar() {
+  const editing = state.vulnOpen && vulnForm().editingId();
+  const toggle = el("button", {
+    type: "button",
+    className: `case-button${state.vulnOpen ? " active" : ""}`,
+    "aria-expanded": String(state.vulnOpen),
+    title: "Define a vulnerability of your own (name, criteria, types) and its attacks, like DeepTeam's CustomVulnerability",
+    onclick: () => {
+      if (!state.vulnOpen || editing) vulnForm().fill(null);
+      state.vulnOpen = !state.vulnOpen || Boolean(editing);
+      renderThresholds();
+    },
+  }, state.vulnOpen && !editing ? "Close" : "＋ New custom vulnerability");
+  return el("div", { className: "geval-bar" }, toggle,
+    state.vulnOpen ? el("div", { className: "case-panel geval-panel" }, vulnForm().form) : null);
+}
+
 // "＋ New G-Eval metric" under the group heading, and the form when open.
 function gevalBar() {
   const editing = state.gevalOpen && gevalForm().editingId();
@@ -2251,8 +2372,19 @@ function gevalBar() {
 async function editOwnGeval(metric) {
   const row = (await api("/api/custom-metrics")).find((r) => r.id === metric.custom_id);
   if (!row) throw new Error("This metric is no longer saved; reload the panel.");
+  if (row.kind === "vulnerability") {
+    vulnForm().fill(row);
+    state.vulnOpen = true;
+    state.openCases = { key: null, mode: null };
+    await renderThresholds();
+    vulnForm().form.scrollIntoView({ behavior: "smooth", block: "center" });
+    return;
+  }
   gevalForm().fill(row);
   state.gevalOpen = true;
+  // An open Test cases list re-renders with a delayed scrollIntoView of its own,
+  // which would pull the view away from the form: close it first.
+  state.openCases = { key: null, mode: null };
   await renderThresholds();
   gevalForm().form.scrollIntoView({ behavior: "smooth", block: "center" });
 }
@@ -2262,13 +2394,13 @@ function ownGevalButtons(metric) {
   const edit = el("button", {
     type: "button",
     className: "case-button",
-    title: "Change this G-Eval metric",
+    title: "Change this metric of your own",
     onclick: (event) => {
       event.preventDefault();
       editOwnGeval(metric).catch((error) => { $("status").textContent = error.message; });
     },
   }, "Edit");
-  const remove = el("button", { type: "button", className: "case-button", title: "Delete this G-Eval metric (its earlier runs stay in History)" }, "Delete");
+  const remove = el("button", { type: "button", className: "case-button", title: "Delete this metric of your own (its earlier runs stay in History)" }, "Delete");
   let armed = false;
   remove.addEventListener("click", async (event) => {
     event.preventDefault();
@@ -2320,7 +2452,7 @@ function caseButtons(metric) {
     button("Add", "add", (metric.kind === "conversation" || (metric.dataset_name || "").startsWith("conversations"))
       ? "Add a multi-turn conversation scenario for this (and other) Turns metrics"
       : "Add a test case this metric will run"),
-    metric.custom_id && metric.ui_category === "geval" ? ownGevalButtons(metric) : null);
+    metric.custom_id && ["geval", "security"].includes(metric.ui_category) ? ownGevalButtons(metric) : null);
 }
 
 async function showCasePanel(metric, panel, mode) {
@@ -2677,26 +2809,27 @@ function groupCheckRow(group) {
   return el("label", { className: "threshold-group" }, tick, `${group.label} (${ticked}/${keys.length})`);
 }
 
-$("check-all-metrics").addEventListener("click", () => setChecked(state.metrics.map((m) => m.key)));
+// Quick select: each acts on the chosen framework's metrics only.
+$("check-all-metrics").addEventListener("click", () => setScopeChecked(scopedMetrics().map((m) => m.key)));
 $("check-golden-metrics").addEventListener("click", () => {
-  const goldenKeys = state.metrics
+  const goldenKeys = scopedMetrics()
     .filter(m => !m.kind || m.kind !== "conversation")
     .map(m => m.key);
-  setChecked(goldenKeys);
+  setScopeChecked(goldenKeys);
 });
 $("check-scenario-metrics").addEventListener("click", () => {
-  const scenarioKeys = state.metrics
+  const scenarioKeys = scopedMetrics()
     .filter(m => m.kind === "conversation" || (m.dataset_name || "").includes("conversation"))
     .map(m => m.key);
-  setChecked(scenarioKeys);
+  setScopeChecked(scenarioKeys);
 });
 $("check-own-question-metrics").addEventListener("click", () => {
-  const ownKeys = state.metrics
+  const ownKeys = scopedMetrics()
     .filter(m => m.custom_id || m.ui_category === "geval" || m.source === "deepteam")
     .map(m => m.key);
-  setChecked(ownKeys);
+  setScopeChecked(ownKeys);
 });
-$("check-no-metrics").addEventListener("click", () => setChecked([]));
+$("check-no-metrics").addEventListener("click", () => setScopeChecked([]));
 
 $("threshold-env").addEventListener("change", async () => {
   const env = $("threshold-env").value;
@@ -2715,6 +2848,7 @@ $("threshold-env").addEventListener("change", async () => {
 });
 $("open-dashboard").addEventListener("click", openDashboard);
 $("open-advanced").addEventListener("click", openAdvanced);
+$("open-deepteam").addEventListener("click", openDeepTeam);
 // Inside the web app's two-pane page the dashboard is already beside the panel.
 if (window.parent !== window) $("open-dashboard").hidden = true;
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => renderLatest());
@@ -2731,7 +2865,8 @@ settings.onChange((changes) => {
       $("status").textContent = error.message;
     });
   }
-  if ((changes.thresholds || changes.thresholdEnv || changes.checkedMetrics) && state.metrics.length) {
+  if ((changes.thresholds || changes.thresholdEnv || changes.checkedMetrics || changes.metricFramework)
+      && state.metrics.length) {
     renderThresholds();
   }
   // A metric was added, edited or deleted on the dashboard or Advanced tools.
@@ -2861,6 +2996,8 @@ function showConfidentResult(ok, text) {
   $("confident-result").className = ok ? "small status-pass" : "small status-error";
   $("confident-result").textContent = text;
 }
+
+$("confident-reports").addEventListener("click", () => openConfidentReports());
 
 $("confident-form").addEventListener("submit", async (event) => {
   event.preventDefault();

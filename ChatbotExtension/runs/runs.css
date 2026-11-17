@@ -52,7 +52,8 @@
 .nav-scan { margin-top: auto; }
 
 /* --- Page ----------------------------------------------------------------- */
-.view { padding: 28px 32px 48px; max-width: 1400px; width: 100%; }
+/* Fills the window beside the menu (no fixed cap), so wide screens are used. */
+.view { padding: 28px clamp(16px, 2.5vw, 40px) 48px; width: 100%; min-width: 0; }
 .page-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 8px 24px; margin-bottom: 20px; }
 .page-head h1 { margin: 0; font-size: 26px; font-weight: 600; letter-spacing: -0.01em; }
 .page-head p { margin: 4px 0 0; color: var(--text-secondary); font-size: 13.5px; }
@@ -268,7 +269,7 @@ td.detail-cell { background: var(--surface-1); padding: 8px 20px 16px; }
 .kv:last-child { border-bottom: 0; }
 .kv > span { color: var(--text-muted); }
 .kv > b { font-weight: 500; text-align: right; overflow-wrap: anywhere; }
-.radar svg { width: 100%; max-width: 460px; height: auto; display: block; margin: 0 auto; }
+.radar svg { width: 100%; max-width: min(640px, 100%); height: auto; display: block; margin: 0 auto; }
 .card .hist-grid { max-height: 560px; overflow-y: auto; padding-right: 4px; }
 .radar-ring { fill: none; stroke: var(--border); }
 .radar-area { fill: rgba(57, 135, 229, 0.18); stroke: var(--s1); stroke-width: 2; }

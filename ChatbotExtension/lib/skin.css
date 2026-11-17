@@ -135,6 +135,11 @@
 :root[data-theme="dark"] body.panel .metric-check-actions {
   border-bottom-color: var(--border);
 }
+:root[data-theme="dark"] body.panel .framework-picker label > span { border-color: var(--border); }
+:root[data-theme="dark"] body.panel .framework-picker input:checked + span {
+  border-color: var(--accent); color: var(--accent); background: rgba(224, 122, 90, 0.08);
+}
+:root[data-theme="dark"] body.panel .framework-heading { color: var(--accent); }
 :root[data-theme="dark"] body.panel label.row.run-mode > span { color: var(--text-secondary); }
 
 /* ---------- dashboard: slate, terracotta accent ---------- */

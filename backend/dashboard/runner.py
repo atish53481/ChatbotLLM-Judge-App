@@ -124,7 +124,7 @@ def _run_conversation(spec, target, scenario: dict, report, done: int, total: in
     return spec.build_case(scenario, turns), turns
 
 
-_PROBE_DATASETS = ("security_probes", "prompt_leak_probes", "safety_probes")
+_PROBE_DATASETS = ("security_probes", "prompt_leak_probes", "safety_probes", "custom_vulnerability")
 DEFAULT_ATTACK_TURNS = 4
 # Marks a case skipped for being longer than the chatbot's max message length.
 _SKIPPED = object()
@@ -801,6 +801,9 @@ def _empty_dataset_message(spec, theme: str, probe_set: str) -> str:
     if dataset == "security_probes":
         return (f"No security probes for this metric in probe set {probe_set!r} (theme {theme!r}). "
                 "Add one in the side panel.")
+    if dataset == "custom_vulnerability":
+        return ("This custom vulnerability has no attacks yet. Edit it in the side panel's Security group "
+                "and generate or add some.")
     if dataset == "prompt_leak_probes":
         return (f"No prompt-leak probes in probe set {probe_set!r}. "
                 "Add one at /api/security-probes with metric \"no_prompt_leak\".")
@@ -847,7 +850,7 @@ def judge_one(
     if getattr(spec, "kind", "single") in ("conversation", "attack"):
         return _error(spec, "", f"{spec.title} scores a whole conversation: run it with Run judge.",
                       cases_total=1)
-    if getattr(spec, "dataset_name", "") == "security_probes":
+    if getattr(spec, "dataset_name", "") in ("security_probes", "custom_vulnerability"):
         # Its rubric judges a reply to an attack, in the context of the bot's role.
         return _error(spec, "", f"{spec.title} scores replies to its red-team probes: run it from the dashboard.",
                       cases_total=1)

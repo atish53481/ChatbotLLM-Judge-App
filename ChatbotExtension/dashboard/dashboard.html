@@ -14,7 +14,7 @@
     <div class="brand">
       <span class="brand-mark" aria-hidden="true">◆</span>
       <div>
-        <h1>DeepEval Dashboard</h1>
+        <h1>DeepEval + DeepTeam Dashboard</h1>
         <p class="brand-sub">Live metric runs against the chatbot and RAG pipeline</p>
       </div>
     </div>
@@ -89,8 +89,12 @@
   </section>
 
   <div class="chip-row">
+    <span class="muted">Framework:</span>
+    <div id="framework-chips" class="chips" role="group" aria-label="Framework"></div>
+  </div>
+  <div class="chip-row">
     <span class="muted">Categories:</span>
-    <div id="category-chips" class="chips" role="group" aria-label="Category"></div>
+    <div id="category-chips" class="chips category-clusters" role="group" aria-label="Category"></div>
   </div>
 
   <section class="metric-section" aria-label="Metrics">

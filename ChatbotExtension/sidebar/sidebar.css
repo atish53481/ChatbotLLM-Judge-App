@@ -424,6 +424,52 @@ summary {
   color: var(--text-secondary);
 }
 
+/* Framework picker: DeepEval / DeepTeam / Both, as a segmented control. */
+.framework-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 2px;
+}
+.framework-picker label {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+.framework-picker input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.framework-picker label > span {
+  padding: 4px 10px;
+  border: 1px solid var(--grid);
+  border-radius: 999px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.framework-picker input:checked + span {
+  border-color: var(--accent, currentColor);
+  font-weight: 600;
+}
+.framework-picker input:focus-visible + span {
+  outline: 2px solid var(--accent, currentColor);
+  outline-offset: 1px;
+}
+
+/* A framework's heading above its category groups (shown when both are listed). */
+.framework-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 14px 0 2px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 /* Quick-select chips: caption above, buttons wrap as a clean row. */
 .metric-check-hint {
   margin: 8px 0 4px;

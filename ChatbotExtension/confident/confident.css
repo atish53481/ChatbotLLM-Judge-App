@@ -1,0 +1,14 @@
+/* Confident AI reports page: one table of every upload (backend/confident_reports.py). */
+.cf-main { padding: 0 16px 32px; max-width: 1200px; margin: 0 auto; }
+.cf-filters { gap: 6px; align-items: center; margin: 4px 0 12px; flex-wrap: wrap; }
+.cf-filters button[aria-pressed="true"] { border-color: var(--accent, #b4532f); font-weight: 600; }
+.cf-table-wrap { overflow-x: auto; border: 1px solid var(--border, #dce1e9); border-radius: 10px; }
+.cf-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.cf-table th, .cf-table td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border, #dce1e9); vertical-align: top; }
+.cf-table thead th { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted, #596275); }
+.cf-table tbody tr:last-child td { border-bottom: 0; }
+.cf-table td.num { font-variant-numeric: tabular-nums; }
+.cf-links { display: flex; flex-wrap: wrap; gap: 6px; }
+.cf-pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600;
+  background: var(--surface-2, #edf0f5); }
+.cf-note { display: block; font-size: 12px; margin-top: 2px; }

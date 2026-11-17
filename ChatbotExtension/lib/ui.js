@@ -511,6 +511,16 @@ function openAdvanced() {
   window.open(pageUrl("advanced/advanced.html"), "llm-judge-advanced");
 }
 
+// DeepTeam's own engine: RedTeamer runs, guardrails, YAML/CLI export (deepteam/).
+function openDeepTeam() {
+  window.open(pageUrl("deepteam/deepteam.html"), "llm-judge-deepteam");
+}
+
+// Every report sent to Confident AI (scans and DeepTeam runs), with links and saved copies.
+function openConfidentReports() {
+  window.open(pageUrl("confident/confident.html"), "llm-judge-confident");
+}
+
 function watchJob(target, jobId, metrics) {
   const info = { target: { id: target.id, name: target.name }, metrics: metrics.map((m) => ({ key: m.key, title: m.title })) };
   webWrite("watchedJobs", { ...(webRead("watchedJobs") || {}), [jobId]: info });

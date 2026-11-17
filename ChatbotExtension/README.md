@@ -70,7 +70,8 @@ does not keep old copies.
 7. Reload the page: cards show "not run"; **History** still lists both runs.
 8. Switch the OS to dark mode: charts redraw with the dark palette.
 9. Stop the backend: both views show "Backend not reachable…"; start it again and the
-   side panel recovers within 10 seconds.
+   side panel recovers within 10 seconds. A dashboard opened while the backend is down
+   retries every 3 s and finishes loading by itself, no reload needed.
 
 ## Security notes
 
