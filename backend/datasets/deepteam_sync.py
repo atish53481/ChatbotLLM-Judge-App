@@ -306,9 +306,13 @@ def _framework(module: str, attr: str) -> list[dict]:
     out = []
     for rc in categories:
         display = getattr(rc, "_display_name", "") or rc.name
-        rid, _, title = display.partition(" ")
+        if " — " in display:  # NIST / MITRE / EU AI Act: "Measure 1 — Risk Measurement…"
+            rid, title = (p.strip() for p in display.split(" — ", 1))
+        else:  # OWASP: "LLM01: Prompt Injection"
+            rid, _, title = display.partition(" ")
+            rid = rid.split(":")[0]
         out.append({
-            "id": rid.split(":")[0] or rc.name.replace("_", ""),
+            "id": rid or rc.name.replace("_", ""),
             "title": title.strip() or display,
             "description": getattr(rc, "description", "") or "",
             "vulnerabilities": sorted({type(v).__name__ for v in rc.vulnerabilities
@@ -342,6 +346,9 @@ def build_catalog() -> dict:
     for key, module, attr in (
         ("owasp_llm", "deepteam.frameworks.owasp.risk_categories", "OWASP_CATEGORIES"),
         ("owasp_agentic", "deepteam.frameworks.owasp_top_10_agentic.risk_categories", "OWASP_ASI_CATEGORIES"),
+        ("nist", "deepteam.frameworks.nist.risk_categories", "NIST_CATEGORIES"),
+        ("mitre", "deepteam.frameworks.mitre.risk_categories", "MITRE_CATEGORIES"),
+        ("eu_ai_act", "deepteam.frameworks.eu_ai_act.risk_categories", "EU_AI_ACT_CATEGORIES"),
     ):
         try:
             frameworks[key] = _framework(module, attr)

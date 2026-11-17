@@ -53,17 +53,48 @@ function facts(scan) {
   );
 }
 
+// The metric table; each header sorts it (click again to reverse). Blanks sort last.
+const SUMMARY_COLUMNS = [
+  { label: "Metric", value: (r, title) => title(r.key).toLowerCase() },
+  { label: "Score", num: true, value: (r) => r.score },
+  { label: "Minimum", num: true, value: (r) => r.threshold },
+  { label: "Result", value: (r) => r.status || "" },
+  { label: "Cases", num: true, value: (r) => (r.cases_run
+    ? (r.cases_passed ?? (r.rows || []).filter((row) => row.passed).length) / r.cases_run : null) },
+];
+
 function summary(results, title) {
+  const sort = { col: null, dir: 1 };
+  const row = (r) => el("tr", {},
+    el("td", {}, el("a", { href: `#metric-${r.key}`,
+      onclick: () => { const d = document.getElementById(`metric-${r.key}`); if (d) d.open = true; } }, title(r.key))),
+    el("td", { className: "num" }, formatScore(r.score)),
+    el("td", { className: "num" }, minimum(r)),
+    statusCell(r.status),
+    el("td", { className: "num" }, casesCell(r)));
+  const body = el("tbody", {}, results.map(row));
+  const heads = SUMMARY_COLUMNS.map((c, i) => {
+    const button = el("button", { type: "button", className: "sort-button",
+      onclick: () => {
+        sort.dir = sort.col === i ? -sort.dir : 1;
+        sort.col = i;
+        const key = (r) => c.value(r, title);
+        const sorted = [...results].sort((a, b) => {
+          const x = key(a), y = key(b);
+          if (x == null || x === "") return 1;
+          if (y == null || y === "") return -1;
+          return (x < y ? -1 : x > y ? 1 : 0) * sort.dir;
+        });
+        body.replaceChildren(...sorted.map(row));
+        heads.forEach((th, j) => {
+          th.setAttribute("aria-sort", j === i ? (sort.dir === 1 ? "ascending" : "descending") : "none");
+          th.querySelector(".sort-mark").textContent = j === i ? (sort.dir === 1 ? " ▲" : " ▼") : "";
+        });
+      } }, c.label, el("span", { className: "sort-mark", "aria-hidden": "true" }, ""));
+    return el("th", { className: c.num ? "num" : "", "aria-sort": "none" }, button);
+  });
   return el("div", { className: "table-scroll" }, el("table", {},
-    el("thead", {}, el("tr", {}, el("th", {}, "Metric"), el("th", { className: "num" }, "Score"),
-      el("th", { className: "num" }, "Minimum"), el("th", {}, "Result"), el("th", { className: "num" }, "Cases"))),
-    el("tbody", {}, results.map((r) => el("tr", {},
-      el("td", {}, el("a", { href: `#metric-${r.key}` }, title(r.key))),
-      el("td", { className: "num" }, formatScore(r.score)),
-      el("td", { className: "num" }, minimum(r)),
-      statusCell(r.status),
-      el("td", { className: "num" }, casesCell(r)),
-    )))));
+    el("thead", {}, el("tr", {}, heads)), body));
 }
 
 // Cases that passed of those scored (DeepEval: the metric passes only when all do).
@@ -90,7 +121,7 @@ function notRun(skipped, title) {
 // and say under the judge's reason how the case would pass.
 function cases(rows, metric, r) {
   if (!rows || !rows.length) return el("p", { className: "muted" }, "No cases were scored.");
-  return el("div", { className: "table-scroll" }, el("table", {},
+  return el("div", { className: "table-scroll case-table" }, el("table", {},
     el("thead", {}, el("tr", {}, el("th", {}, "#"), el("th", {}, "Question"), el("th", {}, "Chatbot reply"),
       el("th", {}, "Expected"), el("th", { className: "num" }, "Score"), el("th", {}, "Result"), el("th", {}, "Judge's reason"))),
     el("tbody", {}, rows.map((row, i) => {
@@ -141,6 +172,7 @@ function metricSection(r, title, metric) {
       r.error ? el("p", { className: "reason status-error" }, r.error) : "",
       r.reason ? el("p", { className: "reason" }, r.reason) : "",
       r.note ? el("p", { className: "note" }, r.note) : "",
+      promptInstructionsBlock(r.prompt_instructions),
       cases(r.rows, metric, r)),
   );
 }
@@ -223,9 +255,22 @@ async function loadScan() {
       ...(security ? securitySection(security)
         : [el("p", { className: "muted" }, "The security report for this scan could not be loaded.")]),
     );
+    openFromHash();
   } catch (error) {
     status.textContent = `Could not load the scan: ${error.message}`;
   }
 }
+
+// Passed metrics start closed; a link to one (#metric-<key>, from the summary
+// table or a pasted URL) opens it so its cases show, then scrolls to it.
+function openFromHash() {
+  const id = decodeURIComponent(location.hash.slice(1));
+  const target = id && document.getElementById(id);
+  if (!target || target.tagName !== "DETAILS") return;
+  target.open = true;
+  target.scrollIntoView({ block: "start" });
+}
+
+window.addEventListener("hashchange", openFromHash);
 
 loadScan();

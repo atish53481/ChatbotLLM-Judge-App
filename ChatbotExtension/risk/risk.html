@@ -24,7 +24,13 @@
         <p class="rk-group">App</p>
         <a href="../index.html">← Side panel &amp; dashboard</a>
       </nav>
-      <label class="rk-pick rk-pick-scan">Assessment (scan) <select id="scan"></select></label>
+      <label class="rk-pick">Source
+        <select id="source">
+          <option value="scans">App scans (red-team metrics)</option>
+          <option value="deepteam">DeepTeam runs (DeepTeam engine)</option>
+        </select>
+      </label>
+      <label class="rk-pick rk-pick-scan"><span id="scan-label">Assessment (scan)</span> <select id="scan"></select></label>
       <button type="button" class="theme-toggle rk-theme" aria-label="Switch light or dark theme">◐ Theme</button>
     </aside>
     <main id="view" class="rk-view" aria-live="polite">

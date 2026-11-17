@@ -113,6 +113,24 @@ def resolve(config: dict) -> Rules:
     return Rules(standard_rules(config), "default")
 
 
+SOURCE_LABELS = {
+    "chatbot": "Typed on the chatbot (Chatbot instructions)",
+    "request": "System prompt in the chatbot's captured request",
+    "inferred": "Inferred from the chatbot's help pages and answers, approved by you (Find missing metric data)",
+    "default": ("Standard production rules the app generated from this chatbot's profile (Build all test data: "
+                "its role, whether it returns sources and reports tools), because no instructions were set"),
+}
+
+
+def describe(rules) -> dict | None:
+    """The rules a Prompt Alignment run used and where they came from, saved with
+    the run (result["prompt_instructions"]) and shown on the scan page and report."""
+    if rules is None:
+        return None
+    source = getattr(rules, "source", "chatbot")
+    return {"source": source, "source_label": SOURCE_LABELS.get(source, source), "rules": list(rules)}
+
+
 def source_note(rules) -> str | None:
     """What a run's note says about rules it did not get from the user."""
     source = getattr(rules, "source", "chatbot")

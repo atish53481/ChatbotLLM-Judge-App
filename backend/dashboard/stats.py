@@ -2,6 +2,7 @@
 run where half the cases score 1.0 and half 0.0."""
 from __future__ import annotations
 
+import math
 import statistics
 
 HISTOGRAM_BINS = 10
@@ -10,7 +11,9 @@ HISTOGRAM_BINS = 10
 def summary_stats(scores: list[float | None], passed: list[bool] | None = None) -> dict | None:
     """n, mean, median, min, max, population std, a 10-bin histogram over
     [0, 1] and the share of cases that passed; None when nothing was scored."""
-    values = [float(s) for s in scores if s is not None]
+    # NaN (a metric library that could not score) is left out like None:
+    # int(NaN) below would otherwise fail the whole job.
+    values = [float(s) for s in scores if s is not None and not math.isnan(float(s))]
     if not values:
         return None
     bins = [0] * HISTOGRAM_BINS

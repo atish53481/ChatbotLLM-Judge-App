@@ -1,0 +1,26 @@
+/* DeepTeam page: builds on advanced.css (cards, nav, check grids). */
+.dt-vulns { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 6px 14px; margin-top: 6px; }
+.dt-vuln { min-width: 0; }
+.dt-vuln summary { display: flex; align-items: center; gap: 6px; cursor: pointer; list-style: none; }
+.dt-vuln summary::-webkit-details-marker { display: none; }
+.dt-vuln .dt-types { display: flex; flex-wrap: wrap; gap: 4px 10px; padding: 4px 0 6px 22px; font-size: 12px; }
+.dt-category { grid-column: 1 / -1; margin: 8px 0 0; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.75; }
+
+.dt-stats { display: flex; flex-wrap: wrap; gap: 10px; }
+.dt-stat { min-width: 110px; padding: 10px 12px; border: 1px solid var(--grid, rgba(128,128,128,0.3)); border-radius: 8px; }
+.dt-stat b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
+.dt-stat span { font-size: 12px; opacity: 0.75; }
+
+.dt-table-wrap { overflow-x: auto; }
+.dt-table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+.dt-table th, .dt-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--grid, rgba(128,128,128,0.25)); vertical-align: top; }
+.dt-table th { font-size: 12px; opacity: 0.8; }
+.dt-table td.dt-text { max-width: 360px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.dt-pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+.dt-pass { background: rgba(70, 190, 147, 0.15); color: #2f9c74; }
+.dt-fail { background: rgba(236, 98, 104, 0.15); color: #d24a50; }
+.dt-err { background: rgba(220, 171, 69, 0.18); color: #a77a14; }
+
+.dt-run-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.dt-run-row .grow { flex: 1 1 auto; min-width: 0; }
+.hidden { display: none !important; }

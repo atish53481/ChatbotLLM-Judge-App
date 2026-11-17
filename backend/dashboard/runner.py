@@ -55,20 +55,20 @@ def _context_used(spec, item: dict, retrieval: list[str] | None) -> tuple[list[s
     """The context the metric reads, and where it came from ("chatbot" or "golden")."""
     fields = getattr(spec, "scores_on", ())
     if "retrieval_context" in fields:
-        if retrieval:
-            return retrieval, "chatbot"
-        # The chatbot returned no retrieved context: score the golden's reference context.
-        return (item.get("context") or None), "golden"
+        # Only the chatbot's own sources (the runner leaves a case without them out).
+        return (retrieval or None), "chatbot"
     if "context" in fields:
         return (item.get("context") or None), "golden"
     return None, None
 
 
 NEEDS_OWN_SOURCES = (
-    "Not applicable: this metric scores how the chatbot cites its own sources, and this "
+    "Not applicable: this metric scores the chatbot's own retrieved sources, and this "
     "chatbot returns none. Set 'Retrieved context path' on a chatbot whose responses list "
-    "the documents it used."
+    "the documents it used, or turn on 'Find sources' (uploaded documents / cited pages). "
+    "The golden's reference context is never used in their place."
 )
+NO_OWN_SOURCES_CASE = "The chatbot returned no sources for this question, so there is nothing to score."
 
 AUTO_SCENARIO_NOTE = (
     "This theme has no conversation scenarios of its own, so these were built from its "
@@ -124,7 +124,7 @@ def _run_conversation(spec, target, scenario: dict, report, done: int, total: in
     return spec.build_case(scenario, turns), turns
 
 
-_PROBE_DATASETS = ("security_probes", "prompt_leak_probes", "safety_probes")
+_PROBE_DATASETS = ("security_probes", "prompt_leak_probes", "safety_probes", "custom_vulnerability")
 DEFAULT_ATTACK_TURNS = 4
 # Marks a case skipped for being longer than the chatbot's max message length.
 _SKIPPED = object()
@@ -150,7 +150,14 @@ def target_features(target, spec=None) -> dict:
     """What the chatbot reports beside its reply, for MetricSpec.applies. Given
     the spec, context the app finds itself (sources_fallback) counts as context."""
     return {"context_path": bool(getattr(target, "context_path", "")) or bool(_sources_fallback(spec, target)),
-            "tools_path": bool(getattr(target, "tools_path", ""))}
+            "tools_path": bool(getattr(target, "tools_path", "")),
+            "mcp": callable(getattr(target, "mcp_server", None))}
+
+
+def _with_mcp(target, item: dict) -> dict:
+    """The case item plus the MCP server it ran on (MCP Use metrics), for MCP targets."""
+    server = getattr(target, "mcp_server", None)
+    return {**item, "_mcp_server": server()} if callable(server) else item
 
 
 def _not_applicable_error(reasons: list[str]) -> str:
@@ -321,6 +328,8 @@ def _sweep(
     metric_kwargs = dict(metric_kwargs or {})
     # Prompt Alignment's rules may come from the captured request or the standard set.
     rules_note = target_instructions.source_note(metric_kwargs.get("instructions"))
+    # The exact rules, kept with the run so every scan shows what it was judged against.
+    rules_used = target_instructions.describe(metric_kwargs.get("instructions"))
     runner_opts = {name: metric_kwargs.pop(name) for name in getattr(spec, "runner_settings", ())
                    if name in metric_kwargs}
     if getattr(spec, "needs_own_sources", False) and not target_features(target, spec)["context_path"]:
@@ -441,14 +450,15 @@ def _sweep(
                 case = spec.build_case(item, reply)
             elif kind == "conversation":
                 waits: list[float] = []
-                case, turns = _run_conversation(spec, target, item, report, index, len(items), theme, waits)
+                case, turns = _run_conversation(spec, target, _with_mcp(target, item), report, index,
+                                                len(items), theme, waits)
                 latency = round(sum(waits) / max(1, len(waits)), 3)
                 question, reply = item.get("name", "conversation"), _transcript(turns)
                 sent = "\n".join(item.get("user_turns", []))
                 expected, used, source = item.get("expected_outcome", ""), None, None
                 if "retrieval_context" in getattr(spec, "scores_on", ()):
                     own = [c for t in turns for c in t.get("retrieval_context") or []]
-                    used, source = (own, "chatbot") if own else (item.get("context") or None, "golden")
+                    used, source = (own, "chatbot") if own else (None, None)
                     labels = {t.get("context_source") for t in turns if t.get("retrieval_context")}
                     if own and None not in labels:
                         source = labels.pop()  # every turn's context was found by the app
@@ -468,11 +478,13 @@ def _sweep(
                     found, derived = derived_sources.derive(fallback, theme, question, reply)
                     if found:
                         retrieval = found
-                    elif not item.get("context"):
+                    else:
                         outcomes[index] = _NotApplicable(derived_sources.NOTHING_FOUND[derived])
                         return
-                    else:
-                        derived = None  # nothing found: the golden's context is scored, as before
+                if "retrieval_context" in getattr(spec, "scores_on", ()) and not retrieval:
+                    # Production evaluation: no golden context stands in for the chatbot's sources.
+                    outcomes[index] = _NotApplicable(NO_OWN_SOURCES_CASE)
+                    return
                 used, source = _context_used(spec, item, retrieval)
                 if derived:
                     source = derived
@@ -481,6 +493,7 @@ def _sweep(
                 case_item = {**item, "_tools": tools} if tools else item
                 if tools_reported:
                     case_item = {**case_item, "_tools_reported": True}
+                case_item = _with_mcp(target, case_item)
                 # The catalog's builders fall back to the golden's context themselves.
                 case = spec.build_case(case_item, reply, retrieval)
             if kind in ("single", "conversation") and callable(skip_case):
@@ -658,6 +671,7 @@ def _sweep(
         "error": None,
         "stats": summary_stats(scores, [bool(r["passed"]) for r in rows]),
         "calibration_examples": calibrated,
+        **({"prompt_instructions": rules_used} if rules_used else {}),
         **({"by_enhancement": attack_enhancers.pass_rate_by_enhancement(rows)} if enhancements else {}),
         **({"enhancements_not_sent": not_enhanced} if not_enhanced else {}),
         "note": _join_notes(
@@ -787,6 +801,9 @@ def _empty_dataset_message(spec, theme: str, probe_set: str) -> str:
     if dataset == "security_probes":
         return (f"No security probes for this metric in probe set {probe_set!r} (theme {theme!r}). "
                 "Add one in the side panel.")
+    if dataset == "custom_vulnerability":
+        return ("This custom vulnerability has no attacks yet. Edit it in the side panel's Security group "
+                "and generate or add some.")
     if dataset == "prompt_leak_probes":
         return (f"No prompt-leak probes in probe set {probe_set!r}. "
                 "Add one at /api/security-probes with metric \"no_prompt_leak\".")
@@ -833,7 +850,7 @@ def judge_one(
     if getattr(spec, "kind", "single") in ("conversation", "attack"):
         return _error(spec, "", f"{spec.title} scores a whole conversation: run it with Run judge.",
                       cases_total=1)
-    if getattr(spec, "dataset_name", "") == "security_probes":
+    if getattr(spec, "dataset_name", "") in ("security_probes", "custom_vulnerability"):
         # Its rubric judges a reply to an attack, in the context of the bot's role.
         return _error(spec, "", f"{spec.title} scores replies to its red-team probes: run it from the dashboard.",
                       cases_total=1)

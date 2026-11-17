@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LLM Judge · Confident AI reports</title>
+  <link rel="stylesheet" href="../lib/theme.css">
+  <link rel="stylesheet" href="../advanced/advanced.css">
+  <link rel="stylesheet" href="confident.css">
+  <link rel="stylesheet" href="../lib/skin.css">
+  <script src="../lib/theme-mode.js"></script>
+</head>
+<body class="adv">
+  <header class="adv-topbar">
+    <div class="adv-brand">
+      <span aria-hidden="true">☁</span>
+      <div>
+        <h1>Confident AI reports</h1>
+        <p class="secondary small">Every report this app sent to Confident AI, kept here for good: sending again adds a new
+          report and never replaces an older one. <b>View ↗</b> opens it on Confident AI; <b>Download JSON</b> is the exact
+          data that was sent, saved on this PC under <code>reports/confident/</code>.</p>
+      </div>
+    </div>
+    <label class="adv-target">Chatbot <select id="target-select"><option value="">All chatbots</option></select></label>
+  </header>
+  <p id="status" class="adv-status secondary" role="status" aria-live="polite"></p>
+
+  <main class="cf-main">
+    <div class="cf-filters row">
+      <button type="button" class="small-button" data-kind="" aria-pressed="true">All</button>
+      <button type="button" class="small-button" data-kind="scan" aria-pressed="false">Scans (DeepEval)</button>
+      <button type="button" class="small-button" data-kind="deepteam" aria-pressed="false">DeepTeam</button>
+      <span id="count" class="muted small"></span>
+    </div>
+    <div class="cf-table-wrap">
+      <table class="cf-table">
+        <thead>
+          <tr><th>Sent</th><th>Chatbot</th><th>Report</th><th>Type</th><th>Cases</th><th>Open</th><th>Saved copy</th></tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <p id="empty" class="muted hidden">Nothing sent to Confident AI yet. Save a key in the side panel's Confident AI card,
+      then use <b>Send to Confident AI</b> on a scan or a DeepTeam run (or turn on automatic sending).</p>
+  </main>
+
+  <script src="../lib/api.js"></script>
+  <script src="../lib/ui.js"></script>
+  <script src="confident.js"></script>
+</body>
+</html>

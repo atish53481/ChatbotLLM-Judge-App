@@ -80,7 +80,10 @@
           <label class="row"><input id="use-calibration" type="checkbox"> Give the judge my calibration labels as examples (G-Eval metrics)</label>
           <label class="row"><input id="cache-judge" type="checkbox" checked> Cache judge results (reuse identical evaluations to save tokens; recommended when running many metrics)</label>
         </div>
-        <div class="row"><button id="save-run-options" type="button" class="primary">Save run options</button></div>
+        <div class="row save-bar">
+          <button id="save-run-options" type="button" class="primary">Save run options</button>
+          <span id="run-options-state" class="secondary small" role="status" aria-live="polite">Changes save automatically.</span>
+        </div>
       </section>
 
       <!-- Custom metrics --------------------------------------------------->
@@ -92,23 +95,23 @@
           <h3 id="custom-form-title">New metric</h3>
           <input type="hidden" id="custom-id">
           <div class="row wrap">
-            <label class="grow">Name <input id="custom-name" required maxlength="80"></label>
+            <label class="grow">Name <input id="custom-name" required maxlength="80" placeholder="e.g. Refuses refunds outside policy"></label>
             <label>Kind
               <select id="custom-kind"><option value="geval">G-Eval (criteria)</option><option value="dag">DAG (decision tree)</option></select>
             </label>
             <label>Threshold <input id="custom-threshold" type="number" min="0" max="1" step="0.05" value="0.7" class="num-input"></label>
           </div>
-          <label>Description <input id="custom-description" maxlength="300"></label>
+          <label>Description <input id="custom-description" maxlength="300" placeholder="e.g. Checks the bot never promises a refund the policy does not allow"></label>
           <fieldset><legend>The judge reads</legend><div id="custom-params" class="check-grid"></div></fieldset>
           <div id="custom-geval-fields" class="stack">
             <label>Criteria <textarea id="custom-criteria" rows="3" placeholder="Is the reply polite and free of sarcasm? A firm refusal can still be polite."></textarea></label>
             <label>Evaluation steps <span class="muted small">(optional, one per line; used instead of the criteria)</span>
-              <textarea id="custom-steps" rows="3"></textarea></label>
+              <textarea id="custom-steps" rows="3" placeholder="One step per line, e.g.&#10;Check whether the reply promises a refund&#10;If it does, check the refund policy allows it&#10;Score low when it promises a refund the policy does not allow"></textarea></label>
             <label class="row"><input id="custom-strict" type="checkbox"> Strict: pass/fail only (score 0 or 1)</label>
           </div>
           <div id="custom-dag-fields" class="stack hidden">
             <label>DAG JSON <span class="muted small">(DeepEval's format: nodes of BinaryJudgementNode / NonBinaryJudgementNode / TaskNode / VerdictNode)</span>
-              <textarea id="custom-dag" rows="12" spellcheck="false" class="mono"></textarea></label>
+              <textarea id="custom-dag" rows="12" spellcheck="false" class="mono" placeholder='{"nodes": {"root": {"type": "BinaryJudgementNode", "criteria": "Does the reply promise a refund?", "evaluation_params": ["actual_output"], "children": ["yes", "no"]}, "yes": {"type": "VerdictNode", "verdict": true, "score": 0}, "no": {"type": "VerdictNode", "verdict": false, "score": 10}}}'></textarea></label>
             <div class="row"><button id="dag-example" type="button">Insert an example</button></div>
           </div>
           <div class="row wrap">

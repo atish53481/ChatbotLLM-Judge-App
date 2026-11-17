@@ -38,7 +38,8 @@ def test_partly_testable_ids_carry_partial_and_a_one_line_reason():
 
 
 def test_every_other_id_is_partial_false_without_a_reason():
-    items = _items(redteam_coverage.frameworks())
+    owasp = {k: v for k, v in redteam_coverage.frameworks().items() if k.startswith("owasp")}
+    items = _items(owasp)
     assert len(items) == 30
     for rid, item in items.items():
         assert isinstance(item["partial"], bool), rid

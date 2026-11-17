@@ -16,6 +16,8 @@ const state = {
   history: [],
   view: "judge",
   categoryFilter: "all",
+  // "all", "deepeval" or "deepteam" (setting "metricFramework", same as the side panel).
+  framework: "all",
   casesPerRun: null,
   chatbotHealth: "unknown",
   usage: null,
@@ -36,16 +38,39 @@ function currentTarget() {
   return state.targets.find((t) => t.id === id) || null;
 }
 
-// Category key -> label, from the backend, in the order the metrics arrive.
+// --- Framework: DeepEval or DeepTeam (setting "metricFramework", shared with the side panel) ---
+const FRAMEWORK_LABELS = { deepeval: "DeepEval", deepteam: "DeepTeam" };
+
+// The backend sends `framework`; red teaming (category "security") is DeepTeam's.
+function frameworkOf(metric) {
+  return metric.framework || (metric.ui_category === "security" ? "deepteam" : "deepeval");
+}
+
+// The chip a metric sits under: DeepTeam's security category splits into the
+// app's attack probes and DeepTeam's vulnerability metrics, as in the side panel.
+function categoryKey(metric) {
+  if (metric.ui_category !== "security") return metric.ui_category;
+  return metric.source === "deepteam" ? "security_deepteam" : "security";
+}
+
+function categoryLabel(metric) {
+  if (metric.ui_category !== "security") return metric.ui_category_label || metric.ui_category;
+  return metric.source === "deepteam" ? "DeepTeam vulnerabilities" : "Red-team attacks";
+}
+
+// Category key -> label, from the backend, in the order the metrics arrive
+// (only the chosen framework's categories).
 function categoryLabels() {
   const labels = {};
-  for (const m of state.metrics) labels[m.ui_category] ??= m.ui_category_label || m.ui_category;
+  for (const m of state.metrics) {
+    if (state.framework === "all" || frameworkOf(m) === state.framework) labels[categoryKey(m)] ??= categoryLabel(m);
+  }
   return labels;
 }
 
 function isTicked(metric) {
   // Nothing saved yet: what the side panel ticks by default, every metric but the DeepTeam ones.
-  return state.checked ? state.checked.has(metric.key) : metric.source !== "deepteam";
+  return state.checked ? state.checked.has(metric.key) : metric.source !== "deepteam" && !metric.opt_in;
 }
 
 // The cards the totals and Run all visible work on: this category, ticked in the side panel.
@@ -55,7 +80,8 @@ function countedMetrics() {
 
 function visibleMetrics() {
   return state.metrics.filter(
-    (m) => state.categoryFilter === "all" || m.ui_category === state.categoryFilter,
+    (m) => (state.framework === "all" || frameworkOf(m) === state.framework)
+      && (state.categoryFilter === "all" || categoryKey(m) === state.categoryFilter),
   );
 }
 
@@ -718,28 +744,65 @@ function metricCard(metric, row) {
 }
 
 function renderCategoryChips() {
+  renderFrameworkChips();
   const labels = categoryLabels();
-  const items = ["all", ...Object.keys(labels)];
-  $("category-chips").replaceChildren(
-    ...items.map((cat) =>
-      el(
-        "button",
-        {
-          type: "button",
-          className: "chip-toggle",
-          "aria-pressed": String(cat === state.categoryFilter),
-          onclick: () => {
-            state.categoryFilter = cat;
-            settings.set("dashCategory", cat);
-            renderCategoryChips();
-            renderMetricGrid();
-            renderCounts(latestRowsCache);
-          },
-        },
-        cat === "all" ? "All" : labels[cat],
-      ),
-    ),
+  const chip = (cat) => el(
+    "button",
+    {
+      type: "button",
+      className: "chip-toggle",
+      "aria-pressed": String(cat === state.categoryFilter),
+      onclick: () => {
+        state.categoryFilter = cat;
+        settings.set("dashCategory", cat);
+        renderCategoryChips();
+        renderMetricGrid();
+        renderCounts(latestRowsCache);
+      },
+    },
+    cat === "all" ? "All" : labels[cat],
   );
+  // One cluster per framework, headed by its name, so DeepEval and DeepTeam categories stay apart.
+  const clusters = Object.keys(FRAMEWORK_LABELS)
+    .filter((fw) => state.framework === "all" || state.framework === fw)
+    .map((fw) => {
+      const cats = Object.keys(labels).filter((cat) =>
+        state.metrics.some((m) => frameworkOf(m) === fw && categoryKey(m) === cat));
+      return cats.length ? el("span", { className: "category-cluster", role: "group", "aria-label": `${FRAMEWORK_LABELS[fw]} categories` },
+        el("span", { className: "category-cluster-label" }, FRAMEWORK_LABELS[fw]),
+        ...cats.map(chip)) : null;
+    })
+    .filter(Boolean);
+  $("category-chips").replaceChildren(chip("all"), ...clusters);
+}
+
+function renderFrameworkChips() {
+  const counts = { all: state.metrics.length };
+  for (const fw of Object.keys(FRAMEWORK_LABELS)) counts[fw] = state.metrics.filter((m) => frameworkOf(m) === fw).length;
+  $("framework-chips").replaceChildren(
+    ...["all", ...Object.keys(FRAMEWORK_LABELS)].map((fw) => el(
+      "button",
+      {
+        type: "button",
+        className: "chip-toggle",
+        "aria-pressed": String(fw === state.framework),
+        onclick: () => settings.set("metricFramework", fw).then(() => applyFramework(fw)),
+      },
+      `${fw === "all" ? "Both" : FRAMEWORK_LABELS[fw]} (${counts[fw]})`,
+    )),
+  );
+}
+
+// A framework change (here or in the side panel): a category of the other framework resets to All.
+function applyFramework(value) {
+  state.framework = value === "deepeval" || value === "deepteam" ? value : "all";
+  if (state.categoryFilter !== "all" && !categoryLabels()[state.categoryFilter]) {
+    state.categoryFilter = "all";
+    settings.set("dashCategory", "all");
+  }
+  renderCategoryChips();
+  renderMetricGrid();
+  renderCounts(latestRowsCache);
 }
 
 // One run at a time; the Stop button reaches it through state.runControl.
@@ -1329,6 +1392,10 @@ settings.onChange((changes) => {
   }
   // Flipped in the report or another tab; the runsChangedAt sent with it reloads the scores.
   if (changes.showAllRuns) $("show-all-runs").checked = changes.showAllRuns.newValue === true;
+  // The side panel's Framework picker filters these cards too.
+  if (changes.metricFramework && changes.metricFramework.newValue !== state.framework) {
+    applyFramework(changes.metricFramework.newValue);
+  }
   if (changes.checkedMetrics) {
     const keys = changes.checkedMetrics.newValue;
     state.checked = Array.isArray(keys) ? new Set(keys) : null;
@@ -1386,10 +1453,30 @@ window.addEventListener("focus", () => {
   refreshJudge();
 });
 
+// Milliseconds between tries while the backend is down at page load (it may be
+// restarting); the page finishes loading by itself once it answers.
+const INIT_RETRY_MS = 3000;
+
 (async function init() {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await loadPage();
+      // Clear the "not reachable" message, but keep one loadPage set (judge not configured).
+      if (attempt > 0 && $("status").textContent.includes("Retrying every")) setStatus("");
+      return;
+    } catch (error) {
+      setStatus(`${error.message} Retrying every ${INIT_RETRY_MS / 1000} s…`, true);
+      await new Promise((resolve) => setTimeout(resolve, INIT_RETRY_MS));
+    }
+  }
+})();
+
+async function loadPage() {
   await refreshJudge();
-  try {
+  {
     state.categoryFilter = await settings.get("dashCategory", "all");
+    const framework = await settings.get("metricFramework", "all");
+    state.framework = framework === "deepeval" || framework === "deepteam" ? framework : "all";
     state.casesPerRun = await settings.get("casesPerRun", null);
     $("cases-select").value = state.casesPerRun ? String(state.casesPerRun) : "";
     $("show-all-runs").checked = await showingAllRuns();
@@ -1404,7 +1491,5 @@ window.addEventListener("focus", () => {
     renderCategoryChips();
     await loadTargets();
     await refreshUsage();
-  } catch (error) {
-    setStatus(`${error.message} Reload this tab once the backend is running.`, true);
   }
-})();
+}

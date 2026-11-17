@@ -1,0 +1,17 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug: Answer Relevancy (1 case)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "C:\\Users\\atish\\AppData\\Local\\Temp\\claude\\ce98e5a5746388a6\\5af2cea8-793e-43a8-a4b3-9c9ec2b3fd34\\scratchpad\\trace_answer_relevancy.py",
+      "args": ["42"],
+      "cwd": "${workspaceFolder}",
+      "python": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "env": { "PYTHONIOENCODING": "utf-8" },
+      "console": "integratedTerminal",
+      "justMyCode": false
+    }
+  ]
+}

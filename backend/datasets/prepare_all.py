@@ -23,7 +23,8 @@ Run by POST /api/targets/{id}/prepare-all ("Build all test data"). The steps
    filled (typed values are kept).
 4. "context": Context goldens from the help pages and instructions, through
    the document pipeline (queue_document), waited for at the end; with no
-   source at all the judge writes unverified ones.
+   source at all nothing is written (NO_CONTEXT_SOURCE): the app never
+   invents facts. Golden answers it could not check are saved as drafts.
 5. "tools": goldens with `expected_tools` for Tool Correctness, for every
    tool with fewer than TOOL_GOLDENS_PER_TOOL; each case is sent to the
    chatbot and kept only when it calls a tool.
@@ -73,6 +74,9 @@ CASES_MIN = 3  # Context goldens a theme should have
 MAX_DOCUMENTS = 3
 MIN_CONTEXT_WORDS = 60
 UNVERIFIED_SOURCE = "auto_unverified"
+NO_CONTEXT_SOURCE = ("No help pages, instructions or documents, so no Context goldens were written "
+                     "(the app never invents facts). Add a Help / FAQ URL or upload a document, then "
+                     "run Build all test data again.")
 PROBES_PER_METRIC = 5
 GOLDEN_SOURCE = autogen.GOLDEN_SOURCE
 TOOL_GOLDEN_SOURCE = "auto_tools"
@@ -475,14 +479,18 @@ def _goldens_step(b: _Build) -> None:
     else:
         kept, source = goldens, UNVERIFIED_SOURCE
     for g in kept:
-        goldens_store.add_golden(b.theme, g["question"], g["expected_answer"], [], g["categories"], source=source)
+        # Unchecked expected answers wait for review (runs skip drafts) instead of scoring the chatbot.
+        extra = {"status": goldens_store.DRAFT} if source == UNVERIFIED_SOURCE else None
+        goldens_store.add_golden(b.theme, g["question"], g["expected_answer"], [], g["categories"],
+                                 source=source, extra=extra)
     if kept:
         short = sum(1 for g in kept if _is_fact(g))
         detail = f"{len(kept)} golden answers written for this chatbot ({short} with a short answer)"
         if len(kept) < len(goldens):
             detail += f"; {len(goldens) - len(kept)} the help pages and documents do not back were dropped"
         if not reference:
-            detail += " (unverified: add a Help / FAQ URL or a document to check them against)"
+            detail += (" (unverified, saved as drafts that runs skip: accept or edit them under Advanced tools → "
+                       "Drafts waiting for review, or add a Help / FAQ URL or a document to check them against)")
         b.report("goldens", "done", detail + ".")
     elif goldens:
         b.fail("goldens", f"None of the {len(goldens)} golden answers the judge wrote is backed by the help pages "
@@ -593,26 +601,13 @@ def _context_step(b: _Build, queue_document, known_documents) -> None:
         b.report("context", "skipped", "No new help pages or instructions to make Context goldens from"
                                        + (" (the ones found were used before)." if b.pages else "."))
     else:
-        # No source at all: the judge invents the passages, and they are marked unverified.
+        # No source at all: production evaluation never invents facts, so no Context
+        # golden is written (write_unverified_context_goldens is kept for callers that ask).
         have = sum(1 for g in goldens_store.load_goldens(theme=b.theme) if g.get("context"))
         if have >= CASES_MIN:
             b.report("context", "skipped", f"Already has {have} Context goldens.")
             return
-        b.report("context", "running", "No help pages, instructions or documents: writing Context goldens "
-                                       "without a source document")
-        try:
-            made = write_unverified_context_goldens(b.judge, b.theme, b.material(), CASES_MIN - have)
-        except (RunCancelled, BudgetSpent):
-            raise
-        except Exception as e:  # noqa: BLE001
-            b.fail("context", f"Writing Context goldens failed: {type(e).__name__}: {e}")
-            return
-        if made:
-            b.report("context", "done", f"{made} Context goldens written without a source document "
-                                        "(unverified): add a Help / FAQ URL or a document for grounded ones.")
-        else:
-            b.fail("context", "The judge wrote no usable Context goldens (each needs a passage of "
-                              f"{MIN_CONTEXT_WORDS}+ words).")
+        b.report("context", "skipped", NO_CONTEXT_SOURCE)
 
 
 def _tools_step(b: _Build) -> None:

@@ -187,14 +187,15 @@ def test_cited_links_feed_citation_quality(tmp_path, monkeypatch):
     assert metric.cases[0].retrieval_context == ["Source: https://shop.example/r\nRefunds take 7 days."]
 
 
-def test_no_passage_found_falls_back_to_the_golden_context(tmp_path, kb):
+def test_no_passage_found_leaves_the_case_out(tmp_path, kb):
     conn, target_id = _db(tmp_path)
     metric = _recording_metric()
     spec = _with(catalog.get_spec("faithfulness"), metric, [GOLDEN])
     result = run_spec(spec, judge=object(), target=LinkBot("Sunny weather.", "knowledge_base"),
                       target_id=target_id, conn=conn, theme="other_theme")
-    assert result["rows"][0]["context_source"] == "golden"
-    assert metric.cases[0].retrieval_context == ["golden fact"]
+    # The golden's context never stands in for sources: nothing is scored.
+    assert metric.cases == []
+    assert result.get("cases_not_applicable", 0) == 1 or result["status"] == "error"
 
 
 def test_no_passage_and_no_golden_context_skips_the_case(tmp_path, kb):
@@ -214,8 +215,10 @@ def test_retriever_metrics_ignore_the_fallback(tmp_path, kb):
     spec = _with(catalog.get_spec("contextual_relevancy"), metric, [GOLDEN])
     result = run_spec(spec, judge=object(), target=LinkBot("Refunds take 7 business days.", "knowledge_base"),
                       target_id=target_id, conn=conn, theme="shop")
-    assert result["rows"][0]["context_source"] == "golden"
-    assert metric.cases[0].retrieval_context == ["golden fact"]
+    # A retriever metric grades the chatbot's own retrieval: found passages and the
+    # golden's context are both refused, so the run cannot score.
+    assert metric.cases == []
+    assert result["status"] == "error" and "Retrieved context path" in result["error"]
 
 
 def test_the_chatbots_own_sources_win_over_the_fallback(tmp_path, kb):

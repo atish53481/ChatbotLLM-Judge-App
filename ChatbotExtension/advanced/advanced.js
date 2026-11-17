@@ -95,6 +95,7 @@ function strategyLabel(key) {
 
 // --- Run options ------------------------------------------------------------------
 loaders["run-options"] = async () => {
+  runOptionsLoaded = false;
   const options = await settings.get("runOptions", {});
   if (!state.enhancers) state.enhancers = await api("/api/security/enhancers");
   const perMetric = options.metricSettings || {};
@@ -108,6 +109,29 @@ loaders["run-options"] = async () => {
         const select = el("select", { "data-metric": m.key, "data-setting": name, "data-choice": "1" });
         fillSelect(select, (schema.options || []).map((o) => ({ value: o, label: (schema.labels && schema.labels[o]) || strategyLabel(o) })), saved ?? schema.default);
         return el("label", {}, select, el("span", { className: "secondary small" }, schema.label || name));
+      }
+      if (schema.type === "text") {
+        // Free text (a domain, topics, a regex, a JSON schema): sent as a string. An empty
+        // field shows an example (watermark): the chatbot's own tools for the allowed list,
+        // else the setting's hint or default.
+        const tools = ((state.target && state.target.config && state.target.config.available_tools) || [])
+          .map((t) => t.name).filter(Boolean);
+        const hint = name === "allowed_tools" && tools.length ? `e.g. ${tools.join(", ")}` : (schema.hint || schema.default || "");
+        const text = el("input", {
+          type: "text", className: "text-input", "data-metric": m.key, "data-setting": name, "data-choice": "1",
+          value: saved ?? schema.default ?? "", placeholder: hint,
+        });
+        const fill = name === "allowed_tools" && tools.length
+          ? el("button", { type: "button", className: "small-button", title: "Fill in the tools this chatbot reports",
+            onclick: () => { text.value = tools.join(", "); text.dispatchEvent(new Event("input", { bubbles: true })); } },
+            "Use my chatbot's tools")
+          : null;
+        return el("label", {}, text, fill, el("span", { className: "secondary small" }, schema.label || name));
+      }
+      if (schema.type === "bool") {
+        const box = el("input", { type: "checkbox", "data-metric": m.key, "data-setting": name, "data-bool": "1" });
+        box.checked = Boolean(saved ?? schema.default);
+        return el("label", {}, box, el("span", { className: "secondary small" }, schema.label || name));
       }
       const input = el("input", {
         type: "number", min: schema.min, max: schema.max, step: 1, className: "num-input",
@@ -138,13 +162,49 @@ loaders["run-options"] = async () => {
   $("de-async").checked = Boolean(deepeval.async_mode);
   const price = await api("/api/judge/price");
   $("judge-price").value = price.price_per_mtok ?? "";
+  runOptionsLoaded = true;
 };
 
+// Run options save on every change (debounced) and with the sticky Save button.
+// The chatbot instructions box has its own Save (it writes the chatbot, not runOptions).
+let runOptionsTimer = null;
+let runOptionsLoaded = false;
+function runOptionsState(text, isError = false) {
+  $("run-options-state").textContent = text;
+  $("run-options-state").classList.toggle("status-error", Boolean(isError));
+}
+async function saveRunOptions() {
+  clearTimeout(runOptionsTimer);
+  runOptionsState("Saving…");
+  try {
+    await writeRunOptions();
+    runOptionsState(`Saved ${new Date().toLocaleTimeString()}. Applies to the next run you start.`);
+  } catch (error) {
+    runOptionsState(`Not saved: ${error.message || error}`, true);
+    throw error;
+  }
+}
+function onRunOptionEdit(event) {
+  if (!runOptionsLoaded || event.target.id === "instructions") return;
+  runOptionsState("Unsaved changes…");
+  clearTimeout(runOptionsTimer);
+  runOptionsTimer = setTimeout(() => saveRunOptions().catch(() => {}), 600);
+}
+$("section-run-options").addEventListener("input", onRunOptionEdit);
+$("section-run-options").addEventListener("change", onRunOptionEdit);
+window.addEventListener("beforeunload", () => { if (runOptionsTimer) writeRunOptions(); });
+
 $("save-run-options").addEventListener("click", () => guarded(async () => {
+  await saveRunOptions();
+  setStatus("Run options saved. They apply to the next run you start.");
+}));
+
+async function writeRunOptions() {
+  runOptionsTimer = null;
   const metricSettings = {};
   for (const input of $("metric-settings").querySelectorAll("input[data-metric], select[data-metric]")) {
     if (input.value === "") continue;
-    const value = input.dataset.choice ? input.value : Number(input.value);
+    const value = input.dataset.bool ? input.checked : input.dataset.choice ? input.value : Number(input.value);
     metricSettings[input.dataset.metric] = { ...(metricSettings[input.dataset.metric] || {}), [input.dataset.setting]: value };
   }
   const maxLatency = numberOrNull($("max-latency"));
@@ -158,8 +218,7 @@ $("save-run-options").addEventListener("click", () => guarded(async () => {
     cacheJudgeResults: $("cache-judge").checked,
   });
   await api("/api/judge/price", { method: "PUT", body: { price_per_mtok: numberOrNull($("judge-price")) } });
-  setStatus("Run options saved. They apply to the next run you start.");
-}));
+}
 
 $("save-instructions").addEventListener("click", () => guarded(async () => {
   const target = requireTarget();
@@ -432,7 +491,7 @@ loaders.coverage = async () => {
 async function tickMetrics(keys) {
   const known = state.metrics.map((m) => m.key);
   const saved = await settings.get("checkedMetrics", null);
-  const base = saved ?? state.metrics.filter((m) => m.source !== "deepteam").map((m) => m.key);
+  const base = saved ?? state.metrics.filter((m) => m.source !== "deepteam" && !m.opt_in).map((m) => m.key);
   await settings.set("checkedMetrics", [...new Set([...base, ...keys])].filter((k) => known.includes(k)));
   setStatus(`Ticked ${keys.length} metric(s) in the side panel's Metrics to run.`);
 }

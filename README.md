@@ -123,7 +123,7 @@ characters); **Remove saved key** goes back to the `.env` key.
 
 ## Metrics
 
-76 DeepEval metrics in eight groups (32 of them DeepTeam red-team vulnerabilities), plus your own (`backend/metrics_catalog.py`;
+90 DeepEval metrics in eight groups (incl. optional RAGAS) (32 of them DeepTeam red-team vulnerabilities), plus your own (`backend/metrics_catalog.py`;
 [docs/WORKFLOW.md](docs/WORKFLOW.md#12-metric-catalog) lists the dataset each one reads):
 
 | Group | Metrics |
@@ -267,7 +267,8 @@ record scores that mean nothing:
 - **Max message length.** Messages longer than this are not sent: Summarization
   shortens its source to fit, other cases are skipped, and the result's note says
   how many.
-- **Busy chatbots.** HTTP 429/503 replies are retried up to 3 times (after the
+- **Busy chatbots.** HTTP 408, 429 and 5xx replies (incl. a 502 wrapping the chatbot's own
+  LLM rate limit), timeouts and refused connections are retried up to 3 times (after the
   chatbot's `Retry-After`, else 2, 4, 8 s). *Delay between messages* spaces out
   every message for chatbots that rate-limit.
 - **Plain errors.** An HTTP 401/403 says the session or cookie has probably expired
@@ -359,10 +360,9 @@ appear without changes to the report. Tests: `node --test tests/js/report.test.j
 
 Each chatbot is judged against one golden set (theme). `generic`, the default, fits
 any chatbot. Most of its questions (what can you do, talk to a human, off-topic,
-gibberish, an emergency) expect a kind of behaviour rather than facts. Its grounded
-goldens (`context_in_prompt: true`) send short made-up facts with the question
-("Answer using only the information below"), so Faithfulness, Hallucination,
-Summarization and the contextual metrics can score any chatbot on sticking to them. `general_support`
+gibberish, an emergency) expect a kind of behaviour rather than facts. Questions are always sent alone: golden facts never go with them
+(`context_in_prompt` is ignored), and metrics that read retrieved context score only
+the chatbot's own sources (or sources the app finds itself), never golden context. `general_support`
 is the online-shop set the ShopEasy sample bot answers; `legacy_store` holds the
 answers migrated from the earlier `evals/` suite. For a chatbot's own facts, give
 it its own theme and fill it from its docs.

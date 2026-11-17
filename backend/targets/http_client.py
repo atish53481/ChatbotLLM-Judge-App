@@ -12,6 +12,7 @@ is given.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from typing import Any
@@ -31,7 +32,18 @@ from backend.targets.curl import (
 )
 from backend.targets.reply_check import ChatbotUnavailable, service_message
 
-TIMEOUT = 60
+TIMEOUT = 60  # seconds per chatbot message; JUDGE_TARGET_TIMEOUT_S overrides (slow local models)
+
+
+def target_timeout() -> float:
+    """Seconds to wait for one chatbot reply: JUDGE_TARGET_TIMEOUT_S (5-900), else TIMEOUT."""
+    try:
+        value = float(os.environ.get("JUDGE_TARGET_TIMEOUT_S", "") or TIMEOUT)
+    except ValueError:
+        return float(TIMEOUT)
+    return min(max(value, 5.0), 900.0)
+
+
 METHODS = ("GET", "POST", "PUT", "PATCH")
 _TEXT_KEYS = ("url", "method", "body_template", "response_path", "context_path", "history_path",
               "tools_path", "sources_fallback")
@@ -46,10 +58,20 @@ _REPLY_EXTRAS = (
 # Headers from the captured request that would be wrong for a new body.
 _DROPPED_HEADERS = ("content-length", "host", "accept-encoding")
 _PREVIEW_CHARS = 400
-# A busy chatbot (429/503) is retried this many times, waiting its Retry-After
-# (capped) or else 2, 4, 8 seconds.
+# A busy or failing chatbot is retried this many times, waiting its Retry-After
+# (capped) or else 2, 4, 8 seconds: 408, 429 and every 5xx (a chatbot often wraps its
+# own LLM provider's 429 in a 502), plus timeouts and refused connections. Other 4xx
+# (bad request, expired cookie) are not: sending the same request again cannot fix them.
 BUSY_STATUSES = (429, 503)
 BUSY_RETRIES = 3
+
+
+def _retryable(status: int) -> bool:
+    return status in (408, 429) or status >= 500
+
+
+class ChatbotUnreachable(ValueError):
+    """No HTTP reply at all: the chatbot timed out or refused the connection."""
 MAX_RETRY_WAIT = 30.0
 MAX_SEND_DELAY = 60
 # Patched in tests so retries and spacing cost no real time.
@@ -92,6 +114,8 @@ def _status_error(r: requests.Response, url: str) -> ValueError:
             f"{BUSY_RETRIES} retries. Try again later, or set a delay between messages. "
             f"Response: {_preview(r.text)}"
         )
+    if _retryable(r.status_code):
+        return ValueError(f"HTTP {r.status_code} from {url} (still after {BUSY_RETRIES} retries): {_preview(r.text)}")
     return ValueError(f"HTTP {r.status_code} from {url}: {_preview(r.text)}")
 
 
@@ -272,15 +296,21 @@ class HttpTargetClient(ChatbotClient):
         }
         for attempt in range(BUSY_RETRIES + 1):
             cancel.check()  # a stopped job sends no more messages
-            if self._pace is None:
-                r = self._request(url, body, headers)
-            else:
-                # One message at a time to a paced chatbot, send_delay apart.
-                with self._pace["lock"]:
-                    self._wait_for_send_delay()
-                    cancel.check()
+            try:
+                if self._pace is None:
                     r = self._request(url, body, headers)
-            if r.status_code not in BUSY_STATUSES or attempt == BUSY_RETRIES:
+                else:
+                    # One message at a time to a paced chatbot, send_delay apart.
+                    with self._pace["lock"]:
+                        self._wait_for_send_delay()
+                        cancel.check()
+                        r = self._request(url, body, headers)
+            except ChatbotUnreachable as e:
+                if attempt == BUSY_RETRIES:
+                    raise ChatbotUnreachable(f"{e} (still after {BUSY_RETRIES} retries)") from e
+                _sleep(float(2 ** (attempt + 1)))
+                continue
+            if not _retryable(r.status_code) or attempt == BUSY_RETRIES:
                 break
             _sleep(_retry_wait(r, attempt))
         if not r.ok:
@@ -297,11 +327,14 @@ class HttpTargetClient(ChatbotClient):
     def _request(self, url: str, body: bytes | None, headers: dict) -> requests.Response:
         host = urlsplit(url).netloc
         try:
-            r = requests.request(self.method, url, data=body, headers=headers, timeout=TIMEOUT)
+            wait = target_timeout()
+            r = requests.request(self.method, url, data=body, headers=headers, timeout=wait)
         except requests.Timeout as e:
-            raise ValueError(f"Chatbot at {host} did not answer within {TIMEOUT} s.") from e
+            raise ChatbotUnreachable(
+                f"Chatbot at {host} did not answer within {wait:g} s (JUDGE_TARGET_TIMEOUT_S raises it)."
+            ) from e
         except requests.ConnectionError as e:
-            raise ValueError(
+            raise ChatbotUnreachable(
                 f"Could not reach the chatbot at {host}: check the URL and that the site is up. ({e})"
             ) from e
         finally:

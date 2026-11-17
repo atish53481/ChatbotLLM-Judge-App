@@ -12,6 +12,10 @@ os.environ["JUDGE_TRAFFIC_FILE"] = ""
 # Nor fetch standards and spend judge tokens on the daily probe refresh.
 os.environ["JUDGE_PROBE_REFRESH"] = "0"
 os.environ["JUDGE_DEEPTEAM_SYNC"] = "0"  # tests use the shipped DeepTeam catalog
+# Nor save Confident AI report copies into the repo's reports/confident/.
+import tempfile  # noqa: E402
+
+os.environ["JUDGE_CONFIDENT_REPORTS_DIR"] = tempfile.mkdtemp(prefix="llm-judge-confident-")
 
 FIXTURE_GOLDENS = Path(__file__).parent / "data" / "goldens.json"
 
@@ -47,6 +51,18 @@ def fresh_send_pacing():
     from backend.targets import http_client
 
     http_client._PACES.clear()
+
+
+@pytest.fixture(autouse=True)
+def no_retry_waits(request, monkeypatch):
+    """Chatbot retries (timeouts, 5xx) wait 2-8 s for real; tests skip the wait.
+    Tests that check the waits patch _sleep themselves; send_delay tests time the
+    real spacing, so they keep it."""
+    from backend.targets import http_client
+
+    if "send_delay" in request.node.name:
+        return
+    monkeypatch.setattr(http_client, "_sleep", lambda _s: None)
 
 
 @pytest.fixture(autouse=True)

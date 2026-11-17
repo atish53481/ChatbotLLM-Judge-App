@@ -26,11 +26,16 @@ const state = {
   autoStarted: new Set(),
   // Metric keys ticked to run (saved as "checkedMetrics"; all by default).
   checked: new Set(),
+  // Framework to scan with ("all", "deepeval", "deepteam"; saved as "metricFramework"):
+  // the list shows, and Run judge sends, only that framework's ticked metrics.
+  framework: "all",
   runControl: null,
   // The metric whose test cases (mode "list") or Add form ("add") is open.
   openCases: { key: null, mode: null },
   // The G-Eval builder (lib/geval-builder.js) is open in the G-Eval group.
   gevalOpen: false,
+  // The custom-vulnerability builder in the Security group is open.
+  vulnOpen: false,
 };
 
 function currentTarget() {
@@ -41,9 +46,10 @@ function currentTarget() {
 function updateRunButton() {
   const button = $("run-button");
   const ready = state.judgeUp && currentTarget() !== null;
-  const count = state.checked.size;
+  const count = scopedChecked().length;
+  const framework = FRAMEWORK_LABELS[state.framework] ? `${FRAMEWORK_LABELS[state.framework]} ` : "";
   button.textContent = state.runControl !== null ? "Running…"
-    : count ? `Run judge (${count} metric${count === 1 ? "" : "s"})` : "Run judge";
+    : count ? `Run judge (${count} ${framework}metric${count === 1 ? "" : "s"})` : "Run judge";
   // The status refresh calls this every 10s; a run in flight keeps the button off.
   button.disabled = !ready || state.runControl !== null || count === 0;
   if (ready && count === 0) button.title = "Tick at least one metric";
@@ -1738,8 +1744,8 @@ function renderRunRow(line, title, result, progress) {
 $("run-button").addEventListener("click", async () => {
   const target = currentTarget();
   if (!target) return;
-  // Ticked metrics, in catalog order.
-  const keys = state.metrics.filter((m) => state.checked.has(m.key)).map((m) => m.key);
+  // Ticked metrics of the chosen framework, in catalog order.
+  const keys = scopedChecked().map((m) => m.key);
   if (!keys.length) return;
   const titles = new Map(state.metrics.map((m) => [m.key, m.title]));
   const lines = new Map();
@@ -1782,8 +1788,20 @@ async function watchRun(target, lines, titles, start, count) {
   const running = new Map();  // key -> latest progress of each metric still being scored
   let current = "";
   let queued = false;
+  // Every test case step seen (asked / judged), in order, for the hover panel's log.
+  const caseLog = [];
+  const lastStep = new Map();  // key -> "phase|question" last logged for that metric
+  const logStep = (key, progress) => {
+    if (!progress || !progress.question || !progress.total) return;
+    const step = `${progress.phase}|${progress.question}`;
+    if (lastStep.get(key) === step) return;
+    lastStep.set(key, step);
+    caseLog.push({ key, at: Date.now(), phase: progress.phase, question: progress.question,
+      n: Math.min(progress.done + 1, progress.total), total: progress.total });
+    if (caseLog.length > 200) caseLog.shift();
+  };
   // What the hover panel describes (see pauseRunView).
-  state.runInfo = { target, titles, finished, running, count, startedAt, isQueued: () => queued };
+  state.runInfo = { target, titles, finished, running, count, startedAt, caseLog, isQueued: () => queued };
   const showProgress = () => showRunBanner(runSummary({
     status: queued ? "queued" : "running", results: [...finished.values()], count, current,
     elapsedMs: Date.now() - startedAt,
@@ -1808,6 +1826,7 @@ async function watchRun(target, lines, titles, start, count) {
         queued = Boolean(progress && progress.queued);
         current = titles.get(key) || key;
         running.set(key, progress);
+        logStep(key, progress);
       }
       showProgress();
     }, control);
@@ -1880,9 +1899,26 @@ function renderRunDetail() {
     el("p", {}, `${info.finished.size} of ${info.count} metrics finished`
       + (results.length ? ` · ${tally("pass")} passed · ${tally("fail")} failed · ${tally("error")} could not run` : "")
       + (waiting ? ` · ${waiting} waiting` : "")),
+    ...caseLogBlock(info),
     el("p", { className: "muted small" }, "Move the pointer away to see live updates again."),
   );
   $("run-detail").classList.remove("hidden");
+}
+
+// The test cases this run has sent so far: each step (asking the chatbot, then
+// the judge scoring), oldest first, with the time since the run started.
+function caseLogBlock(info) {
+  const log = info.caseLog || [];
+  if (!log.length) return [];
+  const multi = info.count > 1;
+  const list = el("ol", { className: "run-case-log" }, ...log.map((e) => el("li", {},
+    el("span", { className: "muted" }, `${formatElapsed(e.at - info.startedAt)} · `),
+    multi ? el("strong", {}, `${info.titles.get(e.key) || e.key} `) : "",
+    el("span", { className: "muted" }, `${e.n}/${e.total} ${e.phase === "judge" ? "judging" : "asking"}: `),
+    e.question)));
+  const box = el("div", {}, el("p", { className: "run-detail-label" }, `Test cases log (${log.length})`), list);
+  requestAnimationFrame(() => { list.scrollTop = list.scrollHeight; });
+  return [box];
 }
 
 for (const id of ["run-banner", "run-results"]) {
@@ -1932,6 +1968,74 @@ async function setChecked(keys) {
   await settings.set("checkedMetrics", [...keys]);
 }
 
+// --- Framework picker: DeepEval or DeepTeam metrics (or both) ---------------
+const FRAMEWORK_LABELS = { deepeval: "DeepEval", deepteam: "DeepTeam" };
+
+// The backend sends `framework`; red teaming (group "security") is DeepTeam's.
+function frameworkOf(metric) {
+  return metric.framework || (metric.ui_category === "security" ? "deepteam" : "deepeval");
+}
+
+function inFramework(metric) {
+  return state.framework === "all" || frameworkOf(metric) === state.framework;
+}
+
+function scopedMetrics() {
+  return state.metrics.filter(inFramework);
+}
+
+function scopedChecked() {
+  return scopedMetrics().filter((m) => state.checked.has(m.key));
+}
+
+// Quick select within the chosen framework: the other framework's ticks stay as they are.
+async function setScopeChecked(keys) {
+  const scope = new Set(scopedMetrics().map((m) => m.key));
+  const next = new Set([...state.checked].filter((key) => !scope.has(key)));
+  for (const key of keys) if (scope.has(key)) next.add(key);
+  await setChecked(next);
+}
+
+// Category groups of one framework; DeepTeam's security group splits into the
+// app's attack probes and DeepTeam's vulnerability metrics.
+function frameworkGroups(metrics) {
+  return metricGroups(metrics).flatMap((group) => {
+    if (group.group !== "security") return [group];
+    return [
+      { group: "security", label: "Red-team attacks", metrics: group.metrics.filter((m) => m.source !== "deepteam") },
+      { group: "security_deepteam", label: "DeepTeam vulnerabilities", metrics: group.metrics.filter((m) => m.source === "deepteam") },
+    ].filter((g) => g.metrics.length);
+  });
+}
+
+// A framework heading with a tick that selects or clears all of its metrics.
+function frameworkHeading(framework, metrics) {
+  const keys = metrics.map((m) => m.key);
+  const ticked = keys.filter((key) => state.checked.has(key)).length;
+  const tick = el("input", {
+    type: "checkbox",
+    checked: keys.length > 0 && ticked === keys.length,
+    "aria-label": `Run all ${FRAMEWORK_LABELS[framework]} metrics`,
+  });
+  tick.indeterminate = ticked > 0 && ticked < keys.length;
+  tick.addEventListener("change", async () => {
+    const next = new Set(state.checked);
+    for (const key of keys) {
+      if (tick.checked) next.add(key);
+      else next.delete(key);
+    }
+    await setChecked(next);
+  });
+  return el("label", { className: "framework-heading" }, tick,
+    `${FRAMEWORK_LABELS[framework]} framework (${ticked}/${keys.length})`);
+}
+
+for (const radio of document.querySelectorAll('input[name="metric-framework"]')) {
+  radio.addEventListener("change", () => {
+    if (radio.checked) settings.set("metricFramework", radio.value);
+  });
+}
+
 async function renderThresholds() {
   const env = await settings.get("thresholdEnv", "default");
   const thresholds = await settings.get("thresholds", {});
@@ -1941,15 +2045,34 @@ async function renderThresholds() {
   bindParallelSelect($("parallel-metrics")).catch(() => {});
   const known = new Set(state.metrics.map((m) => m.key));
   // Nothing saved yet: every metric but the 32 DeepTeam ones (opt-in, so a first scan stays the size it was).
-  const byDefault = state.metrics.filter((m) => m.source !== "deepteam").map((m) => m.key);
+  const byDefault = state.metrics.filter((m) => m.source !== "deepteam" && !m.opt_in).map((m) => m.key);
   state.checked = new Set((saved ?? byDefault).filter((key) => known.has(key)));
-  $("metric-check-count").textContent = `(${state.checked.size} of ${state.metrics.length} ticked)`;
+  const framework = await settings.get("metricFramework", "all");
+  state.framework = framework === "deepeval" || framework === "deepteam" ? framework : "all";
+  for (const radio of document.querySelectorAll('input[name="metric-framework"]')) {
+    radio.checked = radio.value === state.framework;
+  }
+  for (const name of Object.keys(FRAMEWORK_LABELS)) {
+    $(`framework-count-${name}`).textContent = String(state.metrics.filter((m) => frameworkOf(m) === name).length);
+  }
+  $("framework-count-all").textContent = String(state.metrics.length);
+  const scoped = scopedMetrics();
+  $("metric-check-count").textContent = `(${scopedChecked().length} of ${scoped.length} ticked)`;
   updateRunButton();
   fillSelect($("threshold-env"), THRESHOLD_ENVS.map((e) => ({ value: e.key, label: e.label })), env);
+  // One section per framework (a heading only when both are listed), then its category groups.
+  const sections = Object.keys(FRAMEWORK_LABELS)
+    .filter((name) => state.framework === "all" || state.framework === name)
+    .map((name) => ({ name, metrics: scoped.filter((m) => frameworkOf(m) === name) }))
+    .filter((section) => section.metrics.length);
   $("threshold-table").replaceChildren(
-    ...metricGroups(state.metrics).flatMap((group) => [
+    ...sections.flatMap((section) => [
+      ...(state.framework === "all" ? [frameworkHeading(section.name, section.metrics)] : []),
+      ...frameworkGroups(section.metrics),
+    ]).flatMap((group) => group instanceof Node ? [group] : [
       groupCheckRow(group),
       ...(group.group === "geval" ? [gevalBar()] : []),
+      ...(group.group === "security" ? [vulnBar()] : []),
       ...group.metrics.flatMap((metric) => {
         const tick = el("input", {
           type: "checkbox",
@@ -1996,7 +2119,7 @@ async function renderThresholds() {
           "label",
           {
             className: `threshold-row${state.checked.has(metric.key) ? "" : " unchecked"}`,
-            title: metric.description || "",
+            "aria-description": metric.description || "",
           },
           tick,
           title,
@@ -2004,6 +2127,7 @@ async function renderThresholds() {
           input,
           caseButtons(metric),
         );
+        attachMetricTip(row, metric);
         // Re-rendering (a tick, a threshold) keeps an open list or form open.
         if (state.openCases.key === metric.key) {
           showCasePanel(metric, panel, state.openCases.mode);
@@ -2026,6 +2150,169 @@ async function renderThresholds() {
   );
 }
 
+// --- Hover card per metric: category and the DeepEval test-case fields it needs ---
+// `scores_on` (from /api/metrics) lists the LLMTestCase / ConversationalTestCase
+// fields the judge reads, i.e. DeepEval's required arguments for that metric.
+const SINGLE_FIELDS = [
+  ["input", "Input (question)"],
+  ["actual_output", "Actual output (chatbot reply)"],
+  ["expected_output", "Expected output (golden answer)"],
+  ["context", "Context (golden facts)"],
+  ["retrieval_context", "Retrieval context (chatbot's sources)"],
+];
+const TOOL_FIELDS = [
+  ["tools_called", "Tools called"],
+  ["expected_tools", "Expected tools"],
+];
+const CONVERSATION_FIELDS = [
+  ["turns", "Turns (whole conversation)"],
+  ["scenario", "Scenario"],
+  ["expected_outcome", "Expected outcome"],
+  ["chatbot_role", "Chatbot role"],
+];
+const FIELD_NOTES = {
+  retrieval_context: "the chatbot's own sources only (Retrieved context path or Find sources); never golden data",
+  context: "facts stored with the golden",
+  expected_output: "the golden's expected answer",
+  tools_called: "needs the chatbot's Tool calls path",
+};
+
+// Security probes: "context" is the probe's goal plus the chatbot's persona, not golden facts.
+const PROBE_LABELS = { context: "Context (probe goal + chatbot persona)" };
+const PROBE_NOTES = {
+  context: "added to every probe automatically; nothing to fill in",
+  tools_called: "read when the chatbot reports its tool calls (Tool calls path)",
+  retrieval_context: "read by DeepTeam when present; probes send none",
+};
+
+function fieldRow(key, label, state, note) {
+  const marks = { need: "✓", opt: "○", skip: "–" };
+  const words = { need: "Needed", opt: "Optional", skip: "Not needed" };
+  return el("li", { className: state },
+    el("span", { className: "mark", "aria-hidden": "true" }, marks[state]),
+    el("span", { className: "field" }, label),
+    el("span", { className: "state" }, words[state]),
+    state !== "skip" && note ? el("small", { className: "note" }, note) : null);
+}
+
+function metricFieldRows(metric) {
+  const needed = new Set(metric.scores_on || []);
+  const optional = new Set(metric.optional_on || []);
+  const probe = metric.ui_category === "security";
+  const conversation = metric.kind === "conversation" || needed.has("turns");
+  const base = conversation ? CONVERSATION_FIELDS : SINGLE_FIELDS;
+  const usesTools = [...needed, ...optional].some((k) => k === "tools_called" || k === "expected_tools");
+  const fields = [...base, ...(usesTools ? TOOL_FIELDS : [])];
+  const known = new Set(fields.map(([key]) => key));
+  for (const key of [...needed, ...optional]) if (!known.has(key)) fields.push([key, key.replace(/_/g, " ")]);
+  return fields.map(([key, label]) => {
+    const state = needed.has(key) ? "need" : optional.has(key) ? "opt" : "skip";
+    const note = (probe && PROBE_NOTES[key]) || FIELD_NOTES[key];
+    return fieldRow(key, (probe && PROBE_LABELS[key]) || label, state, note);
+  });
+}
+
+// DeepTeam's own scorer (setting "scorer": "deepteam"): the RTTestCase fields its metric class reads.
+function deepteamFieldRows(metric) {
+  const read = new Set(metric.deepteam_fields || []);
+  return [...SINGLE_FIELDS, ...TOOL_FIELDS.slice(0, 1)].map(([key, label]) => {
+    const state = key === "input" || key === "actual_output" ? "need" : read.has(key) ? "opt" : "skip";
+    return fieldRow(key, label, state, PROBE_NOTES[key]);
+  });
+}
+
+function metricTipContent(metric) {
+  const kindLabel = {
+    conversation: "Multi-turn (conversation)",
+    attack: "Multi-turn attack",
+    multi_sample: "Single-turn, several samples",
+  }[metric.kind] || "Single-turn";
+  const chips = [metric.ui_category_label, metric.group_label, kindLabel,
+    metric.source === "deepteam" ? "DeepTeam" : null].filter(Boolean);
+  const source = metric.question_source?.label;
+  return [
+    el("div", { className: "tip-title" }, metric.title),
+    el("div", { className: "tip-chips" }, ...[...new Set(chips)].map((c) => el("span", { className: "tip-chip" }, c))),
+    metric.description ? el("p", { className: "tip-desc" }, metric.description) : null,
+    metric.question ? el("p", { className: "tip-q" }, el("b", {}, "Asks: "), metric.question) : null,
+    el("div", { className: "tip-head" }, metric.deepteam_metric
+      ? "Test case fields (app's G-Eval rubric, default scorer)"
+      : metric.ui_category === "security" ? "Test case fields (G-Eval rubric)" : "Test case fields (DeepEval)"),
+    el("ul", { className: "tip-fields" }, ...metricFieldRows(metric)),
+    metric.deepteam_metric ? el("div", { className: "tip-head" }, "DeepTeam scorer ", el("code", {}, metric.deepteam_metric)) : null,
+    metric.deepteam_metric ? el("ul", { className: "tip-fields" }, ...deepteamFieldRows(metric)) : null,
+    (metric.combines || []).length
+      ? el("p", { className: "tip-extra" }, el("b", {}, "Combines (average): "), metric.combines.join(" · "))
+      : null,
+    metric.opt_in ? el("p", { className: "tip-extra" }, el("b", {}, "Opt-in: "), "not ticked by default") : null,
+    ...promptInstructionTip(metric.prompt_instructions),
+    metric.unavailable ? el("p", { className: "tip-extra tip-warn" }, el("b", {}, "Not available: "), metric.unavailable) : null,
+    (metric.needs_target || []).length
+      ? el("p", { className: "tip-extra" }, el("b", {}, "From the chatbot: "), metric.needs_target.join(", "))
+      : null,
+    source ? el("p", { className: "tip-extra" }, el("b", {}, "Questions from: "), source) : null,
+    metric.scale_hint ? el("p", { className: "tip-extra" }, el("b", {}, "Score: "), metric.scale_hint) : null,
+  ];
+}
+
+// Prompt Alignment: the rules a run judges replies against, listed in the hover
+// card (first few; the full list is under Test cases).
+const TIP_RULES_MAX = 8;
+function promptInstructionTip(info) {
+  const rules = info && Array.isArray(info.rules) ? info.rules : [];
+  if (!rules.length) return [];
+  const more = rules.length - TIP_RULES_MAX;
+  return [
+    el("div", { className: "tip-head" }, `Prompt instructions checked (${rules.length})`,
+      el("span", { className: "muted" }, ` · ${info.source_label || info.source || ""}`)),
+    el("ol", { className: "tip-rules" },
+      ...rules.slice(0, TIP_RULES_MAX).map((rule) => el("li", {}, rule)),
+      more > 0 ? el("li", { className: "muted" }, `…and ${more} more (see Test cases)`) : null),
+  ];
+}
+
+let metricTipNode = null;
+let metricTipTimer = null;
+function hideMetricTip() {
+  clearTimeout(metricTipTimer);
+  if (metricTipNode) metricTipNode.hidden = true;
+}
+
+function showMetricTip(row, metric) {
+  if (!metricTipNode) {
+    metricTipNode = el("div", { className: "metric-tip", role: "tooltip", id: "metric-tip", hidden: true });
+    document.body.append(metricTipNode);
+  }
+  metricTipNode.replaceChildren(...metricTipContent(metric).filter(Boolean));
+  metricTipNode.hidden = false;
+  const box = row.getBoundingClientRect();
+  const gutter = 8;
+  const width = Math.min(340, window.innerWidth - gutter * 2);
+  metricTipNode.style.width = `${width}px`;
+  const height = metricTipNode.offsetHeight;
+  const below = box.bottom + 4;
+  const top = below + height > window.innerHeight - gutter && box.top - height - 4 > gutter
+    ? box.top - height - 4
+    : Math.max(gutter, Math.min(below, window.innerHeight - height - gutter));
+  const left = Math.max(gutter, Math.min(box.left, window.innerWidth - width - gutter));
+  metricTipNode.style.top = `${top}px`;
+  metricTipNode.style.left = `${left}px`;
+}
+
+function attachMetricTip(row, metric) {
+  // Only the name area opens the card, so it doesn't cover the threshold or buttons.
+  const anchor = row.querySelector(".threshold-title") || row;
+  anchor.addEventListener("mouseenter", () => {
+    clearTimeout(metricTipTimer);
+    metricTipTimer = setTimeout(() => showMetricTip(row, metric), 250);
+  });
+  anchor.addEventListener("mouseleave", hideMetricTip);
+  row.addEventListener("focusin", () => showMetricTip(row, metric));
+  row.addEventListener("focusout", hideMetricTip);
+}
+window.addEventListener("scroll", hideMetricTip, true);
+document.addEventListener("keydown", (event) => { if (event.key === "Escape") hideMetricTip(); });
+
 // --- Your own G-Eval metrics: built, edited and deleted in the G-Eval group ---
 let gevalBuilderForm = null;
 function gevalForm() {
@@ -2035,6 +2322,34 @@ function gevalForm() {
     renderThresholds();
   });
   return gevalBuilderForm;
+}
+
+// Your own red-team vulnerabilities (DeepTeam's CustomVulnerability), in the Security group.
+let vulnBuilderForm = null;
+function vulnForm() {
+  vulnBuilderForm ||= createVulnerabilityBuilder((row) => {
+    state.vulnOpen = false;
+    if (row) $("status").textContent = `Saved “${row.name}”: ticked, it runs with Run judge.`;
+    renderThresholds();
+  });
+  return vulnBuilderForm;
+}
+
+function vulnBar() {
+  const editing = state.vulnOpen && vulnForm().editingId();
+  const toggle = el("button", {
+    type: "button",
+    className: `case-button${state.vulnOpen ? " active" : ""}`,
+    "aria-expanded": String(state.vulnOpen),
+    title: "Define a vulnerability of your own (name, criteria, types) and its attacks, like DeepTeam's CustomVulnerability",
+    onclick: () => {
+      if (!state.vulnOpen || editing) vulnForm().fill(null);
+      state.vulnOpen = !state.vulnOpen || Boolean(editing);
+      renderThresholds();
+    },
+  }, state.vulnOpen && !editing ? "Close" : "＋ New custom vulnerability");
+  return el("div", { className: "geval-bar" }, toggle,
+    state.vulnOpen ? el("div", { className: "case-panel geval-panel" }, vulnForm().form) : null);
 }
 
 // "＋ New G-Eval metric" under the group heading, and the form when open.
@@ -2057,8 +2372,19 @@ function gevalBar() {
 async function editOwnGeval(metric) {
   const row = (await api("/api/custom-metrics")).find((r) => r.id === metric.custom_id);
   if (!row) throw new Error("This metric is no longer saved; reload the panel.");
+  if (row.kind === "vulnerability") {
+    vulnForm().fill(row);
+    state.vulnOpen = true;
+    state.openCases = { key: null, mode: null };
+    await renderThresholds();
+    vulnForm().form.scrollIntoView({ behavior: "smooth", block: "center" });
+    return;
+  }
   gevalForm().fill(row);
   state.gevalOpen = true;
+  // An open Test cases list re-renders with a delayed scrollIntoView of its own,
+  // which would pull the view away from the form: close it first.
+  state.openCases = { key: null, mode: null };
   await renderThresholds();
   gevalForm().form.scrollIntoView({ behavior: "smooth", block: "center" });
 }
@@ -2068,13 +2394,13 @@ function ownGevalButtons(metric) {
   const edit = el("button", {
     type: "button",
     className: "case-button",
-    title: "Change this G-Eval metric",
+    title: "Change this metric of your own",
     onclick: (event) => {
       event.preventDefault();
       editOwnGeval(metric).catch((error) => { $("status").textContent = error.message; });
     },
   }, "Edit");
-  const remove = el("button", { type: "button", className: "case-button", title: "Delete this G-Eval metric (its earlier runs stay in History)" }, "Delete");
+  const remove = el("button", { type: "button", className: "case-button", title: "Delete this metric of your own (its earlier runs stay in History)" }, "Delete");
   let armed = false;
   remove.addEventListener("click", async (event) => {
     event.preventDefault();
@@ -2126,7 +2452,7 @@ function caseButtons(metric) {
     button("Add", "add", (metric.kind === "conversation" || (metric.dataset_name || "").startsWith("conversations"))
       ? "Add a multi-turn conversation scenario for this (and other) Turns metrics"
       : "Add a test case this metric will run"),
-    metric.custom_id && metric.ui_category === "geval" ? ownGevalButtons(metric) : null);
+    metric.custom_id && ["geval", "security"].includes(metric.ui_category) ? ownGevalButtons(metric) : null);
 }
 
 async function showCasePanel(metric, panel, mode) {
@@ -2136,7 +2462,11 @@ async function showCasePanel(metric, panel, mode) {
   const query = target ? `?target_id=${target.id}` : "";
   try {
     const data = await api(`/api/metrics/${encodeURIComponent(metric.key)}/cases${query}`);
-    panel.replaceChildren(mode === "add" ? caseForm(metric, data) : caseList(metric, data));
+    panel.replaceChildren(
+      // Prompt Alignment: the rules this chatbot's run will be judged against, and their source.
+      mode === "list" ? promptInstructionsBlock(metric.prompt_instructions,
+        { heading: "Prompt instructions a run will use" }) : "",
+      mode === "add" ? caseForm(metric, data) : caseList(metric, data));
   } catch (error) {
     panel.replaceChildren(el("p", { className: "small error" }, error.message));
   }
@@ -2184,6 +2514,99 @@ function caseDeleteButton(metric, c) {
   return button;
 }
 
+// Edit swaps the case's row for an inline form prefilled with its fields.
+function caseEditButton(metric, data, c) {
+  const shared = c.kind === "golden" ? "Edits this golden: every metric reading the golden set sees the change." : "";
+  const button = el("button", { type: "button", className: "case-edit", title: shared || "Edit this test case" }, "Edit");
+  button.addEventListener("click", () => {
+    const item = button.closest("li");
+    const original = [...item.childNodes];
+    item.replaceChildren(caseEditForm(metric, data, c, () => item.replaceChildren(...original)));
+  });
+  return button;
+}
+
+function caseEditForm(metric, data, c, cancel) {
+  const field = (label, control) => el("label", { className: "case-field small" }, label, control);
+  const area = (value, rows = "2", placeholder = "") => {
+    const node = el("textarea", { rows, placeholder });
+    node.value = value || "";
+    return node;
+  };
+  const input = (value, placeholder = "") => {
+    const node = el("input", { type: "text", placeholder });
+    node.value = value || "";
+    return node;
+  };
+  const fields = {};
+  const rows = [];
+  if (c.kind === "conversation") {
+    fields.name = input(c.question);
+    fields.turns = area((c.turns || []).join("\n"), "3", "One user message per line");
+    fields.expected = area(c.expected_answer, "2", "What the conversation should achieve (optional)");
+    rows.push(field("Name", fields.name), field("User turns", fields.turns), field("Expected outcome", fields.expected));
+    if (data.dataset === "conversations_with_role") {
+      fields.role = input(c.chatbot_role, "The chatbot's role (blank = the chatbot's persona)");
+      rows.push(field("Chatbot role", fields.role));
+    }
+  } else {
+    fields.question = area(c.question);
+    rows.push(field(c.kind === "probe" ? "Probe" : "Question", fields.question));
+    if (c.kind === "golden") {
+      fields.expected = area(c.expected_answer, "2", "The answer you expect");
+      rows.push(field("Expected answer", fields.expected));
+      if (data.dataset !== "goldens_without_context") {
+        fields.context = area((c.context || []).join("\n"), "2", "One fact per line");
+        rows.push(field(data.dataset === "goldens_with_context" ? "Context" : "Context (optional)", fields.context));
+      }
+      if (data.dataset === "goldens_with_tools") {
+        fields.tools = input((c.expected_tools || []).join(", "), "e.g. search_orders, refund");
+        rows.push(field("Expected tools", fields.tools));
+      }
+    }
+  }
+  const lines = (node) => (node ? node.value.split("\n").map((s) => s.trim()).filter(Boolean) : []);
+  const status = el("p", { className: "small" });
+  const save = el("button", { type: "submit" }, "Save changes");
+  const form = el("form", { className: "case-form" },
+    c.kind === "golden" ? el("p", { className: "muted small" }, "Goldens are shared: every metric reading this golden set runs the edited version.") : null,
+    ...rows,
+    el("div", { className: "row" }, save, el("button", { type: "button", onclick: cancel }, "Cancel")),
+    status);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const target = currentTarget();
+    const query = target ? `?target_id=${target.id}` : "";
+    save.disabled = true;
+    status.className = "small";
+    status.textContent = "Saving…";
+    try {
+      await api(`/api/metrics/${encodeURIComponent(metric.key)}/cases/${encodeURIComponent(c.id)}${query}`, {
+        method: "PUT",
+        body: {
+          target_id: target ? target.id : null,
+          question: fields.question ? fields.question.value : "",
+          expected_answer: fields.expected ? fields.expected.value : "",
+          context: lines(fields.context),
+          expected_tools: fields.tools ? fields.tools.value.split(",").map((s) => s.trim()).filter(Boolean) : [],
+          name: fields.name ? fields.name.value : "",
+          user_turns: lines(fields.turns),
+          chatbot_role: fields.role ? fields.role.value : "",
+        },
+      });
+      // The list reloads with the edited case (other metrics reading the set change too).
+      await settings.set("metricsChangedAt", Date.now());
+      if (c.kind === "golden") loadGoldens().catch(() => {});
+      if (c.kind === "conversation") loadConversations().catch(() => {});
+    } catch (error) {
+      save.disabled = false;
+      status.className = "small status-error";
+      status.textContent = `Not saved: ${error.message}`;
+    }
+  });
+  return form;
+}
+
 function caseList(metric, data) {
   const cap = $("run-mode").value ? Number($("run-mode").value) : null;
   const head = el("p", { className: "muted small" },
@@ -2197,7 +2620,9 @@ function caseList(metric, data) {
         el("div", { className: "case-question" }, c.question,
           c.kind === "probe" ? el("small", { className: "muted" }, " · probe") : null,
           c.context_in_prompt ? el("small", { className: "muted", title: "Sent with its context facts in the message" }, " · with facts") : null),
-        caseDeleteButton(metric, c)),
+        el("span", { className: "case-item-actions" },
+          caseEditButton(metric, data, c),
+          caseDeleteButton(metric, c))),
       c.turns ? el("ol", { className: "case-turns small" }, ...c.turns.map((t) => el("li", {}, t))) : null,
       c.expected_answer ? el("div", { className: "muted small" }, `Expected: ${c.expected_answer}`) : null,
       c.context && c.context.length ? el("div", { className: "muted small" }, `Context: ${c.context.join(" · ")}`) : null,
@@ -2384,26 +2809,27 @@ function groupCheckRow(group) {
   return el("label", { className: "threshold-group" }, tick, `${group.label} (${ticked}/${keys.length})`);
 }
 
-$("check-all-metrics").addEventListener("click", () => setChecked(state.metrics.map((m) => m.key)));
+// Quick select: each acts on the chosen framework's metrics only.
+$("check-all-metrics").addEventListener("click", () => setScopeChecked(scopedMetrics().map((m) => m.key)));
 $("check-golden-metrics").addEventListener("click", () => {
-  const goldenKeys = state.metrics
+  const goldenKeys = scopedMetrics()
     .filter(m => !m.kind || m.kind !== "conversation")
     .map(m => m.key);
-  setChecked(goldenKeys);
+  setScopeChecked(goldenKeys);
 });
 $("check-scenario-metrics").addEventListener("click", () => {
-  const scenarioKeys = state.metrics
+  const scenarioKeys = scopedMetrics()
     .filter(m => m.kind === "conversation" || (m.dataset_name || "").includes("conversation"))
     .map(m => m.key);
-  setChecked(scenarioKeys);
+  setScopeChecked(scenarioKeys);
 });
 $("check-own-question-metrics").addEventListener("click", () => {
-  const ownKeys = state.metrics
+  const ownKeys = scopedMetrics()
     .filter(m => m.custom_id || m.ui_category === "geval" || m.source === "deepteam")
     .map(m => m.key);
-  setChecked(ownKeys);
+  setScopeChecked(ownKeys);
 });
-$("check-no-metrics").addEventListener("click", () => setChecked([]));
+$("check-no-metrics").addEventListener("click", () => setScopeChecked([]));
 
 $("threshold-env").addEventListener("change", async () => {
   const env = $("threshold-env").value;
@@ -2422,6 +2848,7 @@ $("threshold-env").addEventListener("change", async () => {
 });
 $("open-dashboard").addEventListener("click", openDashboard);
 $("open-advanced").addEventListener("click", openAdvanced);
+$("open-deepteam").addEventListener("click", openDeepTeam);
 // Inside the web app's two-pane page the dashboard is already beside the panel.
 if (window.parent !== window) $("open-dashboard").hidden = true;
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => renderLatest());
@@ -2438,7 +2865,8 @@ settings.onChange((changes) => {
       $("status").textContent = error.message;
     });
   }
-  if ((changes.thresholds || changes.thresholdEnv || changes.checkedMetrics) && state.metrics.length) {
+  if ((changes.thresholds || changes.thresholdEnv || changes.checkedMetrics || changes.metricFramework)
+      && state.metrics.length) {
     renderThresholds();
   }
   // A metric was added, edited or deleted on the dashboard or Advanced tools.
@@ -2568,6 +2996,8 @@ function showConfidentResult(ok, text) {
   $("confident-result").className = ok ? "small status-pass" : "small status-error";
   $("confident-result").textContent = text;
 }
+
+$("confident-reports").addEventListener("click", () => openConfidentReports());
 
 $("confident-form").addEventListener("submit", async (event) => {
   event.preventDefault();

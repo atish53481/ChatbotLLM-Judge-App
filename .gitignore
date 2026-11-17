@@ -37,3 +37,6 @@ backend/datasets/custom_metrics.json
 
 # Local stamp of the docs hook (python .claude/hooks/docs_guard.py --ack).
 .claude/docs-reviewed
+
+# Copies of every report sent to Confident AI (backend/confident_reports.py).
+reports/

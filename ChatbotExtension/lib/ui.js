@@ -199,6 +199,20 @@ const FIELD_LABELS = {
   expected_outcome: "Expected outcome",
 };
 
+// Prompt Alignment: the exact rules a run was (or will be) judged against, and
+// where they came from ({source, source_label, rules} from the backend).
+function promptInstructionsBlock(info, { open = true, heading = "Prompt instructions used" } = {}) {
+  if (!info || !Array.isArray(info.rules) || !info.rules.length) return "";
+  return el("details", { className: "prompt-instructions", open },
+    el("summary", {}, el("b", {}, `${heading} (${info.rules.length})`),
+      el("span", { className: "muted" }, ` · Source: ${info.source_label || info.source}`)),
+    info.source === "default"
+      ? el("p", { className: "note" }, "No instructions are set on this chatbot, so these standard rules were "
+        + "generated from its profile. Add its real instructions under Chatbot instructions for a sharper test.")
+      : "",
+    el("ol", {}, ...info.rules.map((rule) => el("li", {}, rule))));
+}
+
 function fieldLabel(field) {
   return FIELD_LABELS[field] || field;
 }
@@ -495,6 +509,16 @@ function scanTally(scan) {
 
 function openAdvanced() {
   window.open(pageUrl("advanced/advanced.html"), "llm-judge-advanced");
+}
+
+// DeepTeam's own engine: RedTeamer runs, guardrails, YAML/CLI export (deepteam/).
+function openDeepTeam() {
+  window.open(pageUrl("deepteam/deepteam.html"), "llm-judge-deepteam");
+}
+
+// Every report sent to Confident AI (scans and DeepTeam runs), with links and saved copies.
+function openConfidentReports() {
+  window.open(pageUrl("confident/confident.html"), "llm-judge-confident");
 }
 
 function watchJob(target, jobId, metrics) {

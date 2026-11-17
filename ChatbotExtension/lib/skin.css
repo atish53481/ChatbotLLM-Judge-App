@@ -135,6 +135,11 @@
 :root[data-theme="dark"] body.panel .metric-check-actions {
   border-bottom-color: var(--border);
 }
+:root[data-theme="dark"] body.panel .framework-picker label > span { border-color: var(--border); }
+:root[data-theme="dark"] body.panel .framework-picker input:checked + span {
+  border-color: var(--accent); color: var(--accent); background: rgba(224, 122, 90, 0.08);
+}
+:root[data-theme="dark"] body.panel .framework-heading { color: var(--accent); }
 :root[data-theme="dark"] body.panel label.row.run-mode > span { color: var(--text-secondary); }
 
 /* ---------- dashboard: slate, terracotta accent ---------- */
@@ -232,3 +237,10 @@
 :root[data-theme="dark"] .diff-item.missing > b { color: #f3a3a7; }
 :root[data-theme="dark"] .diff-item.changed > b { color: #f0cf85; }
 :root[data-theme="dark"] .diff-item.added > b { color: #8fdcbd; }
+
+/* Prompt Alignment: the rules a run used (scan page, report, side panel Test cases). */
+.prompt-instructions { margin: 8px 0; padding: 8px 10px; border: 1px solid var(--border, rgba(0,0,0,.12)); border-radius: 8px; }
+.prompt-instructions summary { cursor: pointer; }
+.prompt-instructions ol { margin: 6px 0 0; padding-left: 22px; }
+.prompt-instructions li { margin: 2px 0; }
+@media print { .prompt-instructions { break-inside: avoid; } .prompt-instructions:not([open]) ol { display: block; } }

@@ -350,6 +350,7 @@ function metricSection(metric, run, details, thresholds, caseIds, options = DEFA
   const facts = runFacts(details);
   if (facts.length) parts.push(dl(facts));
   if (details.note) parts.push(el("p", { className: "note" }, `⚠ ${details.note}`));
+  if (details.prompt_instructions) parts.push(promptInstructionsBlock(details.prompt_instructions));
   const failed = details.rows.filter((r) => !r.passed);
   const passed = details.rows.filter((r) => r.passed);
   if (failed.length) {

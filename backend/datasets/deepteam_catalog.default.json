@@ -1,6 +1,6 @@
 {
  "deepteam_version": "1.0.10",
- "built_at": "2026-11-01T08:11:06+00:00",
+ "built_at": "2026-11-14T17:24:19+00:00",
  "vulnerabilities": [
   {
    "class": "AgentIdentityAbuse",
@@ -2119,6 +2119,451 @@
     "attacks": [
      "CrescendoJailbreaking",
      "LinearJailbreaking"
+    ]
+   }
+  ],
+  "nist": [
+   {
+    "id": "Measure 1",
+    "title": "Risk Measurement and Metrics",
+    "description": "Identify, apply, and continuously improve appropriate methods and metrics for assessing AI risks.",
+    "vulnerabilities": [
+     "DebugAccess",
+     "IntellectualProperty",
+     "RBAC"
+    ],
+    "attacks": [
+     "GrayBox",
+     "PromptProbing",
+     "Roleplay"
+    ]
+   },
+   {
+    "id": "Measure 2",
+    "title": "Trustworthiness and Safety Evaluation",
+    "description": "Evaluate and validate AI systems for trustworthy characteristics such as safety, fairness, security, robustness, privacy, and reliability — under real-world conditions.",
+    "vulnerabilities": [
+     "Bias",
+     "ChildProtection",
+     "Ethics",
+     "ExcessiveAgency",
+     "Fairness",
+     "GraphicContent",
+     "IllegalActivity",
+     "Misinformation",
+     "PIILeakage",
+     "PersonalSafety",
+     "PromptLeakage",
+     "Robustness",
+     "SQLInjection",
+     "SSRF",
+     "ShellInjection",
+     "Toxicity"
+    ],
+    "attacks": [
+     "BadLikertJudge",
+     "Base64",
+     "CrescendoJailbreaking",
+     "Leetspeak",
+     "LinearJailbreaking",
+     "Multilingual",
+     "PromptInjection",
+     "ROT13",
+     "Roleplay",
+     "SequentialJailbreak",
+     "TreeJailbreaking"
+    ]
+   },
+   {
+    "id": "Measure 3",
+    "title": "Risk Tracking and Monitoring",
+    "description": "Establish continuous monitoring mechanisms to track identified, unanticipated, and emerging AI risks throughout system operation.",
+    "vulnerabilities": [
+     "BFLA",
+     "BOLA",
+     "Competition"
+    ],
+    "attacks": [
+     "GrayBox",
+     "PromptInjection",
+     "PromptProbing",
+     "Roleplay"
+    ]
+   },
+   {
+    "id": "Measure 4",
+    "title": "Impact and Transparency Assessment",
+    "description": "Connect AI risk measurements to business outcomes, stakeholder transparency, and lifecycle performance.",
+    "vulnerabilities": [],
+    "attacks": [
+     "BadLikertJudge",
+     "PromptProbing",
+     "Roleplay"
+    ]
+   }
+  ],
+  "mitre": [
+   {
+    "id": "Reconnaissance",
+    "title": "Information Gathering and System Profiling",
+    "description": "The adversary is trying to gather information about the AI system they can use to plan future operations.",
+    "vulnerabilities": [
+     "Competition",
+     "PromptLeakage",
+     "RBAC"
+    ],
+    "attacks": [
+     "CrescendoJailbreaking",
+     "LinearJailbreaking",
+     "PromptInjection",
+     "Roleplay",
+     "SequentialJailbreak",
+     "TreeJailbreaking"
+    ]
+   },
+   {
+    "id": "Resource Development",
+    "title": "Adversarial Capability Building",
+    "description": "The adversary is creating or acquiring resources (data, prompts, tools, accounts) to enable future AI attacks.",
+    "vulnerabilities": [
+     "IllegalActivity"
+    ],
+    "attacks": [
+     "CrescendoJailbreaking",
+     "Leetspeak",
+     "LinearJailbreaking",
+     "PromptInjection",
+     "ROT13",
+     "Roleplay",
+     "SequentialJailbreak",
+     "TreeJailbreaking"
+    ]
+   },
+   {
+    "id": "Initial Access",
+    "title": "Entry Point Exploitation",
+    "description": "The adversary is trying to gain access to the AI system.",
+    "vulnerabilities": [
+     "DebugAccess",
+     "IllegalActivity",
+     "SQLInjection",
+     "SSRF",
+     "ShellInjection"
+    ],
+    "attacks": [
+     "LinearJailbreaking",
+     "PromptInjection",
+     "Roleplay",
+     "SequentialJailbreak",
+     "TreeJailbreaking"
+    ]
+   },
+   {
+    "id": "ML Attack Staging",
+    "title": "Model-Specific Attack Preparation",
+    "description": "The adversary is leveraging their knowledge of and access to the target system to tailor the attack.",
+    "vulnerabilities": [
+     "ExcessiveAgency"
+    ],
+    "attacks": [
+     "Leetspeak",
+     "LinearJailbreaking",
+     "PromptInjection",
+     "ROT13",
+     "SequentialJailbreak",
+     "TreeJailbreaking"
+    ]
+   },
+   {
+    "id": "Exfiltration",
+    "title": "Data or Model Theft",
+    "description": "The adversary is trying to steal AI artifacts or other sensitive information.",
+    "vulnerabilities": [
+     "IntellectualProperty",
+     "PIILeakage"
+    ],
+    "attacks": [
+     "Leetspeak",
+     "LinearJailbreaking",
+     "PromptInjection",
+     "PromptProbing",
+     "ROT13",
+     "Roleplay",
+     "SequentialJailbreak",
+     "TreeJailbreaking"
+    ]
+   },
+   {
+    "id": "Impact",
+    "title": "Manipulation, Misuse, and Degradation",
+    "description": "The adversary is trying to manipulate, interrupt, or degrade AI system performance or trustworthiness.",
+    "vulnerabilities": [
+     "ExcessiveAgency",
+     "GraphicContent",
+     "RecursiveHijacking"
+    ],
+    "attacks": [
+     "CrescendoJailbreaking",
+     "LinearJailbreaking",
+     "PromptInjection",
+     "Roleplay",
+     "SequentialJailbreak",
+     "TreeJailbreaking"
+    ]
+   }
+  ],
+  "eu_ai_act": [
+   {
+    "id": "Art. 5(1)(a)",
+    "title": "Subliminal Manipulation",
+    "description": "Prohibits AI systems that deploy subliminal, manipulative, or deceptive techniques beyond a person's consciousness to materially distort behavior and cause harm.",
+    "vulnerabilities": [
+     "ExcessiveAgency",
+     "Misinformation",
+     "Robustness"
+    ],
+    "attacks": [
+     "CrescendoJailbreaking",
+     "LinearJailbreaking",
+     "Multilingual",
+     "PromptInjection",
+     "Roleplay",
+     "TreeJailbreaking"
+    ]
+   },
+   {
+    "id": "Art. 5(1)(b)",
+    "title": "Exploitation of Vulnerabilities",
+    "description": "Prohibits AI systems that exploit vulnerabilities due to age, disability, or specific social or economic situations to materially distort behavior in a harmful way.",
+    "vulnerabilities": [
+     "ChildProtection",
+     "Ethics",
+     "Fairness",
+     "IntellectualProperty",
+     "Misinformation",
+     "Robustness"
+    ],
+    "attacks": [
+     "CrescendoJailbreaking",
+     "LinearJailbreaking",
+     "PromptInjection",
+     "Roleplay"
+    ]
+   },
+   {
+    "id": "Art. 5(1)(c)",
+    "title": "Social Scoring",
+    "description": "Prohibits AI systems used for the social scoring of natural persons leading to detrimental or unfavourable treatment in contexts unrelated to the data's origin or that is unjustified or disproportionate.",
+    "vulnerabilities": [
+     "Bias",
+     "Ethics",
+     "Fairness",
+     "Misinformation",
+     "Robustness"
+    ],
+    "attacks": [
+     "BadLikertJudge",
+     "GrayBox",
+     "PromptProbing",
+     "Roleplay"
+    ]
+   },
+   {
+    "id": "Art. 5(1)(g)",
+    "title": "Biometric Categorisation",
+    "description": "Prohibits biometric categorisation systems that categorise natural persons based on biometric data to infer sensitive attributes such as race, political opinions, union membership, religion, or sexual orientation.",
+    "vulnerabilities": [
+     "Bias",
+     "Ethics",
+     "Fairness",
+     "PIILeakage"
+    ],
+    "attacks": [
+     "GrayBox",
+     "PromptProbing",
+     "Roleplay"
+    ]
+   },
+   {
+    "id": "Art. 5(1)(h)",
+    "title": "Real-time Remote Biometric Identification",
+    "description": "Prohibits the use of real-time remote biometric identification systems in publicly accessible spaces for law enforcement, subject to narrow exceptions.",
+    "vulnerabilities": [
+     "Ethics",
+     "PIILeakage",
+     "PromptLeakage"
+    ],
+    "attacks": [
+     "GrayBox",
+     "PromptProbing",
+     "Roleplay"
+    ]
+   },
+   {
+    "id": "Art. 5",
+    "title": "Post Remote Biometric Identification",
+    "description": "Restricts post (retrospective) remote biometric identification systems, requiring strict safeguards on the processing of previously collected biometric data.",
+    "vulnerabilities": [
+     "Ethics",
+     "PIILeakage",
+     "PromptLeakage"
+    ],
+    "attacks": [
+     "GrayBox",
+     "PromptProbing",
+     "Roleplay"
+    ]
+   },
+   {
+    "id": "Annex III §1",
+    "title": "Biometric Identification",
+    "description": "High-risk AI systems intended for the remote biometric identification and biometric-based categorisation of natural persons, including emotion recognition.",
+    "vulnerabilities": [
+     "Bias",
+     "Ethics",
+     "Fairness",
+     "PIILeakage"
+    ],
+    "attacks": [
+     "GrayBox",
+     "PromptProbing",
+     "Roleplay"
+    ]
+   },
+   {
+    "id": "Annex III §2",
+    "title": "Critical Infrastructure",
+    "description": "High-risk AI systems intended to be used as safety components in the management and operation of critical digital infrastructure, road traffic, and the supply of water, gas, heating, and electricity.",
+    "vulnerabilities": [
+     "ExcessiveAgency",
+     "Robustness",
+     "SQLInjection",
+     "SSRF",
+     "ShellInjection"
+    ],
+    "attacks": [
+     "Base64",
+     "CrescendoJailbreaking",
+     "GrayBox",
+     "LinearJailbreaking",
+     "PromptInjection",
+     "ROT13",
+     "SequentialJailbreak",
+     "TreeJailbreaking"
+    ]
+   },
+   {
+    "id": "Annex III §3",
+    "title": "Education and Vocational Training",
+    "description": "High-risk AI systems used to determine access or admission, to evaluate learning outcomes, to assess the appropriate level of education, or to monitor and detect prohibited behavior during tests.",
+    "vulnerabilities": [
+     "Bias",
+     "Ethics",
+     "Fairness",
+     "Hallucination",
+     "Misinformation",
+     "Robustness"
+    ],
+    "attacks": [
+     "BadLikertJudge",
+     "Multilingual",
+     "PromptInjection",
+     "PromptProbing",
+     "Roleplay"
+    ]
+   },
+   {
+    "id": "Annex III §4",
+    "title": "Employment and Workers Management",
+    "description": "High-risk AI systems used for recruitment, selection, targeted job advertisements, making promotion and termination decisions, task allocation, and monitoring or evaluation of performance.",
+    "vulnerabilities": [
+     "Bias",
+     "Ethics",
+     "Fairness",
+     "IntellectualProperty",
+     "PIILeakage",
+     "Robustness"
+    ],
+    "attacks": [
+     "BadLikertJudge",
+     "GrayBox",
+     "PromptInjection",
+     "PromptProbing",
+     "Roleplay"
+    ]
+   },
+   {
+    "id": "Annex III §5",
+    "title": "Essential Private and Public Services",
+    "description": "High-risk AI systems used to evaluate eligibility for public assistance benefits and services, creditworthiness or credit scoring, and to dispatch or prioritise emergency first response services.",
+    "vulnerabilities": [
+     "Bias",
+     "Ethics",
+     "ExcessiveAgency",
+     "Fairness",
+     "PIILeakage"
+    ],
+    "attacks": [
+     "BadLikertJudge",
+     "GrayBox",
+     "PromptProbing",
+     "Roleplay"
+    ]
+   },
+   {
+    "id": "Annex III §6",
+    "title": "Law Enforcement",
+    "description": "High-risk AI systems used by law enforcement authorities for individual risk assessments, polygraph-like tools, evaluating evidence reliability, profiling, and crime analytics.",
+    "vulnerabilities": [
+     "Bias",
+     "Ethics",
+     "Fairness",
+     "PIILeakage",
+     "PromptLeakage"
+    ],
+    "attacks": [
+     "GrayBox",
+     "PromptInjection",
+     "PromptProbing",
+     "Roleplay"
+    ]
+   },
+   {
+    "id": "Annex III §7",
+    "title": "Migration, Asylum and Border Control",
+    "description": "High-risk AI systems used in migration, asylum, and border-control management, including verifying travel document authenticity, risk assessments, and assisting decision-making on asylum applications.",
+    "vulnerabilities": [
+     "Bias",
+     "Ethics",
+     "Fairness",
+     "PIILeakage",
+     "Toxicity"
+    ],
+    "attacks": [
+     "GrayBox",
+     "Multilingual",
+     "PromptProbing",
+     "Roleplay"
+    ]
+   },
+   {
+    "id": "Annex III §8",
+    "title": "Administration of Justice and Democratic Processes",
+    "description": "High-risk AI systems intended to assist judicial authorities in researching and interpreting facts and the law and in applying the law to a concrete set of facts, or to influence the outcome of elections and voter behavior.",
+    "vulnerabilities": [
+     "Bias",
+     "Ethics",
+     "Fairness",
+     "Hallucination",
+     "Misinformation",
+     "PIILeakage"
+    ],
+    "attacks": [
+     "BadLikertJudge",
+     "CrescendoJailbreaking",
+     "PromptInjection",
+     "PromptProbing",
+     "Roleplay"
     ]
    }
   ]

@@ -740,6 +740,13 @@ class McpTargetClient(ChatbotClient):
         return ChatReply(reply=reply, model=model, mode=self.mode, tools_called=[
             {"name": tool, "input_parameters": arguments, "output": output[:2000]}])
 
+    def mcp_server(self) -> dict:
+        """This server as DeepEval's MCPServer fields (MCP Use metrics)."""
+        transport = "stdio" if self.transport == "stdio" else "streamable-http"
+        return {"server_name": self.server_info.get("name") or self._label, "transport": transport,
+                "available_tools": [{"name": t["name"], "description": t.get("description", ""),
+                                     "inputSchema": t.get("input_schema") or {}} for t in self.list_tools()]}
+
     def close(self) -> None:
         self._ready = False
         self._transport.close()
