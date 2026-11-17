@@ -156,9 +156,12 @@
     <div class="card-head">
       <h2 id="history-heading">Scan history</h2>
       <p id="history-count" class="muted small"></p>
-      <button type="button" id="history-clear" aria-label="Delete every stored scan of this chatbot">Delete all</button>
+      <div class="card-head-actions">
+        <a id="history-report" class="button-link" target="_blank" rel="noopener" href="../report/report.html" aria-disabled="true" title="Open a printable report of this chatbot's newest scan, then Save as PDF">Download report (PDF)</a>
+        <button type="button" id="history-clear" aria-label="Delete every stored scan of this chatbot">Delete all</button>
+      </div>
     </div>
-    <p class="muted small">Each Run is one scan of this chatbot, numbered 1, 2, 3, … with one overall result. Open a scan for every metric's score, or compare it with the scan before.</p>
+    <p class="muted small">Each Run is one scan of this chatbot, numbered 1, 2, 3, … with one overall result. Open a scan for every metric's score, Report to save that scan as a PDF, or compare it with the scan before.</p>
     <p id="history-empty" class="muted">No scans yet for this chatbot.</p>
     <div class="table-scroll">
       <table id="history-table" class="hidden">

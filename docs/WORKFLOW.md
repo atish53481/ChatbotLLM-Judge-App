@@ -833,6 +833,7 @@ has these buttons (pages open in new tabs):
 | Button | Page | Shows |
 |---|---|---|
 | Open | `scan/scan.html?job=<id>` | One scan in full: overall result, started / duration / judge / tokens, the metric table, every metric's reason and cases; links to the scans before and after. |
+| Report | `report/report.html?target=&job=` | Printable evaluation report of **this scan** (cover, summary, cases); Save as PDF from the print dialog. History's **Download report (PDF)** opens the newest finished scan the same way. |
 | Security | `risk/risk.html?job=<id>#overview` | The scan's **Risk Assessment**, laid out like Confident AI's red-teaming risk profile (see below). |
 | Overview | `runs/runs.html?target=&job=#overview` | Test runs, laid out like Confident AI: **Evaluation** (`#evaluation`: every run with a date range, a per-metric chart with ±1 std error bars, % trends, a runs table; tick two to compare), **Home**, a run's **Overview** (properties, results dial, run settings, radar, Histogram / Average / Median / Breakdown, Eval Insights, Send to Confident AI, Send / View in Langfuse, **Download report**: the run as one self-contained HTML file built in the browser by `runs.js downloadReport`, with properties, hyperparameters, metric results, failures and test case scores), **Test Cases** (`#cases`: filters, columns, per-metric tabs, Save as new dataset) and **Compare** (`#compare&with=`). |
 | Compare with N | inline in the dashboard | Metric by metric against the scan before: better / worse / same / new / removed. |
@@ -873,9 +874,11 @@ has these buttons (pages open in new tabs):
   one judge call reads the failed cases and the weak ones (passed within 0.15 of the threshold),
   groups them into issues rated mild or serious and writes an overview; saved in `meta`, so opening
   the page again costs nothing.
-- **Report** (dashboard's **Download report (PDF)** → `report/report.html?target=`): each metric's
-  latest run of this session with its stored cases; tick sections and metrics, then Save as PDF
-  from the print dialog. Its **OWASP coverage** section (`report.js owaspSection`, from
+- **Report** (dashboard header **Download report (PDF)** → `report/report.html?target=`: each metric's
+  latest run of this session; History row **Report** or History **Download report (PDF)** →
+  `report/report.html?target=&job=`: that scan only). Tick sections and metrics, then Save as PDF
+  from the print dialog. A scan with more than 40 scored rows opens with case cards and diffs off
+  so the tab and the print dialog stay responsive; tick them under Sections if you need them. Its **OWASP coverage** section (`report.js owaspSection`, from
   `/api/security/frameworks`) lists, per OWASP list that a reported security metric tests, each
   risk id with those metrics and how many of their attacks were resisted, then the ids nothing
   tested ("not tested is not the same as safe"). Without that endpoint the section is left out.

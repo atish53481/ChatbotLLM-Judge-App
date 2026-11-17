@@ -145,7 +145,7 @@ async function settle(check, ms = 2000) {
 // --- loading the page --------------------------------------------------------
 // saved: localStorage settings; session: this tab's sessionStorage settings
 // (the fresh-session mark freshSinceRunId).
-async function loadReport({ saved = {}, runs = latestRuns(), extra = {}, session = {} } = {}) {
+async function loadReport({ saved = {}, runs = latestRuns(), extra = {}, session = {}, search = "?target=1" } = {}) {
   const storage = { ...saved };
   const tabStorage = { ...session };
   const windowListeners = {};
@@ -183,7 +183,7 @@ async function loadReport({ saved = {}, runs = latestRuns(), extra = {}, session
     console, setTimeout, clearTimeout, URL, URLSearchParams, Promise, Date, Map, Set, Math, JSON, Uint16Array,
     Node: FakeNode,
     document,
-    location: { search: "?target=1" },
+    location: { search },
     window: { print: () => printed.push(Date.now()) },
     fetch: async (url) => {
       const key = url.replace("http://127.0.0.1:8765", "");
@@ -606,6 +606,67 @@ test("the dashboard header toggles Show earlier runs; the side panel reloads on 
   assert.match(dashboard, /setShowAllRuns\(\$\("show-all-runs"\)\.checked\)/);
   assert.match(dashboard, /changes\.showAllRuns/);
   assert.match(read("sidebar/sidebar.js"), /changes\.runsChangedAt[^\n]*renderLatest\(\)/);
+});
+
+function scanPayload(results) {
+  return {
+    version: 3, job_id: 12, target_id: 1, status: "done", result: "failed",
+    started_at: "2026-10-22T10:00:00Z", finished_at: "2026-10-22T10:05:00Z",
+    judge_model: "judge-x", skipped: [], results,
+  };
+}
+
+test("History Report opens a printable report of that scan, not the session's latest runs", async () => {
+  const read = (file) => fs.readFileSync(path.join(EXT, file), "utf8");
+  assert.match(read("dashboard/dashboard.js"), /report\/report\.html\?target=\$\{target\.id\}&job=\$\{scan\.job_id\}/);
+  assert.match(read("dashboard/dashboard.html"), /id="history-report"/);
+
+  const scanRows = [
+    { key: "answer_relevancy", status: "fail", score: 0.6, threshold: 0.7, direction: "higher",
+      rows: [{ question: REFUND, input: REFUND, actual_output: "Refunds take 5 days.",
+        expected_output: "Refunds take 7 days.", score: 0.4, passed: false, reason: "Wrong number." }],
+      judge: { model: "judge-x" } },
+  ];
+  const page = await loadReport({
+    search: "?target=1&job=12",
+    extra: { "/api/scans/12": scanPayload(scanRows) },
+  });
+  assert.ok(!page.fetched.some((u) => u.includes("/api/runs/latest")), "a scan report does not load latest runs");
+  assert.ok(page.fetched.includes("/api/scans/12"));
+  assert.match(page.document.title, /scan 3/);
+  assert.match(page.report.textContent, /scan 3/);
+  assert.match(page.report.textContent, /Answer Relevancy/);
+  assert.doesNotMatch(page.report.textContent, /Hallucination/, "metrics not in this scan stay out of the cover scores");
+  assert.equal(showAllBox(page), null, "Show earlier runs does not apply to one scan");
+  assert.match(page.status.textContent, /Scan 3/);
+});
+
+test("a scan report still Save-as-PDFs when that scan ran nothing", async () => {
+  const page = await loadReport({
+    search: "?target=1&job=12",
+    extra: { "/api/scans/12": scanPayload([]) },
+  });
+  assert.match(page.status.textContent, /Scan 3/);
+  assert.match(page.report.textContent, /scan 3/);
+  assert.equal(page.document.getElementById("print-button").disabled, false);
+});
+
+test("a large scan report leaves case cards and diffs off so the page stays responsive", async () => {
+  const rows = Array.from({ length: 50 }, (_, i) => ({
+    question: `Q${i}`, input: `Q${i}`, actual_output: `answer ${i}`, expected_output: `expected ${i}`,
+    score: 0.4, passed: false, reason: "Wrong.",
+  }));
+  const page = await loadReport({
+    search: "?target=1&job=12",
+    extra: { "/api/scans/12": scanPayload([{
+      key: "answer_relevancy", status: "fail", score: 0.4, threshold: 0.7, direction: "higher",
+      rows, judge: { model: "judge-x" },
+    }]) },
+  });
+  assert.equal(isChecked(page.document.getElementById("opt-details")), false);
+  assert.equal(isChecked(page.document.getElementById("opt-diff")), false);
+  assert.match(page.status.textContent, /responsive/);
+  assert.equal(page.document.getElementById("print-button").disabled, false);
 });
 
 // --- Advanced tools: red-team coverage by OWASP list (advanced/advanced.js) ---------

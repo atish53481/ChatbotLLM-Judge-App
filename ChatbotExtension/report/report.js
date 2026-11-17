@@ -1,7 +1,7 @@
 // Printable evaluation report for one chatbot: the dashboard opens this page
-// with ?target=<id>, it renders every metric's latest run from the backend and
-// the case details the extension saved, then opens the print dialog so the
-// user can choose "Save as PDF". Nothing here changes any data.
+// with ?target=<id> (each metric's latest run) or History with
+// ?target=<id>&job=<scan id> (that scan only). It renders the stored cases,
+// then the user Save-as-PDFs from the print dialog. Nothing here changes any data.
 
 const $ = (id) => document.getElementById(id);
 
@@ -51,7 +51,7 @@ function formatPercent(rate) {
 
 // allRuns: "Show earlier runs" is on, so the report counts every stored run
 // (the cover says so); off, it shows this session's runs and says nothing.
-function cover(target, judge, metrics, latestByKey, cases, allRuns = false) {
+function cover(target, judge, metrics, latestByKey, cases, allRuns = false, scan = null) {
   const run = metrics.filter((m) => latestByKey[m.key]);
   const scores = run.map((m) => normalized(m, latestByKey[m.key].score)).filter((s) => s !== null);
   const average = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
@@ -68,7 +68,9 @@ function cover(target, judge, metrics, latestByKey, cases, allRuns = false) {
       ["Golden set", themeOf(target)],
       ["Judge", judge ? `${judge.model} (${safeUrl(judge.base_url) || judge.base_url})` : "–"],
       ["Generated", new Date().toLocaleString()],
-      ...(allRuns ? [["Runs", "Every stored run, earlier sessions included (each metric's latest)"]] : []),
+      ...(scan ? [["Scan", `scan ${scan.version}`],
+        ["Scan started", scan.started_at ? formatRunTime(scan.started_at) : "–"]] : []),
+      ...(allRuns && !scan ? [["Runs", "Every stored run, earlier sessions included (each metric's latest)"]] : []),
     ]),
     el(
       "div",
@@ -82,7 +84,9 @@ function cover(target, judge, metrics, latestByKey, cases, allRuns = false) {
       el("div", {}, el("b", { className: "fail" }, String(run.length - passed)), el("small", {}, "metrics failed")),
       el("div", {}, el("b", {}, String(metrics.length - run.length)), el("small", {}, "metrics not run")),
     ),
-    el("p", { className: "muted small" }, "Overall success rate: metric checks that passed their threshold, out of every judged check (one check = one test case scored by one metric). Average score: each metric's latest run on a higher-is-better scale (lower-is-better metrics counted as 1 − score)."),
+    el("p", { className: "muted small" }, "Overall success rate: metric checks that passed their threshold, out of every judged check (one check = one test case scored by one metric). Average score: each metric's "
+      + (scan ? "score in this scan" : "latest run")
+      + " on a higher-is-better scale (lower-is-better metrics counted as 1 − score)."),
   );
 }
 
@@ -369,7 +373,7 @@ function metricSection(metric, run, details, thresholds, caseIds, options = DEFA
 
 // Metrics with no run in this session, each with why: the backend's skip_reason
 // (not applicable to this chatbot, or no test case in its golden set), else not picked.
-function notRunSection(metrics, latestByKey) {
+function notRunSection(metrics, latestByKey, forScan = false) {
   const missing = metrics.filter((m) => !latestByKey[m.key]);
   if (!missing.length) return null;
   return el(
@@ -386,7 +390,9 @@ function notRunSection(metrics, latestByKey) {
         {},
         el("td", {}, m.title),
         el("td", {}, m.ui_category_label || m.ui_category || ""),
-        el("td", {}, m.skip_reason || "Not selected in this session's runs: tick it and run to include it."),
+        el("td", {}, m.skip_reason || (forScan
+          ? "Not run in this scan."
+          : "Not selected in this session's runs: tick it and run to include it.")),
       ))),
     ),
   );
@@ -505,6 +511,19 @@ const DEFAULT_OPTIONS = Object.freeze({
   metrics: null, // null = every metric that ran; else the chosen metric keys
 });
 
+// Case cards + word diffs on a big scan freeze the tab (and Chrome's print
+// preview). Above this many scored rows, those two sections start off.
+const LARGE_REPORT_CASES = 40;
+
+function caseCheckCount(data) {
+  return Object.values(data.details || {}).reduce((n, d) => n + ((d && d.rows && d.rows.length) || 0), 0);
+}
+
+function optionsForSize(data, options) {
+  if (caseCheckCount(data) <= LARGE_REPORT_CASES) return options;
+  return { ...options, details: false, diff: false };
+}
+
 // Saved options with unknown keys dropped and missing ones defaulted, so an
 // older or damaged saved value can never break the report.
 function readOptions(saved) {
@@ -521,16 +540,47 @@ function selectedMetrics(ranMetrics, options) {
   return ranMetrics.filter((m) => keys.has(m.key));
 }
 
+function withScanSkips(metrics, scan) {
+  if (!scan || !Array.isArray(scan.skipped) || !scan.skipped.length) return metrics;
+  const reasons = Object.fromEntries(scan.skipped.filter((s) => s.key && s.reason).map((s) => [s.key, s.reason]));
+  return metrics.map((m) => (reasons[m.key] ? { ...m, skip_reason: reasons[m.key] } : m));
+}
+
+// A History scan report lists only the metrics that scan ran or skipped, not
+// the whole catalog as "not run".
+function metricsForReport(data) {
+  const metrics = withScanSkips(data.metrics, data.scan);
+  if (!data.scan) return metrics;
+  const keys = new Set([
+    ...Object.keys(data.latestByKey),
+    ...(data.scan.skipped || []).map((s) => s.key),
+  ]);
+  return metrics.filter((m) => keys.has(m.key));
+}
+
+function runsFromScan(scan) {
+  const ts = scan.finished_at || scan.started_at;
+  return (scan.results || []).map((r) => ({
+    metric_key: r.key,
+    score: r.score,
+    passed: r.status === "pass",
+    ts,
+    judge_model: (r.judge && r.judge.model) || scan.judge_model || "",
+    result: r,
+  }));
+}
+
 // The report's sections for the chosen options.
 function renderReport(data, options) {
-  const { target, judge, metrics, latestByKey, details, thresholds } = data;
+  const { target, judge, latestByKey, details, thresholds } = data;
+  const metrics = metricsForReport(data);
   const ranMetrics = metrics.filter((m) => latestByKey[m.key]);
   const ran = selectedMetrics(ranMetrics, options);
   const cases = collectCases(ran, latestByKey, details, thresholds);
   const caseIds = new Map(cases.map((c) => [c.row, c.id]));
   // With a hand-picked set, metrics that were not picked (or never ran) stay out.
   const shown = options.metrics ? ran : metrics;
-  const parts = [cover(target, judge, shown, latestByKey, cases, data.showAllRuns === true)];
+  const parts = [cover(target, judge, shown, latestByKey, cases, data.showAllRuns === true, data.scan || null)];
   if (ranMetrics.length && !ran.length) {
     parts.push(el("p", { className: "note" }, "No metric is selected: tick at least one under \"Metrics\" above."));
   }
@@ -542,7 +592,8 @@ function renderReport(data, options) {
   if (options.notrun) {
     // A hand-picked set still lists the metrics this chatbot cannot run (they
     // cannot be picked), just not the ones left unticked.
-    const section = notRunSection(options.metrics ? metrics.filter((m) => m.skip_reason) : metrics, latestByKey);
+    const section = notRunSection(
+      options.metrics ? metrics.filter((m) => m.skip_reason) : metrics, latestByKey, Boolean(data.scan));
     if (section) parts.push(section);
   }
   if (options.cases && ran.length) parts.push(testCaseTable(cases, ran, latestByKey, details, options));
@@ -583,8 +634,9 @@ function optionsForm(data, options, onChange) {
   const button = (id, label, onClick) => el("button", { type: "button", id, onclick: onClick }, label);
   return [
     // Shared with the dashboard header (setting showAllRuns): the change comes
-    // back through settings.onChange, which loads the runs again.
-    el(
+    // back through settings.onChange, which loads the runs again. A report of
+    // one scan from History already pins its runs, so the toggle stays off.
+    data.scan ? null : el(
       "fieldset",
       {},
       el("legend", {}, "Runs"),
@@ -621,25 +673,30 @@ function optionsForm(data, options, onChange) {
 }
 
 async function loadReportData() {
-  const targetId = Number(new URLSearchParams(location.search).get("target"));
+  const params = new URLSearchParams(location.search);
+  const targetId = Number(params.get("target"));
+  const jobId = params.get("job");
   const [targets, judge, thresholds, showAllRuns] = await Promise.all([
     fetchTargets(),
     api("/api/judge/settings").catch(() => null),
     settings.get("thresholds", {}),
     showingAllRuns(),
   ]);
-  const target = targets.find((t) => t.id === targetId);
+  const scan = jobId ? await api(`/api/scans/${encodeURIComponent(jobId)}`) : null;
+  const target = targets.find((t) => t.id === (scan ? scan.target_id : targetId));
   if (!target) throw new Error("Chatbot not found: open the report from the dashboard.");
-  const [metrics, latest, frameworks] = await Promise.all([
+  const [metrics, latestRuns, frameworks] = await Promise.all([
     api(`/api/metrics?target_id=${target.id}`),
-    api(`/api/runs/latest?target_id=${target.id}&since_id=${await sessionSince()}`),
+    scan ? Promise.resolve(null) : api(`/api/runs/latest?target_id=${target.id}&since_id=${await sessionSince()}`),
     // Which metrics test each OWASP risk; without it the report has no OWASP section.
     api("/api/security/frameworks").then((data) => data.frameworks).catch(() => null),
   ]);
+  const latest = scan ? runsFromScan(scan) : latestRuns;
   const latestByKey = Object.fromEntries(latest.map((r) => [r.metric_key, r]));
   // Every case comes from the database: each run's stored result.
   const details = Object.fromEntries(metrics.map((m) => [m.key, caseDetailsFromRun(latestByKey[m.key])]));
-  return { target, judge, metrics, latestByKey, details, thresholds, frameworks, showAllRuns };
+  return { target, judge, metrics, latestByKey, details, thresholds, frameworks,
+    showAllRuns: scan ? false : showAllRuns, scan };
 }
 
 // What the page shows now, so loading the runs again keeps the viewer's choices.
@@ -663,10 +720,25 @@ function anyRun(data) {
   return data.metrics.some((m) => data.latestByKey[m.key]);
 }
 
-function statusText(data) {
-  if (anyRun(data)) return "Choose what to include, then click Save as PDF (pick \"Save as PDF\" as the printer).";
+function statusText(data, options) {
+  const light = data.largeReport && options && !options.details && !options.diff
+    ? " Case cards and highlighted differences are off so the page stays responsive; tick them under Sections if you need them."
+    : "";
+  if (data.scan) {
+    return (anyRun(data)
+      ? `Scan ${data.scan.version}: choose what to include, then click Save as PDF (pick "Save as PDF" as the printer).`
+      : `Scan ${data.scan.version} has no scored metrics: the report has only the summary.`)
+      + light;
+  }
+  if (anyRun(data)) return "Choose what to include, then click Save as PDF (pick \"Save as PDF\" as the printer)." + light;
   return "No metric has been run for this chatbot yet: the report has only the summary."
     + (data.showAllRuns ? "" : " Runs from earlier sessions count only with \"Show earlier runs\" ticked.");
+}
+
+function reportTitle(data) {
+  return data.scan
+    ? `Evaluation report · ${data.target.name} · scan ${data.scan.version}`
+    : `Evaluation report · ${data.target.name}`;
 }
 
 async function start() {
@@ -674,8 +746,9 @@ async function start() {
     loadReportData(),
     settings.get("reportOptions", null).catch(() => null),
   ]);
-  document.title = `Evaluation report · ${data.target.name}`;
-  showReport(data, readOptions(saved));
+  document.title = reportTitle(data);
+  if (caseCheckCount(data) > LARGE_REPORT_CASES) data.largeReport = true;
+  showReport(data, optionsForSize(data, readOptions(saved)));
   return data;
 }
 
@@ -688,16 +761,29 @@ async function reloadRuns() {
   const data = await loadReportData();
   if (mine !== reloads) return;
   showReport(data, current.options);
-  $("report-status").textContent = statusText(data);
+  $("report-status").textContent = statusText(data, current.options);
 }
 
-$("print-button").addEventListener("click", () => window.print());
+$("print-button").addEventListener("click", () => {
+  const button = $("print-button");
+  button.disabled = true;
+  const previous = $("report-status").textContent;
+  $("report-status").textContent = "Opening the print dialog… pick \"Save as PDF\" as the printer.";
+  setTimeout(() => {
+    try {
+      window.print();
+    } finally {
+      button.disabled = false;
+      $("report-status").textContent = previous;
+    }
+  }, 50);
+});
 $("report-options").addEventListener("submit", (event) => event.preventDefault());
 
 const started = start();
 started
   .then((data) => {
-    $("report-status").textContent = statusText(data);
+    $("report-status").textContent = statusText(data, current && current.options);
     $("print-button").disabled = false;
   })
   .catch((error) => {
@@ -707,6 +793,8 @@ started
 // A flip during the first load reloads once that load has shown.
 settings.onChange((changes) => {
   if (!changes.showAllRuns) return;
+  // A History scan report already pins its runs.
+  if (current && current.data.scan) return;
   started.then(reloadRuns).catch((error) => {
     $("report-status").textContent = error.message;
   });

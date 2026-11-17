@@ -31,6 +31,7 @@ const state = {
   // Details panels showing failed cases only, and each metric's recent run scores.
   failedOnlyKeys: new Set(),
   detailHistory: {},
+  scans: [],
 };
 
 function currentTarget() {
@@ -1071,8 +1072,12 @@ async function renderHistory() {
   const empty = $("history-empty");
   table.classList.add("hidden");
   $("scan-detail").classList.add("hidden");
+  state.scans = [];
+  setHistoryReportLink(target, []);
   try {
     const scans = await api(`/api/targets/${target.id}/scans`);
+    state.scans = scans;
+    setHistoryReportLink(target, scans);
     $("history-count").textContent = scans.length ? `(${scans.length} scan${scans.length > 1 ? "s" : ""})` : "";
     empty.classList.toggle("hidden", scans.length > 0);
     table.classList.toggle("hidden", scans.length === 0);
@@ -1118,6 +1123,10 @@ async function renderHistory() {
           // Opens the scan's full report in its own tab (scan/scan.html).
           el("a", { className: "button-link", href: `../scan/scan.html?job=${scan.job_id}`,
             target: "_blank", rel: "noopener" }, "Open"),
+          // Printable evaluation report of this scan (report/report.html), then Save as PDF.
+          el("a", { className: "button-link", href: `../report/report.html?target=${target.id}&job=${scan.job_id}`,
+            target: "_blank", rel: "noopener", title: "Open a printable report of this scan, then Save as PDF" },
+            "Report"),
           // This scan's Risk Assessment (risk/risk.html: KPIs, risk score, vulnerabilities, cases, PDF report).
           el("a", { className: "button-link", href: `../risk/risk.html?job=${scan.job_id}#overview`,
             target: "_blank", rel: "noopener" }, "Security"),
@@ -1190,6 +1199,31 @@ async function deleteRuns(path) {
 armConfirm($("history-clear"), async () => {
   const target = currentTarget();
   if (target) await deleteRuns(`/api/targets/${target.id}/runs`);
+});
+
+function newestFinishedScan(scans) {
+  return (scans || []).find((s) => s.status !== "running" && s.status !== "queued");
+}
+
+function setHistoryReportLink(target, scans) {
+  const link = $("history-report");
+  const done = target && newestFinishedScan(scans);
+  if (done) {
+    link.href = `../report/report.html?target=${target.id}&job=${done.job_id}`;
+    link.setAttribute("aria-disabled", "false");
+  } else {
+    link.href = "../report/report.html";
+    link.setAttribute("aria-disabled", "true");
+  }
+}
+
+$("history-report").addEventListener("click", (event) => {
+  if (event.currentTarget.getAttribute("aria-disabled") === "true") {
+    event.preventDefault();
+    setStatus(currentTarget()
+      ? "No finished scan yet: run metrics first, then download the report from History."
+      : "Pick a chatbot first.", true);
+  }
 });
 
 function setView(view) {

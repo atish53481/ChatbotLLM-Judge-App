@@ -332,7 +332,8 @@ golden's reference documents, so the metric shows as not applicable instead of
 failing.
 
 **Download report (PDF)** in the dashboard header opens a printable report of the
-selected chatbot:
+selected chatbot's latest runs this session. In **History**, each scan has **Report**,
+and History's **Download report (PDF)** opens the newest finished scan:
 
 - cover with the overall success rate and average score, and a summary table of every metric;
 - a DeepEval-style **Test case results** table: test case (one golden question, TC-01…),

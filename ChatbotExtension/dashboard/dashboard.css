@@ -509,6 +509,9 @@ body.dash {
   margin: 0;
 }
 
+.card-head-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+#history-report[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
+
 .segmented {
   display: inline-flex;
   border: 1px solid var(--border);
