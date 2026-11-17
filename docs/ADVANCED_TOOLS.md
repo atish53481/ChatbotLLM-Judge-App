@@ -33,7 +33,7 @@ Nothing here is on until you save it, and with everything off runs behave as bef
 4. **Performance and cost**: a latency limit in seconds (a run fails when 95% of replies are
    slower), the judge's price per million tokens (each run then shows its cost), and
    **Give the judge my calibration labels** (see Calibrate the judge).
-5. Press **Save run options**, then run metrics from the side panel or dashboard as usual.
+5. Changes save automatically (the bar pinned at the bottom says "Saved <time>"); **Save run options** in that bar saves at once. Then run metrics from the side panel or dashboard as usual.
    **Details** now also shows score spread, chatbot latency, cost and, for security metrics,
    which disguise got through.
 

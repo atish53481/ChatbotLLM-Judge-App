@@ -92,7 +92,36 @@ def test_upload_endpoint(app_module, client, monkeypatch):
     assert "confident_us_secret" not in str(res)
     # The link is kept with the scan, so the page can offer "View in Confident AI".
     assert client.get(f"/api/scans/{job}").json()["confident"]["link"] == res["link"]
+    assert "payloads" not in res  # the copy is saved, not sent back to the page
+
+    # Every upload is kept: sending again adds a second report, the first stays,
+    # and each has the JSON that was sent saved as a download.
+    client.post(f"/api/scans/{job}/confident")
+    mine = [r for r in client.get(f"/api/confident/reports?target_id={bot['id']}").json() if r["ref_id"] == job]
+    assert len(mine) == 2 and all(r["saved"] and r["kind"] == "scan" for r in mine)
+    assert mine[0]["chatbot"] == "Upload Bot" and mine[0]["link"].endswith("/tr_123") and mine[0]["test_cases"] == 2
+    got = client.get(f"/api/confident/reports/{mine[0]['id']}/file")
+    assert got.status_code == 200 and "attachment" in got.headers["content-disposition"]
+    doc = got.json()
+    assert doc["rebuilt"] is False and doc["payloads"][0]["testCases"][0]["input"] == "question g1"
+    assert "confident_us_secret" not in got.text
+    assert client.get("/api/confident/reports/999999/file").status_code == 404
     client.put("/api/confident/settings", json={"clear_key": True, "auto": False})
+
+
+def test_earlier_uploads_are_backfilled_and_rebuilt_on_download(app_module, client):
+    """Uploads made before reports were saved are listed once from the link on the
+    job; their JSON is rebuilt from the stored scan the first time it is downloaded."""
+    from backend import confident_reports
+    bot = _create_target(client, name="Old Bot", config={"url": "http://127.0.0.1:9/old"})
+    job = _scan(app_module._conn, bot["id"])
+    app_module._keep_on_job(job, "confident", {"id": "tr_old", "link": "https://x/tr_old", "sent_at": "2026-11-01T00:00:00Z"})
+    assert confident_reports.backfill(app_module._conn) == 1
+    assert confident_reports.backfill(app_module._conn) == 0  # once only
+    (row,) = [r for r in client.get(f"/api/confident/reports?target_id={bot['id']}").json()]
+    assert row["test_run_id"] == "tr_old" and row["saved"] is False
+    doc = client.get(f"/api/confident/reports/{row['id']}/file").json()
+    assert doc["rebuilt"] is True and doc["payloads"][0]["identifier"] == "Old Bot · v1"
 
 
 def test_finished_runs_are_sent_only_when_auto_is_on(app_module, client, monkeypatch):
@@ -136,6 +165,31 @@ def test_large_scans_go_in_batches(tmp_path, monkeypatch):
     assert out["test_cases"] == 45
     assert [(m, len((b or {}).get("testCases", []))) for m, _, b in FakeApi.calls] == [("POST", 40), ("PUT", 5)]
     assert FakeApi.calls[1][2]["testRunId"] == "tr_123"
+
+
+def test_conversation_metrics_go_as_conversational_cases_with_turns():
+    """Multi-turn results are sent as DeepEval ConversationalApiTestCases, turn by
+    turn, so Confident AI shows the conversation instead of one flattened text."""
+    talk = "User: My name is Priya\nBot: Hi Priya!\nHow can I help?\nUser: exit\nBot: Bye"
+    conv = {"golden_id": "c_1", "question": "Remember name", "input": "My name is Priya\nexit",
+            "actual_output": talk, "expected_output": "Forgets the name", "score": 0.75, "passed": True,
+            "reason": "kept it"}
+    scan = {"version": 1, "started_at": None, "finished_at": None, "run_options": {}, "results": [
+        {"key": "faithfulness", "status": "pass", "threshold": 0.7, "rows": [_row("g1", 1.0, True)]},
+        {"key": "knowledge_retention", "status": "pass", "threshold": 0.5, "rows": [conv]},
+        {"key": "custom_conv", "status": "fail", "threshold": 0.5, "rows": [{**conv, "score": 0.0, "passed": False}]},
+    ]}
+    body = confident_upload.test_run_body(scan, "bot", "generic", {"knowledge_retention": "Knowledge Retention"},
+                                          conversational={"knowledge_retention", "custom_conv"})
+    assert [c["input"] for c in body["testCases"]] == ["question g1"]
+    (case,) = body["conversationalTestCases"]
+    assert case["scenario"] == "Remember name" and case["expectedOutcome"] == "Forgets the name"
+    assert [(t["role"], t["content"]) for t in case["turns"]] == [
+        ("user", "My name is Priya"), ("assistant", "Hi Priya!\nHow can I help?"),
+        ("user", "exit"), ("assistant", "Bye")]
+    assert [m["name"] for m in case["metricsData"]] == ["Knowledge Retention", "custom_conv"]
+    assert case["success"] is False and case["order"] == 1
+    assert (body["testPassed"], body["testFailed"]) == (1, 1)
 
 
 class FakeHttp:

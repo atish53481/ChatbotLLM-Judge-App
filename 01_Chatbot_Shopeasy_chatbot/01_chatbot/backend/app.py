@@ -49,6 +49,18 @@ def _client():
 # `keywords` adds words a customer may use that the text itself lacks.
 KNOWLEDGE = [
     {
+        "id": "order-status",
+        "title": "Order Status",
+        "keywords": "order status track tracking check id where delivery estimate shipped",
+        "text": (
+            "ORDER STATUS\n"
+            "- Sign in at shopsphere.com and open \"My Orders\" to see every order's status.\n"
+            "- Or give ShopBot your order ID (for example ORD-1001): it looks up the order's "
+            "status, carrier, tracking number, items, order date and estimated delivery date.\n"
+            "- Tracking numbers can be followed on the carrier's website."
+        ),
+    },
+    {
         "id": "refund-policy",
         "title": "Refund Policy",
         "keywords": "refund money back reimburse reimbursement credit",
@@ -225,12 +237,30 @@ def run_tool(name: str, args: dict):
         return {"error": f"Bad arguments for {name}: {e}"}
 
 
+def _order_source(output: dict) -> dict:
+    """An order record from lookup_order as a source passage, so RAG evaluators
+    (RAGAS faithfulness / context recall) see the data the reply is based on."""
+    order_id = str(output.get("order_id", "")).strip().upper()
+    labels = {"status": "Status", "carrier": "Carrier", "tracking": "Tracking number",
+              "items": "Items", "placed": "Placed", "eta": "Estimated delivery",
+              "delivered": "Delivered"}
+    lines = []
+    for key, label in labels.items():
+        if key in output:
+            value = output[key]
+            lines.append(f"- {label}: {', '.join(value) if isinstance(value, list) else value}")
+    return {"id": f"order:{order_id}", "title": f"Order {order_id}",
+            "text": f"ORDER {order_id}\n" + "\n".join(lines)}
+
+
 def _tool_sources(name: str, output) -> list:
-    """Knowledge-base chunks a tool returned: they reached the model, so they count as sources."""
+    """Data a tool returned: it reached the model, so it counts as a source."""
     if name == "search_knowledge_base" and isinstance(output, list):
         return output
     if name == "get_product" and isinstance(output, dict) and "text" in output:
         return [output]
+    if name == "lookup_order" and isinstance(output, dict) and "error" not in output:
+        return [_order_source(output)]
     return []
 
 
@@ -335,12 +365,17 @@ def chat(req: ChatRequest):
     sources = retrieve(req.message) or retrieve(f"{last_user} {req.message}")
 
     if not USE_OPENAI_COMPAT and (not GROQ_API_KEY or Groq is None):
+        mock_calls = _mock_tools(req.message) if USE_TOOLS else []
+        for call in mock_calls:
+            for chunk in _tool_sources(call["name"], call["output"]):
+                if all(s["id"] != chunk["id"] for s in sources):
+                    sources.append(chunk)
         return ChatResponse(
             reply=_mock_reply(req.message),
             model="mock",
             mode="mock",
             sources=sources,
-            tools_called=_mock_tools(req.message) if USE_TOOLS else [],
+            tools_called=mock_calls,
         )
 
     client = _client()

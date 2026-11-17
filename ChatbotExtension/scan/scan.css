@@ -113,3 +113,8 @@ details.metric .body { padding: 0 14px 14px; }
 
 .case-help { margin-top: 6px; white-space: normal; }
 .case-help summary { cursor: pointer; font-weight: 600; }
+
+/* Sortable metric table headers. */
+.sort-button { all: unset; cursor: pointer; font: inherit; color: inherit; }
+.sort-button:hover { color: var(--text-primary, inherit); text-decoration: underline; }
+.sort-button:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; border-radius: 2px; }

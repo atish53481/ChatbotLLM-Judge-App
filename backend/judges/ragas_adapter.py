@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import importlib.util
 import math
+import threading
 from typing import Any
 
 from langchain_core.embeddings import Embeddings
@@ -70,6 +71,45 @@ class JudgeChatModel(BaseChatModel):
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=str(text)))])
 
 
+_EMBEDDER_LOCK = threading.Lock()
+_EMBEDDER = None
+_WARMED = False
+
+
+def _warm_imports() -> None:
+    """Import transformers fully, once, before any case thread needs it.
+
+    Cases run on several threads. datasets (used by ragas) checks
+    `transformers.PreTrainedTokenizerBase` whenever transformers is in
+    sys.modules, so while one thread is still importing it (sentence_transformers,
+    ragas) another sees a half-loaded module and raises
+    "module 'transformers' has no attribute 'PreTrainedTokenizerBase'"."""
+    global _WARMED
+    with _EMBEDDER_LOCK:
+        if _WARMED:
+            return
+        try:
+            import transformers
+            transformers.PreTrainedTokenizerBase  # noqa: B018 - resolve the lazy attribute here
+            import sentence_transformers  # noqa: F401 - the embedder's import, done here once
+            import datasets  # noqa: F401
+            import ragas.metrics  # noqa: F401
+        except ImportError:
+            pass  # missing packages are reported by missing_reason()
+        _WARMED = True
+
+
+def _shared_embedder():
+    """One embedder for the process, loaded by one thread at a time."""
+    global _EMBEDDER
+    _warm_imports()
+    with _EMBEDDER_LOCK:
+        if _EMBEDDER is None:
+            from backend.rag.embeddings import LocalSentenceEmbedder
+            _EMBEDDER = LocalSentenceEmbedder()
+        return _EMBEDDER
+
+
 class LocalEmbeddings(Embeddings):
     """LangChain embeddings over the app's local sentence-transformers model,
     imported on first use (sentence_transformers takes ~40 s to import)."""
@@ -79,8 +119,7 @@ class LocalEmbeddings(Embeddings):
 
     def _model(self):
         if self._embedder is None:
-            from backend.rag.embeddings import LocalSentenceEmbedder
-            self._embedder = LocalSentenceEmbedder()
+            self._embedder = _shared_embedder()
         return self._embedder
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
@@ -106,6 +145,7 @@ def build_ragas_metric(judge, threshold: float):
     the whole score NaN (and crashed the run's stats). This one averages the
     sub-scores ragas did produce, names the ones it could not, and raises when
     none came back, so the case is an error instead of a NaN score."""
+    _warm_imports()  # before any case thread runs a ragas part
     from deepeval.metrics import ragas as de_ragas
 
     class _RagasWithReason(de_ragas.RagasMetric):

@@ -154,8 +154,10 @@ function segmentedGauge(passed, total) {
   return el("div", { className: "dial" }, svg("svg", { viewBox: "0 0 200 124", role: "img",
     "aria-label": `${passed} of ${total} test cases passing` },
   ...segs,
-  svg("text", { x: 100, y: 92, "text-anchor": "middle", class: "ring-value" }, `${passed}/${total}`),
-  svg("text", { x: 100, y: 110, "text-anchor": "middle", class: "ring-sub" }, "passing test cases"),
+  // Sized to fit inside the inner arc (radius 62): long counts like 351/385 get a smaller font.
+  svg("text", { x: 100, y: 94, "text-anchor": "middle", class: "ring-value",
+    style: `font-size:${Math.min(30, Math.floor(150 / String(`${passed}/${total}`).length))}px` }, `${passed}/${total}`),
+  svg("text", { x: 100, y: 110, "text-anchor": "middle", class: "ring-sub", style: "font-size:10px" }, "passing test cases"),
   svg("text", { x: 18, y: 122, "text-anchor": "middle", class: "ring-sub" }, "0%"),
   svg("text", { x: 182, y: 122, "text-anchor": "middle", class: "ring-sub" }, "100%")));
 }

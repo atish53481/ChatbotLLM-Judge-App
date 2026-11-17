@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from backend import cancel, confident_upload, langfuse_upload, storage, traffic, usage
+from backend import cancel, confident_reports, confident_upload, langfuse_upload, startup_check, storage, traffic, usage
 from backend.dashboard import hardening
 from backend.dashboard import insights as scan_insights
 from backend.dashboard import scans as scan_history
@@ -44,8 +44,8 @@ from backend.datasets import prepare_all
 from backend.datasets import probe_refresh
 from backend.judges.judge import JUDGE_CONCURRENCY, build_judge, judge_config
 from backend.metrics_catalog import (
-    ATTACK_STRATEGIES, DEFAULT_THEME, ENVIRONMENTS, GROUPS, PROBE_DATASETS, SPECS_BY_KEY, UI_CATEGORIES,
-    UI_CATEGORY_LABELS, all_specs, ask, get_spec as _catalog_spec, metric_options,
+    ATTACK_STRATEGIES, DEFAULT_THEME, ENVIRONMENTS, FRAMEWORKS, GROUPS, PROBE_DATASETS, SPECS_BY_KEY,
+    UI_CATEGORIES, UI_CATEGORY_LABELS, all_specs, ask, framework_of, get_spec as _catalog_spec, metric_options,
 )
 from backend.rag.enhance import enhance_document, extract_text
 from backend.export_suite import build_suite, zip_suite
@@ -121,6 +121,13 @@ def web_app_home() -> RedirectResponse:
     return RedirectResponse("/app/")
 
 _conn = storage.init_db(DB_PATH)
+# Every report sent to Confident AI is kept (backend/confident_reports.py); uploads
+# made before that store existed are added once from the links on their runs.
+confident_reports.ensure_table(_conn)
+try:
+    confident_reports.backfill(_conn)
+except Exception as _error:  # noqa: BLE001 - never blocks the start
+    traffic.log("x  Confident AI report backfill failed: %s", str(_error)[:200])
 # Progress of runs in flight, keyed by the caller's run_id (see /api/run/progress),
 # and the ones asked to stop (see /api/run/cancel).
 _progress: dict[str, dict] = {}
@@ -752,7 +759,12 @@ def api_health():
 @app.get("/api/status")
 def api_status():
     config = judge_config(**_judge_overrides())
-    return {"judge": {"model": config["model"], "up": bool(config["api_key"])}}
+    # DeepEval / DeepTeam versions and the red-team payloads loaded (backend/startup_check.py).
+    try:
+        frameworks = startup_check.framework_status(probes_store)
+    except Exception:  # noqa: BLE001 - the status never fails on this
+        frameworks = None
+    return {"judge": {"model": config["model"], "up": bool(config["api_key"])}, "frameworks": frameworks}
 
 
 @app.get("/api/targets")
@@ -909,13 +921,28 @@ def _send_to_confident(job_id: int, key: str) -> dict:
     target = storage.get_target(_conn, scan["target_id"])
     name = target["name"] if target else f"chatbot {scan['target_id']}"
     theme = ((target or {}).get("config") or {}).get("theme") or DEFAULT_THEME
-    titles = {s.key: s.title for s in all_specs()}
-    sent = confident_upload.upload(scan, name, theme, titles, api_key=key)
-    _keep_on_job(job_id, "confident", {
-        "id": sent["id"], "link": sent["link"],
-        "sent_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
+    specs = all_specs()
+    titles = {s.key: s.title for s in specs}
+    multi_turn = {s.key for s in specs if s.kind in ("conversation", "attack")}
+    sent = confident_upload.upload(scan, name, theme, titles, api_key=key, conversational=multi_turn)
+    payloads = sent.pop("payloads", None)
+    info = {"id": sent["id"], "link": sent["link"],
+            **({"conversations_link": sent["conversations"]["link"]} if sent.get("conversations") else {}),
+            "sent_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+    _keep_on_job(job_id, "confident", info)
+    _save_confident_report("scan", job_id, scan["target_id"], f"{name} · scan v{scan.get('version')}",
+                           {**info, "test_cases": sent["test_cases"]}, payloads)
     traffic.log("== job %s: sent %d test cases to Confident AI", job_id, sent["test_cases"])
     return sent
+
+
+def _save_confident_report(kind: str, ref_id: int, target_id, title: str, sent: dict, payloads) -> None:
+    """Keeps every upload (link + the JSON sent) in confident_reports; never fails the send."""
+    try:
+        with storage._LOCK:
+            confident_reports.record(_conn, kind, ref_id, target_id, title, sent, payloads)
+    except Exception as error:  # noqa: BLE001 - the upload itself succeeded
+        traffic.log("x  could not save the Confident AI report (%s %s): %s", kind, ref_id, str(error)[:200])
 
 
 # Confident AI and Langfuse results are written to a finished job's options from
@@ -963,6 +990,56 @@ def api_send_scan_to_confident(job_id: int):
         raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:  # noqa: BLE001 - Confident AI's own message, never the key
         raise HTTPException(status_code=502, detail=f"Confident AI: {str(error)[:300]}")
+
+
+@app.get("/api/confident/reports")
+def api_confident_reports(target_id: int | None = None):
+    """Every report sent to Confident AI (newest first), with the chatbot's name."""
+    with storage._LOCK:
+        rows = confident_reports.list_reports(_conn, target_id)
+        names = {t["id"]: t["name"] for t in storage.list_targets(_conn)}
+    return [{**r, "chatbot": names.get(r["target_id"])} for r in rows]
+
+
+def _rebuild_confident_payloads(row: dict) -> list | None:
+    """What an upload sent, rebuilt from the stored results (uploads made before
+    reports were saved); None when the scan or run is gone."""
+    if row["kind"] == "scan":
+        scan = scan_history.get_scan(_conn, row["ref_id"])
+        if scan is None:
+            return None
+        target = storage.get_target(_conn, scan["target_id"])
+        name = target["name"] if target else f"chatbot {scan['target_id']}"
+        theme = ((target or {}).get("config") or {}).get("theme") or DEFAULT_THEME
+        specs = all_specs()
+        return [confident_upload.test_run_body(scan, name, theme, {s.key: s.title for s in specs},
+                                               {s.key for s in specs if s.kind in ("conversation", "attack")})]
+    from backend.redteam import confident_push
+    run = deepteam_engine.get_run(_conn, row["ref_id"])
+    if run is None:
+        return None
+    if row.get("sent_as") == "risk_assessment":
+        return [confident_push.body(run, row["title"])]
+    return [confident_upload._json(r) for r in confident_push.test_run(run, row["title"])]
+
+
+@app.get("/api/confident/reports/{report_id}/file")
+def api_confident_report_file(report_id: int):
+    """The JSON sent to Confident AI for one report, as a download."""
+    with storage._LOCK:
+        row = confident_reports.get(_conn, report_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="report not found")
+        data = confident_reports.read_file(row)
+        if data is None:
+            payloads = _rebuild_confident_payloads(row)
+            if payloads is None:
+                raise HTTPException(status_code=410, detail="the run behind this report was deleted")
+            confident_reports.write_file(_conn, report_id, payloads, rebuilt=True)
+            data = confident_reports.read_file(confident_reports.get(_conn, report_id))
+    name = f"confident-report-{report_id}-{row['kind']}-{row['ref_id']}.json"
+    return Response(content=data, media_type="application/json",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 # --- Langfuse: optional trace of each test run in Langfuse (cloud or self-hosted) ----
@@ -2032,7 +2109,7 @@ def api_reset_probes(_body: GoldenReset):
 class CustomMetricFields(BaseModel):
     """One of the user's own metrics (backend/datasets/custom_metrics.py)."""
     name: str = Field(min_length=1, max_length=80)
-    kind: Literal["geval", "dag"] = "geval"
+    kind: Literal["geval", "dag", "vulnerability"] = "geval"
     turns: Literal["single", "multi"] = "single"
     description: str = Field(default="", max_length=300)
     criteria: str = Field(default="", max_length=4000)
@@ -2042,6 +2119,37 @@ class CustomMetricFields(BaseModel):
     threshold: float = Field(default=0.7, ge=0, le=1)
     dataset: str = ""
     dag: dict | None = None
+    # kind "vulnerability" only: its types and its attacks [{id?, question, type}].
+    types: list[str] = Field(default_factory=list, max_length=custom_store.MAX_TYPES)
+    attacks: list[dict | str] = Field(default_factory=list, max_length=custom_store.MAX_ATTACKS * 2)
+
+
+class VulnerabilityAttacksRequest(BaseModel):
+    """What the judge needs to write attacks for a custom vulnerability (saved or not)."""
+    name: str = Field(min_length=1, max_length=80)
+    criteria: str = Field(min_length=1, max_length=4000)
+    description: str = Field(default="", max_length=300)
+    types: list[str] = Field(default_factory=list, max_length=custom_store.MAX_TYPES)
+    count: int = Field(default=5, ge=1, le=20)
+
+
+@app.post("/api/custom-metrics/vulnerability-attacks")
+def api_vulnerability_attacks(body: VulnerabilityAttacksRequest):
+    """The judge writes attacks for a custom vulnerability; nothing is saved
+    (the builder puts them in its form, Save stores them)."""
+    overrides = _judge_overrides()
+    if not judge_config(**overrides).get("api_key"):
+        raise HTTPException(status_code=400,
+                            detail="add the judge's API key in Judge settings first: the judge writes the attacks")
+    types = [t.strip() for t in body.types if t.strip()]
+    try:
+        attacks = probe_refresh.generate_vulnerability_attacks(
+            build_judge(**overrides), body.name, body.criteria, types, body.description, body.count)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:  # noqa: BLE001 - surface the judge failure to the panel
+        raise HTTPException(status_code=502, detail=f"judge failed: {type(e).__name__}: {e}") from e
+    return {"attacks": attacks}
 
 
 @app.get("/api/custom-metrics")
@@ -2256,6 +2364,9 @@ def api_list_metrics(target_id: int | None = None):
             "presets": s.presets(),
             "ui_category": s.ui_category,
             "ui_category_label": UI_CATEGORY_LABELS[s.ui_category],
+            # "deepeval" or "deepteam": the side panel's framework picker.
+            "framework": framework_of(s),
+            "framework_label": FRAMEWORKS[framework_of(s)],
             "scale_hint": s.scale_hint,
             "question": s.question,
             "dataset": s.dataset_name,
@@ -2304,6 +2415,8 @@ def _case_add_kind(spec) -> str | None:
     dataset = getattr(spec, "dataset_name", "")
     if dataset in ("conversations", "conversations_with_role"):
         return "conversation"
+    if dataset == custom_store.VULNERABILITY_DATASET:
+        return "probe"  # added like a probe, but stored with the custom vulnerability
     if dataset in PROBE_DATASETS:
         return "probe" if spec.key in probes_store.PROBE_METRICS else None
     if dataset.startswith("goldens"):
@@ -2330,9 +2443,17 @@ def _case_view(item: dict, probe_ids: set) -> dict:
     }
 
 
+def _attack_view(attack: dict) -> dict:
+    """A custom vulnerability's attack as the side panel lists a probe."""
+    return {"id": attack["id"], "kind": "probe", "question": attack["question"], "expected_answer": "",
+            "context": [], "expected_tools": [], "context_in_prompt": False}
+
+
 def _probe_ids(spec, probe_set: str) -> set:
     """Ids of this metric's probes: the shared store's, plus the chatbot's own
     set (its own file) when it has one."""
+    if spec.dataset_name == custom_store.VULNERABILITY_DATASET:
+        return {a["id"] for a in (custom_store.get_metric(spec.key) or {}).get("attacks") or []}
     ids = {p["id"] for p in probes_store.load_probes(metric=spec.key)}
     if probes_store.is_target_set(probe_set):
         ids |= {p["id"] for p in probes_store.load_probes(probe_set=probe_set) if p["metric"] == spec.key}
@@ -2353,7 +2474,8 @@ def api_metric_cases(key: str, target_id: int | None = None):
     cases-per-run cap), and where a new one would be added."""
     spec, (theme, persona, probe_set, unavailable) = _cases_scope(key, target_id)
     items = spec.cases(theme=theme, persona=persona, probe_set=probe_set)
-    probe_ids = _probe_ids(spec, probe_set) if spec.dataset_name in PROBE_DATASETS else set()
+    probe_ids = (_probe_ids(spec, probe_set)
+                 if spec.dataset_name in (*PROBE_DATASETS, custom_store.VULNERABILITY_DATASET) else set())
     return {
         "key": spec.key,
         "title": spec.title,
@@ -2417,6 +2539,13 @@ def api_generate_similar_probes(key: str, body: GenerateSimilarProbes):
     except Exception as e:  # noqa: BLE001 - surface the judge failure to the panel
         raise HTTPException(status_code=502, detail=f"judge failed: {type(e).__name__}: {e}") from e
 
+    if spec.dataset_name == custom_store.VULNERABILITY_DATASET:
+        try:
+            added = custom_store.add_attacks(spec.key, questions)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        cases = [_attack_view(a) for a in added]
+        return {"generated": len(cases), "cases": cases, "metric": spec.key, "probe_set": None}
     probe_set = probe_set or probes_store.DEFAULT_PROBE_SET
     note = f"related to seed · written by the judge for {spec.key}"
     cases = []
@@ -2441,6 +2570,16 @@ def api_add_metric_case(key: str, body: MetricCaseCreate):
     spec, (theme, persona, probe_set, _unavailable) = _cases_scope(key, body.target_id)
     kind = _case_add_kind(spec)
     question = body.question.strip()
+    if spec.dataset_name == custom_store.VULNERABILITY_DATASET:
+        if not question:
+            raise HTTPException(status_code=400, detail="a test case needs a question")
+        try:
+            added = custom_store.add_attacks(spec.key, [question])
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        if not added:
+            raise HTTPException(status_code=400, detail="this attack is already in the list")
+        return _attack_view(added[0])
     if kind == "probe":
         if not question:
             raise HTTPException(status_code=400, detail="a test case needs a question")
@@ -2492,6 +2631,10 @@ def api_delete_metric_case(key: str, case_id: str, target_id: int | None = None)
     shared: every metric that reads the golden set loses it too."""
     spec, (theme, persona, probe_set, _unavailable) = _cases_scope(key, target_id)
     kind = _case_add_kind(spec)
+    if spec.dataset_name == custom_store.VULNERABILITY_DATASET:
+        if not custom_store.delete_attack(spec.key, case_id):
+            raise HTTPException(status_code=404, detail="test case not found")
+        return {"deleted": case_id}
     if kind == "conversation" and case_id.startswith("auto_"):
         # Built from the goldens, not stored: save the others so this one stays gone.
         goldens = [g for g in goldens_store.load_goldens(theme=theme) if g.get("status") != "draft"]
@@ -2557,6 +2700,15 @@ def api_update_metric_case(key: str, case_id: str, body: MetricCaseCreate):
 
     if not question:
         raise HTTPException(status_code=400, detail="a test case needs a question")
+
+    if spec.dataset_name == custom_store.VULNERABILITY_DATASET:
+        try:
+            row = custom_store.update_attack(spec.key, case_id, question)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        if row is None:
+            raise HTTPException(status_code=404, detail="test case not found")
+        return _attack_view(row)
 
     if kind == "probe" and case_id in _probe_ids(spec, probe_set):
         old = next((p for p in probes_store.load_probes(metric=spec.key) if p["id"] == case_id), None)
@@ -2829,8 +2981,11 @@ def api_scan_risk(job_id: int):
     if scan is None:
         raise HTTPException(status_code=404, detail="scan not found")
     specs = all_specs()
-    return risk_assessment.assessment(scan, {s.key: s.title for s in specs}, {s.key: s.group for s in specs},
-                                      _probe_notes(scan.get("target_id")))
+    out = risk_assessment.assessment(scan, {s.key: s.title for s in specs}, {s.key: s.group for s in specs},
+                                     _probe_notes(scan.get("target_id")), {s.key: s.improve for s in specs})
+    # The scan's Confident AI upload ({link} or {error}), for the page's View / Send button.
+    out["confident"] = scan.get("confident")
+    return out
 
 
 @app.get("/api/scans/{job_id}/compare")
@@ -3185,6 +3340,253 @@ def api_delete_label(label_id: int):
     return {"deleted": label_id}
 
 
+# --- DeepTeam's own engine (backend/redteam/): RedTeamer runs, guardrails, YAML export ---
+# Separate from the app's red-team metrics: these call DeepTeam itself, store
+# DeepTeam's RiskAssessment in the deepteam_runs table, and change nothing else.
+from backend.redteam import engine as deepteam_engine  # noqa: E402
+from backend.redteam import guardrails as deepteam_guardrails  # noqa: E402
+from backend.redteam import yaml_export as deepteam_yaml  # noqa: E402
+
+with storage._LOCK:
+    deepteam_engine.interrupt_unfinished(_conn)
+
+
+class DeepTeamVulnerability(BaseModel):
+    # "class" is a Python keyword: the JSON field is "class".
+    cls: str = Field(alias="class", min_length=1, max_length=100)
+    types: list[str] = Field(default_factory=list, max_length=50)
+
+
+class DeepTeamRun(BaseModel):
+    target_id: int
+    vulnerabilities: list[DeepTeamVulnerability] = Field(default_factory=list, max_length=60)
+    attacks: list[str] = Field(default_factory=list, max_length=60)
+    attack_weights: dict[str, int] = Field(default_factory=dict)
+    framework: str = ""
+    framework_categories: list[str] = Field(default_factory=list, max_length=20)
+    num_attacks: int = Field(default=15, ge=1, le=deepteam_engine.MAX_DATASET_ATTACKS)
+    attacks_per_vulnerability_type: int = Field(default=1, ge=1, le=deepteam_engine.MAX_ATTACKS_PER_TYPE)
+    run_all_attacks: bool = False
+    exposure: str = "MEDIUM"
+    target_purpose: str = Field(default="", max_length=2000)
+    attack_engine: bool = False
+    variations: int = Field(default=1, ge=1, le=5)
+    generation_guidelines: list[str] = Field(default_factory=list, max_length=20)
+
+
+def _deepteam_opts(body: DeepTeamRun, row: dict) -> dict:
+    opts = body.model_dump(exclude={"target_id"})
+    opts["vulnerabilities"] = [{"class": v.cls, "types": v.types} for v in body.vulnerabilities]
+    # The chatbot's role (persona) is DeepTeam's target_purpose unless one is typed.
+    opts["target_purpose"] = body.target_purpose.strip() or (row["config"].get("persona") or "")
+    return opts
+
+
+def _deepteam_judge_ready() -> bool:
+    try:
+        build_judge(**_judge_overrides())
+        return True
+    except RuntimeError:
+        return False
+
+
+@app.get("/api/deepteam/options")
+def api_deepteam_options():
+    """What a DeepTeam run can use: vulnerabilities (with types), single- and
+    multi-turn attacks, frameworks, exposures and guards, from the installed deepteam."""
+    out = deepteam_engine.options()
+    out["guards"] = deepteam_guardrails.options()
+    return out
+
+
+@app.post("/api/deepteam/runs")
+def api_deepteam_run(body: DeepTeamRun):
+    row = _target_or_404(body.target_id)
+    problem = deepteam_engine.available()
+    if problem:
+        raise HTTPException(status_code=503, detail=problem)
+    if not _deepteam_judge_ready():
+        raise HTTPException(status_code=503, detail="Judge not configured: add its API key in Judge settings.")
+    opts = _deepteam_opts(body, row)
+    # Check the picks before queueing, so a typo is a 400 rather than a failed run.
+    try:
+        if opts["framework"]:
+            if opts["framework"] not in deepteam_engine.FRAMEWORKS:
+                raise ValueError(f"unknown framework: {opts['framework']!r}")
+        else:
+            if not opts["vulnerabilities"]:
+                raise ValueError("pick at least one vulnerability, or a framework")
+            deepteam_engine.build_vulnerabilities(opts["vulnerabilities"], opts["target_purpose"])
+            deepteam_engine.build_attacks(opts["attacks"], opts["target_purpose"])
+        if opts["exposure"].upper() not in deepteam_engine.EXPOSURES:
+            raise ValueError(f"exposure must be one of: {', '.join(deepteam_engine.EXPOSURES)}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    _client_or_400(row)  # a broken chatbot config fails now, not inside the run
+    run_id = deepteam_engine.RUNNER.start(
+        _conn, storage._LOCK, row["id"], opts,
+        make_client=lambda: _client_or_400(row),
+        make_judge=lambda: build_judge(**_judge_overrides()),
+        background=os.getenv("JUDGE_START_JOB_WORKER", "1") != "0",
+        on_done=_deepteam_auto_confident,
+    )
+    return {"run_id": run_id}
+
+
+@app.get("/api/deepteam/runs/{run_id}")
+def api_deepteam_get_run(run_id: int):
+    with storage._LOCK:
+        run = deepteam_engine.get_run(_conn, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="DeepTeam run not found")
+    return run
+
+
+def _send_deepteam_to_confident(run_id: int, key: str) -> dict:
+    """Uploads one DeepTeam run as a Confident AI risk assessment and keeps the link on it."""
+    from backend.redteam import confident_push
+
+    with storage._LOCK:
+        run = deepteam_engine.get_run(_conn, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="DeepTeam run not found")
+    target = storage.get_target(_conn, run["target_id"])
+    name = target["name"] if target else f"chatbot {run['target_id']}"
+    try:
+        try:
+            judge_model = judge_config(**_judge_overrides()).get("model")
+        except Exception:  # noqa: BLE001 - the name is a label only
+            judge_model = None
+        sent = confident_push.push(run, key, identifier=f"LLM Judge · {name} · DeepTeam run #{run_id}",
+                                   judge_model=judge_model)
+    except ValueError as e:
+        with storage._LOCK:
+            deepteam_engine.set_confident(_conn, run_id, {"error": str(e)[:500]})
+        raise
+    info = {"id": sent["id"], "link": sent["link"], "test_cases": sent["test_cases"],
+            "as": sent.get("as", "risk_assessment"),
+            **{k: sent[k] for k in ("note", "multi_turn_link") if sent.get(k)},
+            "sent_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+    with storage._LOCK:
+        deepteam_engine.set_confident(_conn, run_id, info)
+    _save_confident_report("deepteam", run_id, run["target_id"], f"{name} · DeepTeam run #{run_id}",
+                           info, sent.get("payloads"))
+    traffic.log("== DeepTeam run %s: sent %d test cases to Confident AI", run_id, sent["test_cases"])
+    return info
+
+
+@app.post("/api/deepteam/runs/{run_id}/confident")
+def api_deepteam_confident(run_id: int):
+    """Sends a finished DeepTeam run to Confident AI (Red Teaming > Risk Assessments),
+    with the Confident AI key saved in the side panel (or CONFIDENT_API_KEY)."""
+    key, _ = _confident_key()
+    if not key:
+        raise HTTPException(status_code=400, detail="No Confident AI key: add it in the side panel's Confident AI card.")
+    try:
+        return _send_deepteam_to_confident(run_id, key)
+    except ValueError as e:
+        raise HTTPException(status_code=409 if "finished" in str(e) else 502, detail=str(e)) from e
+    except OSError as e:  # requests' connection errors are OSErrors
+        raise HTTPException(status_code=502, detail=f"Could not reach Confident AI: {str(e)[:200]}") from e
+
+
+def _deepteam_auto_confident(run_id: int) -> None:
+    """After a DeepTeam run: send it when a Confident AI key is saved with auto-send on (as scans do)."""
+    key, _ = _confident_key()
+    if key and storage.get_meta(_conn, _CONFIDENT_AUTO_META) == "1":
+        try:
+            _send_deepteam_to_confident(run_id, key)
+        except Exception as e:  # noqa: BLE001 - the run stays done; the error is kept on it
+            traffic.log("x  DeepTeam run %s: Confident AI upload failed: %s", run_id, str(e)[:300])
+
+
+@app.get("/api/deepteam/runs/{run_id}/risk")
+def api_deepteam_risk(run_id: int):
+    """One DeepTeam run as a Risk Assessment (risk.deepteam_assessment): the same
+    report as a scan's (risk/risk.html?deepteam=<id>), with DeepTeam's CVSS scores."""
+    with storage._LOCK:
+        run = deepteam_engine.get_run(_conn, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="DeepTeam run not found")
+    if run["status"] in ("queued", "running"):
+        raise HTTPException(status_code=409, detail="the run has not finished yet")
+    return risk_assessment.deepteam_assessment(run, {s.key: s.improve for s in all_specs()})
+
+
+@app.get("/api/targets/{target_id}/deepteam/runs")
+def api_deepteam_list_runs(target_id: int):
+    _target_or_404(target_id)
+    with storage._LOCK:
+        return deepteam_engine.list_runs(_conn, target_id)
+
+
+@app.post("/api/deepteam/runs/{run_id}/cancel")
+def api_deepteam_cancel(run_id: int):
+    return {"cancelled": deepteam_engine.RUNNER.cancel(run_id)}
+
+
+@app.delete("/api/deepteam/runs/{run_id}")
+def api_deepteam_delete(run_id: int):
+    with storage._LOCK:
+        deleted = deepteam_engine.delete_run(_conn, run_id)
+    if not deleted:
+        raise HTTPException(status_code=409, detail="not found, or still queued/running (stop it first)")
+    return {"deleted": run_id}
+
+
+class GuardCheck(BaseModel):
+    input: str = Field(min_length=1, max_length=20000)
+    output: str | None = Field(default=None, max_length=50000)
+    input_guards: list[str] = Field(default_factory=list, max_length=10)
+    output_guards: list[str] = Field(default_factory=list, max_length=10)
+    allowed_topics: list[str] = Field(default_factory=list, max_length=50)
+    purpose: str = Field(default="", max_length=2000)
+    # Send the input to this chatbot and guard its real reply (when output is empty).
+    target_id: int | None = None
+
+
+@app.post("/api/deepteam/guardrails")
+def api_deepteam_guardrails(body: GuardCheck):
+    problem = deepteam_engine.available()
+    if problem:
+        raise HTTPException(status_code=503, detail=problem)
+    try:
+        judge = build_judge(**_judge_overrides())
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    client = None
+    purpose = body.purpose
+    if body.target_id is not None and body.output is None:
+        row = _target_or_404(body.target_id)
+        client = _client_or_400(row)
+        purpose = purpose or (row["config"].get("persona") or "")
+    try:
+        return deepteam_guardrails.check(
+            judge, body.input, body.input_guards, body.output_guards, output=body.output, client=client,
+            allowed_topics=body.allowed_topics, purpose=purpose)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    finally:
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+
+
+@app.post("/api/targets/{target_id}/deepteam/export")
+def api_deepteam_export(target_id: int, body: DeepTeamRun | None = None):
+    """A zip to run DeepTeam's own CLI on this chatbot: config.yaml + callback.
+    Header values are left out (see backend/redteam/yaml_export.py)."""
+    row = _target_or_404(target_id)
+    if row["type"] != "http":
+        raise HTTPException(status_code=400, detail="The export replays the chatbot's HTTP request; "
+                                                    "an MCP server cannot be exported yet.")
+    opts = _deepteam_opts(body, row) if body is not None else {}
+    data = deepteam_yaml.build_zip(row, judge_config(**_judge_overrides()), opts)
+    name = re.sub(r"[^A-Za-z0-9_-]+", "_", row["name"]).strip("_") or "chatbot"
+    return Response(data, media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="deepteam-{name}.zip"'})
+
+
 # Daily "latest" red-team probes: on start, a background thread has the judge
 # write 10 probes per probe metric from OWASP (LLM / Agentic / MCP / RAG) and
 # DeepTeam standards when the last refresh is over a day old
@@ -3192,3 +3594,9 @@ def api_delete_label(label_id: int):
 # without a judge key the shipped probes are used. JUDGE_PROBE_REFRESH=0 = off.
 # Last in the module: the thread may start at once and needs _judge_overrides.
 probe_refresh.start_on_boot(lambda: build_judge(**_judge_overrides()), lambda days: storage.recent_metric_keys(_conn, days))
+
+# On a real start (not in tests, which set JUDGE_START_JOB_WORKER=0): DeepTeam's
+# catalog matches the installed version, its payloads are reloaded into the probe
+# store, and the versions + payload counts are printed (backend/startup_check.py).
+if os.getenv("JUDGE_START_JOB_WORKER", "1") != "0":
+    startup_check.on_start(probes_store)

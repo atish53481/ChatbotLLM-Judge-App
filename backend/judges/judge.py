@@ -5,6 +5,8 @@ Ported from the AITesterBlueprint3x reference framework's llm_providers/judge.py
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import contextvars
 import os
 import random
 import threading
@@ -40,6 +42,38 @@ _SLOTS = threading.BoundedSemaphore(JUDGE_CONCURRENCY)
 _MAX_RETRIES = 5
 # Seconds one judge call may take before it is abandoned (and retried by the client).
 JUDGE_TIMEOUT_S = 90
+# Wall-clock cap on one judge call. The client's timeout is per read, so a
+# provider that trickles keep-alive bytes (OpenRouter does) never trips it: one
+# call was seen hanging 39 min. Past this the call is abandoned and retried.
+JUDGE_DEADLINE_S = 150
+_DEADLINE_RETRIES = 2
+
+
+class JudgeTimeout(TimeoutError):
+    """A judge call passed JUDGE_DEADLINE_S without an answer."""
+
+
+def _with_deadline(fn, *args, **kwargs):
+    """fn(*args, **kwargs) on a worker thread, given up after JUDGE_DEADLINE_S.
+
+    Waits in short steps so Stop (cancel.check) ends the wait at once instead of
+    after the call. An abandoned call's thread is left to finish on its own."""
+    ctx = contextvars.copy_context()  # usage meter + cancel check follow the call
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="judge-call")
+    try:
+        future = pool.submit(ctx.run, fn, *args, **kwargs)
+        end = time.monotonic() + JUDGE_DEADLINE_S
+        while True:
+            cancel.check()
+            left = end - time.monotonic()
+            if left <= 0:
+                future.cancel()
+                raise JudgeTimeout(f"The judge did not answer within {JUDGE_DEADLINE_S} s.")
+            done, _ = concurrent.futures.wait([future], timeout=min(0.5, left))
+            if done:
+                return future.result()  # its own exception, if any, propagates
+    finally:
+        pool.shutdown(wait=False)
 
 
 def _is_rate_limit(err: Exception) -> bool:
@@ -53,12 +87,20 @@ class GroqJudge(LocalModel):
     """LocalModel plus a cap on calls in flight and backoff for rate limits."""
 
     def _call(self, fn, *args, **kwargs):
+        timeouts = 0
         for attempt in range(_MAX_RETRIES):
             cancel.check()  # a stopped job makes no more judge calls
             try:
                 with _SLOTS:
                     cancel.check()  # it may have been stopped while waiting for a slot
                     return fn(*args, **kwargs)
+            except JudgeTimeout:
+                timeouts += 1
+                if timeouts > _DEADLINE_RETRIES or attempt == _MAX_RETRIES - 1:
+                    raise
+                traffic.log("<- judge hung past %d s: retrying (%d of %d)",
+                            JUDGE_DEADLINE_S, timeouts, _DEADLINE_RETRIES)
+                continue
             except Exception as e:  # noqa: BLE001 - provider raises many types
                 if isinstance(e, cancel.RunCancelled) or not _is_rate_limit(e) or attempt == _MAX_RETRIES - 1:
                     raise
@@ -113,7 +155,7 @@ class GroqJudge(LocalModel):
             prompt = sum(len(str(m.get("content") or "")) for m in messages if isinstance(m, dict))
             traffic.log("-> judge %s: prompt of %d chars", kwargs.get("model", ""), prompt)
             started = time.monotonic()
-            response = create(*args, **kwargs)
+            response = _with_deadline(create, *args, **kwargs)
             u = getattr(response, "usage", None)
             usage.record_judge(u)
             try:

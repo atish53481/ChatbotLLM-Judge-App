@@ -205,15 +205,41 @@ def test_rejected_request_says_to_refresh_the_curl(mock_request):
         HttpTargetClient(_config()).chat("hi")
 
 
+@patch("backend.targets.http_client._sleep")
 @patch("backend.targets.http_client.requests.request")
-def test_timeout_and_unreachable_chatbot_have_plain_messages(mock_request):
+def test_timeout_and_unreachable_chatbot_have_plain_messages(mock_request, mock_sleep):
     import requests
     mock_request.side_effect = requests.Timeout("read timed out")
-    with pytest.raises(ValueError, match="did not answer within"):
+    with pytest.raises(ValueError, match="did not answer within .*3 retries"):
         HttpTargetClient(_config()).chat("hi")
+    assert mock_request.call_count == 4
     mock_request.side_effect = requests.ConnectionError("refused")
     with pytest.raises(ValueError, match="Could not reach the chatbot"):
         HttpTargetClient(_config()).chat("hi")
+
+
+@patch("backend.targets.http_client._sleep")
+@patch("backend.targets.http_client.requests.request")
+def test_timeout_is_retried_until_the_chatbot_answers(mock_request, mock_sleep):
+    import requests
+    mock_request.side_effect = [requests.Timeout("slow"), _response('{"data": {"text": "ok"}}')]
+    assert HttpTargetClient(_config()).chat("hi").reply == "ok"
+    mock_sleep.assert_called_once_with(2.0)
+
+
+@patch("backend.targets.http_client._sleep")
+@patch("backend.targets.http_client.requests.request")
+def test_server_errors_are_retried_but_client_errors_are_not(mock_request, mock_sleep):
+    # A chatbot wrapping its LLM provider's 429 in a 502: retried, then answers.
+    wrapped = _response('{"detail": "Chatbot LLM error: Error code: 429"}', status=502)
+    mock_request.side_effect = [wrapped, _response('{"data": {"text": "ok"}}')]
+    assert HttpTargetClient(_config()).chat("hi").reply == "ok"
+    mock_request.side_effect = None
+    mock_request.reset_mock()
+    mock_request.return_value = _response("bad", status=400)
+    with pytest.raises(ValueError, match="HTTP 400"):
+        HttpTargetClient(_config()).chat("hi")
+    assert mock_request.call_count == 1
 
 
 @patch("backend.targets.http_client._clock")
@@ -332,3 +358,15 @@ def test_stream_notices_paths_and_reads_saved_ones(mock_request):
     assert [t["name"] for t in reply.tools_called] == ["lookup_order"]
     assert reply.retrieval_context == ["Orders ship in 1-2 days."]
     assert saved.discovered == {}
+
+
+def test_target_timeout_comes_from_the_environment(monkeypatch):
+    from backend.targets import http_client
+    monkeypatch.delenv("JUDGE_TARGET_TIMEOUT_S", raising=False)
+    assert http_client.target_timeout() == 60
+    monkeypatch.setenv("JUDGE_TARGET_TIMEOUT_S", "240")
+    assert http_client.target_timeout() == 240
+    monkeypatch.setenv("JUDGE_TARGET_TIMEOUT_S", "99999")
+    assert http_client.target_timeout() == 900
+    monkeypatch.setenv("JUDGE_TARGET_TIMEOUT_S", "soon")
+    assert http_client.target_timeout() == 60

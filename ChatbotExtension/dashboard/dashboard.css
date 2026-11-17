@@ -135,6 +135,9 @@ body.dash {
 .header-controls .view-switch button[aria-pressed="true"] { background: var(--accent); color: #fff; }
 .chip-toggle { border-radius: 999px; padding: 5px 14px; font-size: 12px; background: var(--surface-1); }
 .chip-toggle[aria-pressed="true"] { background: var(--accent); color: #fff; border-color: transparent; }
+/* Category chips in one cluster per framework (DeepEval, DeepTeam), each headed by its name. */
+.category-cluster { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 3px 8px 3px 10px; border: 1px dashed var(--grid, rgba(128, 128, 128, 0.35)); border-radius: 999px; }
+.category-cluster-label { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); }
 .inline-label { display: flex; align-items: center; gap: 6px; color: var(--text-secondary); }
 
 .metric-section { margin: 0 20px 16px; }

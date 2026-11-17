@@ -77,6 +77,7 @@
       <div class="row">
         <button type="submit" class="primary">Save</button>
         <button type="button" id="confident-clear-key" class="small-button hidden" title="Forget the key saved here">Remove saved key</button>
+        <button type="button" id="confident-reports" class="small-button" title="Every report sent to Confident AI: links and saved copies">Sent reports ↗</button>
       </div>
       <p id="confident-result" class="small" role="status"></p>
     </form>
@@ -485,6 +486,13 @@
     </div>
     <details id="threshold-details" open>
       <summary>Metrics to run <span id="metric-check-count" class="muted small"></span></summary>
+      <div class="framework-picker" role="radiogroup" aria-label="Framework to scan with"
+        title="Pick the framework to scan with: Run judge sends only the ticked metrics of this framework">
+        <span class="muted small">Framework</span>
+        <label><input type="radio" name="metric-framework" value="all" checked> <span>Both <small id="framework-count-all" class="muted"></small></span></label>
+        <label><input type="radio" name="metric-framework" value="deepeval"> <span>DeepEval <small id="framework-count-deepeval" class="muted"></small></span></label>
+        <label><input type="radio" name="metric-framework" value="deepteam"> <span>DeepTeam <small id="framework-count-deepteam" class="muted"></small></span></label>
+      </div>
       <p class="muted small metric-check-hint">Quick select groups · then fine-tune below</p>
       <div class="row metric-check-actions" role="group" aria-label="Quick select metric groups">
         <button type="button" id="check-all-metrics" class="small-button">All Metrics</button>
@@ -526,6 +534,7 @@
   </section>
 
   <button id="open-dashboard" type="button" class="wide">Open dashboard</button>
+  <button id="open-deepteam" type="button" class="wide" title="DeepTeam's own engine: RedTeamer red teaming, frameworks (OWASP, NIST, MITRE, EU AI Act, BeaverTails, Aegis), guardrails and the YAML CLI">DeepTeam red teaming</button>
   <button id="open-advanced" type="button" class="wide" title="Custom metrics, A/B tests, run comparison, red-team coverage, simulation, calibration and CI export">Advanced tools</button>
 
   <script src="../lib/vendor/chart.umd.min.js"></script>
@@ -534,6 +543,7 @@
   <script src="../lib/ui.js"></script>
   <script src="../lib/charts.js"></script>
   <script src="../lib/geval-builder.js"></script>
+  <script src="../lib/vulnerability-builder.js"></script>
   <script src="sidebar.js"></script>
   <script src="discovery.js"></script>
 </body>

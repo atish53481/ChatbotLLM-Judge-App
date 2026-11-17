@@ -267,7 +267,8 @@ record scores that mean nothing:
 - **Max message length.** Messages longer than this are not sent: Summarization
   shortens its source to fit, other cases are skipped, and the result's note says
   how many.
-- **Busy chatbots.** HTTP 429/503 replies are retried up to 3 times (after the
+- **Busy chatbots.** HTTP 408, 429 and 5xx replies (incl. a 502 wrapping the chatbot's own
+  LLM rate limit), timeouts and refused connections are retried up to 3 times (after the
   chatbot's `Retry-After`, else 2, 4, 8 s). *Delay between messages* spaces out
   every message for chatbots that rate-limit.
 - **Plain errors.** An HTTP 401/403 says the session or cookie has probably expired
