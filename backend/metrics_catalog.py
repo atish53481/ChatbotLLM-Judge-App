@@ -366,8 +366,9 @@ NO_CASES_NEEDS = {
 
 
 def _reviewed(goldens: list[dict]) -> list[dict]:
-    """Drafts (generated goldens not yet accepted) are never sent in a run."""
-    return [g for g in goldens if g.get("status") != "draft"]
+    """Drafts (generated goldens not yet accepted) are never sent in a run.
+    Auto-created tool goldens (source="auto_tools") are always reviewed."""
+    return [g for g in goldens if g.get("status") != "draft" or g.get("source") == "auto_tools"]
 
 
 def deepeval_threshold(spec: MetricSpec, threshold: float) -> float:

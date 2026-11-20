@@ -268,7 +268,11 @@ test("test case table shows score detail, status and success rates", async () =>
   const [refundRelevancy, refundHallucination, shipping] = testCaseRows(report);
   assert.match(refundRelevancy.textContent, /0\.40 \(threshold ≥ 0\.70, evaluation model=judge-x/);
   assert.match(refundRelevancy.textContent, /FAILED/);
-  assert.match(refundRelevancy.textContent, /How to improve: Answer the question first\./);
+  // Same word diffs and how-to-pass as the app's failed case cards.
+  assert.match(refundRelevancy.textContent, /Differences/);
+  assert.match(refundRelevancy.textContent, /Changed: the reply says .5. where the expected answer says .7./);
+  assert.match(refundRelevancy.textContent, /How to pass/);
+  assert.match(refundRelevancy.textContent, /Fix the chatbot: Answer the question first\./);
   assert.match(refundRelevancy.textContent, /50%/, "TC-01 passed 1 of its 2 checks");
   assert.match(refundHallucination.textContent, /threshold ≤ 0\.50/, "lower-is-better threshold is a maximum");
   assert.match(refundHallucination.textContent, /PASSED/);
@@ -313,7 +317,7 @@ test("case cards: bold diff for single-turn cases, none for conversations", asyn
   const conversation = cases.find((c) => /Returns scenario/.test(c.textContent));
   assert.match(conversation.textContent, /Scenario/);
   assert.equal(byClass(conversation, "diff").length, 0);
-  assert.match(relevancy.textContent, /How to improve/);
+  assert.match(relevancy.textContent, /How to pass/);
 });
 
 test("appendix names the lower-is-better metrics from the catalog", async () => {
@@ -330,7 +334,7 @@ test("saved options pick sections and metrics at runtime", async () => {
   const rows = testCaseRows(page.report);
   assert.equal(rows.length, 2);
   assert.ok(rows.every((r) => /Answer Relevancy/.test(r.textContent)));
-  assert.doesNotMatch(page.report.textContent, /How to improve/);
+  assert.doesNotMatch(page.report.textContent, /How to pass/);
   assert.equal(byClass(page.report, "diff").length, 0);
   assert.match(page.report.textContent, /1 passed case not listed/);
   assert.equal(byClass(page.report, "appendix").length, 0);

@@ -12,7 +12,7 @@ from backend.judges.ask import ask_json
 from backend.targets.base import ChatReply
 
 PROBE_TOOL_MESSAGES = 3
-MATERIAL_CHARS = 6000
+MATERIAL_CHARS = 12000  # match richer context used by write_dataset and probe generation
 
 
 @dataclass
@@ -76,6 +76,8 @@ def _add_known(profile: Profile, tools) -> None:
 
 
 def _probe_for_tools(client, judge, material: str, profile: Profile) -> None:
+    """Uses the richer MATERIAL_CHARS (12k) so the judge sees far more of the
+    chatbot's own help pages and interview replies when inventing tool-use messages."""
     prompt = TOOL_PROBE_PROMPT.format(n=PROBE_TOOL_MESSAGES, material=material[:MATERIAL_CHARS])
     try:
         messages = ask_json(judge, prompt).get("messages")
@@ -94,6 +96,7 @@ def _probe_for_tools(client, judge, material: str, profile: Profile) -> None:
 
 
 def _persona(judge, material: str) -> str:
+    """Now receives much richer material (up to 12k chars of help pages + interview)."""
     try:
         text = ask_json(judge, PERSONA_PROMPT.format(material=material[:MATERIAL_CHARS])).get("persona")
     except ValueError:

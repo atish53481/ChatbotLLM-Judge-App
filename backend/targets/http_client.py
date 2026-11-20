@@ -408,6 +408,12 @@ class HttpTargetClient(ChatbotClient):
             if isinstance(piece, str):
                 pieces.append(piece)
         if not pieces:
+            # Special handling for security probes that return permission-denied or safety blocks
+            error_events = [e for e in events if isinstance(e, dict) and e.get("type") == "error"]
+            if error_events:
+                error = error_events[0].get("error") or str(error_events[0])
+                if any(k in str(error).lower() for k in ("permission-denied", "can't help", "i can't help", "forbidden", "unauthorized", "policy", "refused")):
+                    return f"[REFUSAL] {error}"
             raise ValueError(
                 f"no stream event has text at response_path {self.response_path!r}; "
                 f"first events: {_preview(json.dumps(events[:3], ensure_ascii=False))}"

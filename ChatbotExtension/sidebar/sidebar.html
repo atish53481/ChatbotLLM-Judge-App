@@ -165,6 +165,7 @@
       </div>
       <form id="target-form" class="stack">
         <label>Name <input id="target-name" required maxlength="80"></label>
+        <p id="target-learned" class="target-learned small hidden" role="status"></p>
         <div id="target-existing" class="row hidden" role="status">
           <span id="target-existing-text" class="small"></span>
           <button type="button" id="target-save-as-new" class="small-button">Save as new instead</button>
@@ -215,7 +216,7 @@
         <label>Headers (one "Name: value" per line)
           <textarea id="target-headers" rows="3" spellcheck="false" placeholder="Content-Type: application/json&#10;Authorization: Bearer …"></textarea>
         </label>
-        <p id="target-headers-hint" class="muted small hidden">Saved headers are hidden. Leave empty to keep them; type new ones to replace them all.</p>
+        <p id="target-headers-hint" class="muted small hidden">Saved header values show as ***. Leave a line as *** (or clear the box) to keep that secret; type a real value to replace it; remove a line to drop that header.</p>
         <label><span>Body (put <code>{{message}}</code> where the question goes)</span>
           <textarea id="target-body" rows="4" spellcheck="false" placeholder='{"message": "{{message}}"}'></textarea>
         </label>
@@ -242,6 +243,9 @@
           <label>Tool calls path (agent metrics)
             <input id="target-tools-path" spellcheck="false" placeholder="auto: found in the replies (e.g. tool_calls)" title="Where the chatbot's response lists the tools it called (an agent). Filled in automatically when a reply has them (pasted cURL or any scan). Turns on Tool Correctness, Argument Correctness, Plan Quality / Adherence and Step Efficiency.">
           </label>
+          <label id="target-tools-list-wrap" class="hidden">Tools found (Build all / discovery)
+            <textarea id="target-tools-list" rows="3" readonly spellcheck="false" title="Tool names Build all test data or Find missing metric data learned. Read-only here; re-run Build or discovery to refresh."></textarea>
+          </label>
           <label>Security probes
             <select id="target-probe-set" title="Which red-team probes the Security metrics send: E-commerce ones mention orders, refunds and customers; Generic ones fit any assistant.">
               <option value="generic">Generic (any assistant)</option>
@@ -257,8 +261,8 @@
         <label>Help / FAQ page URL (optional, for golden answers with Context)
           <input id="target-help-url" type="url" spellcheck="false" placeholder="https://example.com/help" title="A page with what this chatbot should know (FAQ, policies, help centre). When a new chatbot is saved, golden answers with Context are generated from it, which Faithfulness, Hallucination, Summarization and the Contextual metrics need.">
         </label>
-        <details class="target-limits">
-          <summary>Limits and reply checks</summary>
+        <details id="target-limits" class="target-limits">
+          <summary>Limits and reply checks <span id="target-limits-summary" class="muted small"></span></summary>
           <label>Max message length (characters, optional)
             <input id="target-max-length" type="number" min="1" step="1" placeholder="no limit" title="The longest message this chatbot accepts. Longer test messages are shortened where they can be (Summarization) and otherwise skipped, instead of failing the run.">
           </label>
@@ -401,16 +405,33 @@
     <p id="golden-prompt" class="golden-missing small hidden" role="status"></p>
     <ul id="golden-list" class="golden-list"></ul>
     <details id="add-golden">
-      <summary id="golden-form-summary">Add a golden answer</summary>
-      <form id="golden-form" class="stack">
-        <label>Question <textarea id="golden-question" rows="2" required></textarea></label>
-        <label>Expected answer <textarea id="golden-answer" rows="3" required></textarea></label>
-        <label>Context (one true fact per line; read by Hallucination and Summarization. Faithfulness and the Contextual metrics read the chatbot's own sources, never this) <textarea id="golden-context" rows="3"></textarea></label>
-        <label>Categories (comma separated, optional) <input id="golden-categories"></label>
-        <label>Expected tools (comma separated, optional; for Tool Correctness) <input id="golden-tools" spellcheck="false" placeholder="e.g. lookup_order, send_email"></label>
+      <summary id="golden-form-summary">Add or edit golden answer</summary>
+      <form id="golden-form" class="stack modern-form">
+        <label>
+          Question
+          <textarea id="golden-question" rows="2" required placeholder="What is the status of ticket #48213?"></textarea>
+        </label>
+        <label>
+          Expected answer
+          <textarea id="golden-answer" rows="4" required placeholder="The ticket is resolved. It was completed by the engineering team on..."></textarea>
+        </label>
+        <label>
+          Context (one fact per line - used by Hallucination, Summarization)
+          <textarea id="golden-context" rows="3" placeholder="Ticket #48213 exists in the system.&#10;It was created on 2025-11-10."></textarea>
+        </label>
+        <div class="form-row two-cols">
+          <label>
+            Categories (optional)
+            <input id="golden-categories" placeholder="billing, ticket, status">
+          </label>
+          <label>
+            Expected tools (optional)
+            <input id="golden-tools" spellcheck="false" placeholder="get_ticket_status, lookup_order">
+          </label>
+        </div>
         <div class="row">
           <button type="submit" id="golden-submit" class="primary">Add golden answer</button>
-          <button type="button" id="golden-cancel" class="hidden">Cancel</button>
+          <button type="button" id="golden-cancel" class="secondary hidden">Cancel</button>
           <span id="golden-form-error" class="status-error small" role="alert"></span>
         </div>
       </form>
@@ -433,18 +454,37 @@
     <p id="conversation-status" class="small" role="status"></p>
     <ul id="conversation-list" class="golden-list"></ul>
     <details id="add-conversation">
-      <summary id="conversation-form-summary">Add a scenario</summary>
-      <form id="conversation-form" class="stack">
-        <label>Name <input id="conversation-name" required maxlength="200"></label>
-        <label>User turns (one message per line, sent in order)
-          <textarea id="conversation-turns" rows="4" required placeholder="Hi, my order number is 48213.&#10;How long does shipping take?&#10;Which order number did I give you?"></textarea>
+      <summary id="conversation-form-summary">Add or edit conversation scenario</summary>
+      <form id="conversation-form" class="stack modern-form">
+        <label>
+          Scenario name
+          <input id="conversation-name" required maxlength="200" placeholder="Ticket status follow-up">
         </label>
-        <label>Expected outcome <textarea id="conversation-outcome" rows="2" placeholder="What a complete, good conversation achieves"></textarea></label>
-        <label>Scenario (optional) <textarea id="conversation-scenario" rows="2"></textarea></label>
-        <label>Chatbot role (optional) <input id="conversation-role" placeholder="a customer support assistant for an online store"></label>
+        
+        <label>
+          User turns (one per line)
+          <textarea id="conversation-turns" rows="5" required placeholder="Hi, can you check ticket #48213?&#10;What is the current status?&#10;When will it be resolved?"></textarea>
+        </label>
+
+        <div class="form-row two-cols">
+          <label>
+            Expected outcome
+            <textarea id="conversation-outcome" rows="2" placeholder="Agent provides accurate status and ETA"></textarea>
+          </label>
+          <label>
+            Chatbot role (optional)
+            <input id="conversation-role" placeholder="Internal telecom operations assistant">
+          </label>
+        </div>
+
+        <label>
+          Additional scenario context (optional)
+          <textarea id="conversation-scenario" rows="2" placeholder="User is frustrated about delayed ticket resolution"></textarea>
+        </label>
+
         <div class="row">
           <button type="submit" id="conversation-submit" class="primary">Add scenario</button>
-          <button type="button" id="conversation-cancel" class="hidden">Cancel</button>
+          <button type="button" id="conversation-cancel" class="secondary hidden">Cancel</button>
           <span id="conversation-form-error" class="status-error small" role="alert"></span>
         </div>
       </form>

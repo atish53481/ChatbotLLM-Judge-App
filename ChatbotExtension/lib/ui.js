@@ -908,6 +908,96 @@ function scoringsText(scores) {
   return scores.length === 3 ? `${list} (disagreed, so scored a third time: median kept)` : `${list} (averaged)`;
 }
 
+// --- Offline / printable HTML of the same diffs the app shows -----------------
+// The scan page's Download full report and any self-contained HTML export use
+// these so PDF-adjacent downloads mark missing / changed / added the same way
+// as the live case cards (wordDiff + failedCaseView).
+
+function escapeHtml(text) {
+  return String(text ?? "").replace(/[&<>"']/g, (ch) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+}
+
+// DOM nodes from el() / wordDiff → HTML string (text and <b class="diff …"> only).
+function nodesToHtml(value) {
+  if (value == null || value === false) return "";
+  if (typeof value === "string" || typeof value === "number") return escapeHtml(value);
+  if (Array.isArray(value)) return value.map(nodesToHtml).join("");
+  if (typeof Node !== "undefined" && value instanceof Node) {
+    if (value.nodeType === 3) return escapeHtml(value.textContent || "");
+    if (value.nodeType !== 1) return "";
+    const tag = value.tagName.toLowerCase();
+    const inner = [...value.childNodes].map(nodesToHtml).join("");
+    if (tag === "b" || tag === "span" || tag === "i") {
+      const cls = value.className ? ` class="${escapeHtml(value.className)}"` : "";
+      const title = value.getAttribute && value.getAttribute("title")
+        ? ` title="${escapeHtml(value.getAttribute("title"))}"` : "";
+      return `<${tag}${cls}${title}>${inner}</${tag}>`;
+    }
+    if (tag === "ul" || tag === "ol") {
+      const cls = value.className ? ` class="${escapeHtml(value.className)}"` : "";
+      return `<${tag}${cls}>${inner}</${tag}>`;
+    }
+    if (tag === "li") {
+      const cls = value.className ? ` class="${escapeHtml(value.className)}"` : "";
+      return `<li${cls}>${inner}</li>`;
+    }
+    if (tag === "p" || tag === "div") {
+      const cls = value.className ? ` class="${escapeHtml(value.className)}"` : "";
+      return `<${tag}${cls}>${inner}</${tag}>`;
+    }
+    return inner;
+  }
+  return escapeHtml(String(value));
+}
+
+// CSS for missing (red dotted) / changed (amber wavy) / added (green underline),
+// with print-color-adjust so Save as PDF keeps the colours.
+const DIFF_REPORT_CSS = `
+b.diff { font-weight:700; padding:0 1px; border-radius:2px; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+b.diff.missing { background:#fbe3e3; color:#8a1414; text-decoration:underline dotted; }
+b.diff.changed { background:#fdf0c4; color:#6a4b00; text-decoration:underline wavy; }
+b.diff.added { background:#dff0df; color:#0b5d0b; text-decoration:underline; }
+.diff-list, .how-to-pass { margin:4px 0 0; padding-left:18px; }
+.diff-list li, .how-to-pass li { margin:2px 0; }
+.diff-item.missing > b { color:#8a1414; }
+.diff-item.changed > b { color:#6a4b00; }
+.diff-item.added > b { color:#0b5d0b; }
+.diff-legend { margin:6px 0 10px; font-size:12px; color:#52525b; }
+.diff-legend b.diff { margin:0 2px; }
+.case-help { margin-top:6px; }
+.case-help-label { font-weight:600; font-size:12px; color:#52525b; margin:4px 0 2px; }
+`.trim();
+
+// Same content as failedCaseView, as HTML strings for offline reports. null when
+// the app would show no diff (passed, conversation, empty sides).
+function failedCaseHtml(metric, row, direction, threshold) {
+  const view = failedCaseView(metric, row, direction, threshold);
+  if (!view) return null;
+  return {
+    actual: view.actual ? nodesToHtml(view.actual) : "",
+    expected: view.expected ? nodesToHtml(view.expected) : "",
+    differences: view.differences ? nodesToHtml(view.differences) : "",
+    howToPass: view.howToPass ? nodesToHtml(view.howToPass) : "",
+  };
+}
+
+// One-line legend matching the app's word marks (for PDF and HTML reports).
+function diffLegend() {
+  return el("p", { className: "diff-legend muted small" },
+    "Word differences (same as the app): ",
+    el("b", { className: "diff missing" }, "missing"), " from the reply (red, dotted), ",
+    el("b", { className: "diff changed" }, "changed"), " wording (amber, wavy), ",
+    el("b", { className: "diff added" }, "added"), " by the reply (green, solid).");
+}
+
+function diffLegendHtml() {
+  return `<p class="diff-legend">Word differences (same as the app): `
+    + `<b class="diff missing">missing</b> from the reply (red, dotted), `
+    + `<b class="diff changed">changed</b> wording (amber, wavy), `
+    + `<b class="diff added">added</b> by the reply (green, solid).</p>`;
+}
+
 // One case as plain text, for pasting into a bug report.
 function caseAsText(metric, row, direction, threshold) {
   const lines = [

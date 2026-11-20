@@ -237,6 +237,18 @@ b.diff.added { background: #dff0df; color: #0b5d0b; text-decoration: underline; 
 .how-to-pass { margin: 0; padding-left: 18px; }
 .how-to-pass li { margin: 1px 0; }
 
+.diff-legend { margin: 6px 0 12px; }
+.diff-legend b.diff { margin: 0 2px; }
+.case-help { margin-top: 6px; }
+.case-help p { margin: 2px 0; }
+.case-help-label { font-weight: 600; color: var(--muted); margin-right: 4px; }
+
+/* Keep difference colours when the user Save-as-PDFs from the print dialog. */
+.case, .diff-list, .how-to-pass, .case-help {
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
 .plan-item {
   margin: 10px 0;
   padding: 6px 10px;

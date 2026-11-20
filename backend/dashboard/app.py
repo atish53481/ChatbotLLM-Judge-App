@@ -491,19 +491,30 @@ MASKED = "***"
 
 def _keep_stored_secrets(config: dict, existing: dict | None, target_type: str) -> dict:
     """Header values (and an MCP server's env values) are only ever sent back
-    masked: an edit that sends none keeps the stored ones. For an MCP server a
-    value sent back as "***" also keeps the stored value of that name."""
+    masked: an edit that sends none keeps the stored ones. A value sent back as
+    "***" (the form shows every saved header that way) also keeps the stored
+    value of that name — for website chatbots and MCP servers alike."""
     config = _keep_stored_headers(config, existing)
-    if target_type != "mcp" or existing is None:
+    if existing is None:
         return config
     stored_config = existing["config"]
+    # HTTP and MCP: "***" in a header keeps the real stored secret for that name.
+    sent_h, stored_h = config.get("headers"), stored_config.get("headers") or {}
+    if isinstance(sent_h, dict) and isinstance(stored_h, dict):
+        config = {**config, "headers": {
+            name: stored_h[name] if value == MASKED and name in stored_h else value
+            for name, value in sent_h.items()
+        }}
+    if target_type != "mcp":
+        return config
     if "env" not in config and stored_config.get("env"):
         config = {**config, "env": stored_config["env"]}
-    for field in ("env", "headers"):
-        sent, stored = config.get(field), stored_config.get(field) or {}
-        if isinstance(sent, dict) and isinstance(stored, dict):
-            config = {**config, field: {name: stored[name] if value == MASKED and name in stored else value
-                                        for name, value in sent.items()}}
+    sent, stored = config.get("env"), stored_config.get("env") or {}
+    if isinstance(sent, dict) and isinstance(stored, dict):
+        config = {**config, "env": {
+            name: stored[name] if value == MASKED and name in stored else value
+            for name, value in sent.items()
+        }}
     return config
 
 
@@ -1394,7 +1405,8 @@ INSTRUCTIONS_SOURCE = "chatbot instructions"
 NEEDS_CONTEXT_MESSAGE = (
     "No help page or instructions to learn this chatbot's knowledge from. Add golden answers "
     "with Question, Expected answer and Context (the facts the answer should rest on, one per "
-    "line) to run Faithfulness, Hallucination, Summarization and the Contextual metrics.")
+    "line), or add conversation scenarios (the build will create Context goldens from them). "
+    "This is needed to run Faithfulness, Hallucination, Summarization and the Contextual metrics.")
 
 
 def _own_theme(target: dict) -> str:

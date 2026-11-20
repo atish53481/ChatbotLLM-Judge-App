@@ -136,16 +136,28 @@ summary {
   list-style: none;
   margin: 0;
   padding: 0;
-  max-height: 240px;
+  max-height: 280px;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .golden-list li {
   display: flex;
-  gap: 6px;
+  gap: 8px;
   align-items: flex-start;
-  padding: 6px 0;
-  border-bottom: 1px solid var(--grid);
+  padding: 10px 12px;
+  border: 1px solid var(--grid);
+  border-radius: 6px;
+  background: var(--surface-1);
+  transition: all 0.2s ease;
+}
+
+.golden-list li:hover {
+  border-color: var(--border-hover);
+  background: var(--surface-2);
+  transform: translateY(-1px);
 }
 
 .golden-list .text {
@@ -189,14 +201,46 @@ summary {
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
-.golden-editor .stack {
-  margin-top: 0;
+.modern-form {
+  padding: 16px;
+  background: var(--surface-1);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  margin-top: 8px;
 }
 
-.golden-editor textarea,
-.golden-editor input {
+.modern-form label {
+  margin-bottom: 12px;
+}
+
+.modern-form textarea,
+.modern-form input {
   width: 100%;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 13px;
+  line-height: 1.5;
   resize: vertical;
+  min-height: 38px;
+}
+
+.modern-form textarea:focus,
+.modern-form input:focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(236, 91, 71, 0.15);
+}
+
+.form-row.two-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.form-row.two-cols label {
+  margin-bottom: 0;
 }
 
 /* Run status, pinned to the top of the panel while a run goes and after it ends. */
@@ -748,6 +792,19 @@ label.row.consistency-check > input {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 12px;
 }
+
+/* What Build all / discovery put on this chatbot (visible while editing). */
+.target-learned {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface-1, transparent));
+  color: var(--text-secondary);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+#target-tools-list { opacity: 0.95; }
 
 /* The chatbot picker and its buttons: on a narrow panel the buttons drop
    below the picker as one group instead of squeezing it. */

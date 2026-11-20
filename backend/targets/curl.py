@@ -437,7 +437,11 @@ def find_context_path(data: Any) -> str:
     return best[2] if best else ""
 
 
-_TOOLS_KEYS = ("toolcalls", "toolscalled", "toolsused", "functioncalls", "intermediatesteps")
+_TOOLS_KEYS = (
+    "toolcalls", "toolscalled", "toolsused", "functioncalls", "intermediatesteps",
+    "tool_calls", "toolcalls", "tools", "actions", "function_calls", "tool_call",
+    "functions", "output", "response", "calls"
+)
 _TOOL_NAME_KEYS = ("name", "tool", "toolname")
 _TOOL_ARG_KEYS = ("arguments", "args", "input", "inputparameters", "parameters", "toolinput")
 _TOOL_OUTPUT_KEYS = ("output", "result", "response", "observation")
@@ -449,8 +453,8 @@ def find_tools_path(data: Any) -> str:
     best = None
     for path, key, value in _nodes(data):
         norm = _norm(key)
-        if norm in _TOOLS_KEYS and isinstance(value, list) and value:
-            rank = (path.count("."), _TOOLS_KEYS.index(norm), path)
+        if norm in _TOOLS_KEYS and isinstance(value, (list, dict)) and value:
+            rank = (path.count("."), _TOOLS_KEYS.index(norm) if norm in _TOOLS_KEYS else 999, path)
             if best is None or rank < best:
                 best = rank
     return best[2] if best else ""

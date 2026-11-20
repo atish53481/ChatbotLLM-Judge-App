@@ -178,13 +178,31 @@ const ADVANCED_FIELDS = [
 
 function showAdvancedSummary() {
   const set = ADVANCED_FIELDS.filter(([id, , fallback = ""]) => $(id).value.trim() !== fallback).map(([, name]) => name);
+  if (!$("target-tools-list-wrap").classList.contains("hidden")) set.push("tools list");
   $("target-advanced-summary").textContent = set.length ? `· set: ${set.join(", ")}` : "· all automatic";
   return set.length > 0;
+}
+
+// Limits section: open and name what is set when editing a chatbot.
+function showLimitsSummary() {
+  const bits = [];
+  if ($("target-max-length").value.trim()) bits.push("max length");
+  if (Number($("target-send-delay").value) > 0) bits.push("send delay");
+  if ($("target-check-replies").checked) bits.push("service-message errors");
+  const line = $("target-limits-summary");
+  if (line) line.textContent = bits.length ? `· set: ${bits.join(", ")}` : "";
+  return bits.length > 0;
 }
 
 $("target-advanced").addEventListener("input", showAdvancedSummary);
 $("target-advanced").addEventListener("change", showAdvancedSummary);
 showAdvancedSummary();
+const limitsRoot = $("target-limits");
+if (limitsRoot) {
+  limitsRoot.addEventListener("input", showLimitsSummary);
+  limitsRoot.addEventListener("change", showLimitsSummary);
+}
+showLimitsSummary();
 
 // The target form doubles as the editor; resetTargetForm returns it to "add".
 // Both forms (website chatbot, MCP server) reset; the kind picked for adding stays.
@@ -202,7 +220,12 @@ function resetTargetForm() {
   $("llm-status").textContent = "";
   $("target-test-result").textContent = "";
   $("target-advanced").open = false;
+  const limits = $("target-limits");
+  if (limits) limits.open = false;
+  fillToolsList({});
+  showLearnedBanner(null);
   showAdvancedSummary();
+  showLimitsSummary();
   resetMcpForm();
   $("target-kind").classList.remove("hidden");
   showAddKind(state.addKind);
@@ -241,11 +264,17 @@ function ownProbeOption(target) {
 }
 
 function fillTargetSettings(target) {
-  const config = target.config;
+  const config = target.config || {};
   $("target-name").value = target.name;
   $("target-persona").value = config.persona || "";
   ownProbeOption(target);
-  $("target-probe-set").value = config.probe_set || "generic";
+  // Own probe set (target_<id>) must be on the list before the value is set.
+  const probe = config.probe_set || "generic";
+  if ([...$("target-probe-set").options].some((o) => o.value === probe)) {
+    $("target-probe-set").value = probe;
+  } else {
+    $("target-probe-set").value = "generic";
+  }
   $("target-sources-fallback").value = config.sources_fallback || "";
   $("target-max-length").value = config.max_message_length ?? "";
   $("target-send-delay").value = config.send_delay || "";
@@ -254,6 +283,68 @@ function fillTargetSettings(target) {
   const instructions = config.instructions;
   $("target-instructions").value = Array.isArray(instructions) ? instructions.join("\n") : (instructions || "");
   $("target-help-url").value = config.help_url || "";
+  fillToolsList(config);
+  showLearnedBanner(target);
+}
+
+// Tools Build all / discovery saved on the chatbot (read-only list in Advanced).
+function fillToolsList(config) {
+  const tools = Array.isArray(config.available_tools) ? config.available_tools.filter((t) => t && t.name) : [];
+  const wrap = $("target-tools-list-wrap");
+  const box = $("target-tools-list");
+  if (!wrap || !box) return;
+  if (!tools.length) {
+    wrap.classList.add("hidden");
+    box.value = "";
+    return;
+  }
+  wrap.classList.remove("hidden");
+  box.value = tools.map((t) => {
+    const name = String(t.name || "").trim();
+    const desc = String(t.description || "").trim();
+    return desc ? `${name} — ${desc}` : name;
+  }).join("\n");
+}
+
+// One-line summary of what Build all / discovery / scans put on this chatbot,
+// so Edit shows the learned parameters even when a nested section is closed.
+function showLearnedBanner(target) {
+  const line = $("target-learned");
+  if (!line) return;
+  if (!target || !target.config) {
+    line.textContent = "";
+    line.classList.add("hidden");
+    return;
+  }
+  const c = target.config;
+  const bits = [];
+  const kind = c.profile && c.profile.kind;
+  const kindLabel = { agent: "Agent (calls tools)", rag: "RAG bot (returns sources)",
+    chat: "Chatbot", mcp: "MCP server" }[kind];
+  if (kindLabel) bits.push(kindLabel);
+  if (c.persona) bits.push(`role set`);
+  if (c.tools_path) bits.push(`tools path: ${c.tools_path}`);
+  if (c.context_path) bits.push(`context path: ${c.context_path}`);
+  if (c.sources_fallback) bits.push(`sources: ${c.sources_fallback}`);
+  if (c.probe_set && c.probe_set !== "generic") {
+    bits.push(/^target_/.test(c.probe_set) ? "own security probes" : `probes: ${c.probe_set}`);
+  }
+  if (c.help_url) bits.push("help URL set");
+  if (c.instructions && (Array.isArray(c.instructions) ? c.instructions.length : String(c.instructions).trim())) {
+    bits.push("instructions set");
+  }
+  const nTools = Array.isArray(c.available_tools) ? c.available_tools.filter((t) => t && t.name).length : 0;
+  if (nTools) bits.push(`${nTools} tool${nTools === 1 ? "" : "s"} listed`);
+  if (c.max_message_length) bits.push(`max length ${c.max_message_length}`);
+  if (c.send_delay) bits.push(`send delay ${c.send_delay}s`);
+  if (c.check_replies) bits.push("service-message errors on");
+  if (!bits.length) {
+    line.textContent = "";
+    line.classList.add("hidden");
+    return;
+  }
+  line.textContent = (c.auto_built ? "Build all test data set: " : "Saved settings: ") + bits.join(" · ");
+  line.classList.remove("hidden");
 }
 
 function startEditTarget(target) {
@@ -261,7 +352,7 @@ function startEditTarget(target) {
     startEditMcp(target);
     return;
   }
-  const config = target.config;
+  const config = target.config || {};
   resetMcpForm();
   showAddKind("http");
   $("target-kind").classList.add("hidden");
@@ -269,9 +360,11 @@ function startEditTarget(target) {
   fillTargetSettings(target);
   $("target-method").value = config.method || "POST";
   $("target-url").value = config.url || "";
-  // Header values are masked by the backend; empty keeps the stored ones.
-  $("target-headers").value = "";
-  $("target-headers-hint").classList.toggle("hidden", !config.headers || !Object.keys(config.headers).length);
+  // Header values come back masked as ***; show each name so the user can see
+  // what was saved. Leaving a line as *** (or the box empty) keeps the secret.
+  const headerNames = Object.keys(config.headers || {});
+  $("target-headers").value = headerNames.map((name) => `${name}: ***`).join("\n");
+  $("target-headers-hint").classList.toggle("hidden", !headerNames.length);
   $("target-body").value = config.body_template || "";
   $("target-response-path").value = config.response_path || "";
   $("target-context-path").value = config.context_path || "";
@@ -286,7 +379,11 @@ function startEditTarget(target) {
   $("target-cancel").classList.remove("hidden");
   $("target-form-summary").textContent = "Edit chatbot";
   $("target-form-error").textContent = "";
+  // Open Advanced / Limits when Build all or the user set anything there, so
+  // tools path, probes, instructions, limits are visible without hunting.
   $("target-advanced").open = showAdvancedSummary();
+  const limits = $("target-limits");
+  if (limits) limits.open = showLimitsSummary();
   $("add-target").open = true;
   $("target-name").focus();
 }
@@ -563,21 +660,29 @@ function buildTargetConfig() {
 
 // Saves the add / edit form (website chatbot or MCP server). A new one gets a
 // golden set of its own and the question whether AI builds its test data.
+// After a successful save the form stays open on the saved chatbot so the
+// user can see every field that was stored (headers as Name: ***).
 async function saveTarget(body) {
   const editingId = state.editingTarget;
   const saved = editingId
     ? await api(`/api/targets/${editingId}`, { method: "PUT", body })
     : await api("/api/targets", { method: "POST", body });
-  resetTargetForm();
-  $("add-target").open = false;
-  if (editingId) {
+  if (!editingId) {
+    state.learned.add(saved.id);
+    await askToLearn(saved);
+  } else {
     await loadTargets(saved.id);
-    return;
   }
-  state.learned.add(saved.id);
-  await askToLearn(saved);
-  // The form just closed: keyboard and screen-reader users land on the question.
-  if (state.askBuildFor === saved.id) $("testdata-question").focus();
+  // Prefer the list row (fresh from the API) so masked headers match the store.
+  const target = state.targets.find((t) => t.id === saved.id) || saved;
+  startEditTarget(target);
+  const status = $("target-test-result");
+  status.className = "small status-pass";
+  status.textContent = editingId
+    ? "Saved. The fields below are what this chatbot uses."
+    : "Saved. This chatbot is selected; the fields below are what was stored.";
+  // New chatbot: keyboard / screen-reader users still land on the build question.
+  if (!editingId && state.askBuildFor === saved.id) $("testdata-question").focus();
 }
 
 $("target-form").addEventListener("submit", async (event) => {
@@ -959,6 +1064,7 @@ function startEditMcp(target) {
   $("mcp-submit").textContent = "Save changes";
   $("mcp-cancel").classList.remove("hidden");
   $("target-form-summary").textContent = "Edit MCP server";
+  showLearnedBanner(target);
   $("add-target").open = true;
   $("mcp-name").focus();
 }
@@ -1314,24 +1420,52 @@ async function openMetricCases(key) {
 }
 
 // The build wrote goldens, scenarios, probes and documents and may have
-// changed the chatbot's config (its own golden set and probe set, help page):
-// reload what shows them without resetting a form being typed, and tell every
-// view that case counts changed (metricsChangedAt reloads the metric list here
-// and on the dashboard).
+// changed the chatbot's config (persona, tools/context paths, probe set, help
+// URL, available_tools, limits): reload what shows them, put the fresh values
+// into Edit chatbot (Advanced + Limits open when set), and tell every view that
+// case counts changed (metricsChangedAt reloads the metric list here and on the
+// dashboard).
 async function refreshAfterBuild(target) {
   try {
     state.targets = await fetchTargets();
   } catch {
     return;
   }
-  const current = currentTarget();
+  const current = state.targets.find((t) => t.id === target.id) || currentTarget();
   fillSelect($("target-select"), state.targets.map((t) => ({ value: t.id, label: targetOptionLabel(t) })),
     current ? current.id : "");
   if (current && current.id === target.id) {
     $("target-theme").textContent = targetThemeText(current);
     await Promise.all([loadGoldens(), loadConversations(), loadDocuments()]);
+    // Show every parameter Build all set in the chatbot form (Edit mode).
+    startEditTarget(current);
+    const status = $("target-test-result");
+    status.className = "small status-pass";
+    status.textContent = "Build finished. Fields below include what Build all test data set "
+      + "(role, paths, probes, help URL, tools, limits).";
   }
   await settings.set("metricsChangedAt", Date.now());
+}
+
+// Re-analyze which metrics are applicable after user adds goldens or scenarios manually.
+// This helps unlock Contextual, Faithfulness, RAGAS and other metrics when user provides data.
+async function refreshMetricsApplicability() {
+  const target = currentTarget();
+  if (!target) return;
+
+  try {
+    // Trigger a fresh metrics + leftovers calculation
+    await settings.set("metricsChangedAt", Date.now());
+    await loadMetrics(); // reloads thresholds and applicability
+
+    // Also refresh build status to show updated leftovers
+    const build = await api(`/api/targets/${target.id}/prepare-all`);
+    if (build && build.leftovers) {
+      renderLeftovers(build.leftovers);
+    }
+  } catch (e) {
+    console.warn("Could not refresh metrics applicability:", e);
+  }
 }
 
 $("build-testdata").addEventListener("click", () => {
@@ -1405,6 +1539,7 @@ $("golden-form").addEventListener("submit", async (event) => {
     resetGoldenForm();
     $("add-golden").open = false;
     await loadGoldens();
+    await refreshMetricsApplicability();
   } catch (error) {
     $("golden-form-error").textContent = error.message;
   }
@@ -1460,10 +1595,11 @@ $("url-form").addEventListener("submit", async (event) => {
   }
 });
 
-$("golden-cancel").addEventListener("click", () => {
+$("golden-cancel").addEventListener("click", async () => {
   resetGoldenForm();
   $("golden-form-error").textContent = "";
   $("add-golden").open = false;
+  await refreshMetricsApplicability();
 });
 
 // --- Conversation scenarios (multi-turn metrics) -----------------------------
@@ -1564,6 +1700,7 @@ $("conversation-form").addEventListener("submit", async (event) => {
     resetConversationForm();
     $("add-conversation").open = false;
     await loadConversations();
+    await refreshMetricsApplicability();
   } catch (error) {
     $("conversation-form-error").textContent = error.message;
   }
@@ -2929,8 +3066,9 @@ function judgeFormBody() {
 }
 
 function showJudgeResult(ok, text) {
-  $("judge-result").className = ok ? "small status-pass" : "small status-error";
-  $("judge-result").textContent = text;
+  const el = $("judge-result");
+  el.className = ok ? "small status-pass" : "small status-error";
+  el.textContent = text;
 }
 
 $("judge-provider").addEventListener("change", () => {
@@ -2944,33 +3082,52 @@ $("judge-provider").addEventListener("change", () => {
 $("judge-test").addEventListener("click", async () => {
   showJudgeResult(true, "Asking the judge…");
   try {
-    const test = await api("/api/judge/settings/test", { method: "POST", body: judgeFormBody() });
-    showJudgeResult(test.ok, test.ok ? `Works: ${test.model} replied.` : test.error);
+    const body = judgeFormBody();
+    // Ensure we always send a clean object (prevents undefined response)
+    const test = await api("/api/judge/settings/test", {
+      method: "POST",
+      body: {
+        api_key: body.api_key || "",
+        model: body.model || "",
+        base_url: body.base_url || ""
+      }
+    });
+    showJudgeResult(
+      test.ok,
+      test.ok
+        ? `Works: ${test.model || "the judge"} replied.`
+        : (test.error || "Unknown error")
+    );
   } catch (error) {
-    showJudgeResult(false, error.message);
+    showJudgeResult(false, error.message || String(error));
   }
 });
 
 $("judge-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
-    await api("/api/judge/settings", { method: "PUT", body: judgeFormBody() });
+    const body = judgeFormBody();
+    await api("/api/judge/settings", { method: "PUT", body });
     await loadJudgeSettings();
     await refreshStatus();
     showJudgeResult(true, "Saved. The next run uses these settings.");
   } catch (error) {
-    showJudgeResult(false, error.message);
+    showJudgeResult(false, error.message || String(error));
   }
 });
 
 armConfirm($("judge-clear-key"), async () => {
   try {
-    await api("/api/judge/settings", { method: "PUT", body: { ...judgeFormBody(), api_key: "", clear_key: true } });
+    const body = judgeFormBody();
+    await api("/api/judge/settings", {
+      method: "PUT",
+      body: { ...body, api_key: "", clear_key: true }
+    });
     await loadJudgeSettings();
     await refreshStatus();
     showJudgeResult(true, "Saved key removed.");
   } catch (error) {
-    showJudgeResult(false, error.message);
+    showJudgeResult(false, error.message || String(error));
   }
 });
 

@@ -22,19 +22,226 @@ function duration(start, end) {
   return seconds < 90 ? `${Math.round(seconds)} s` : `${Math.round(seconds / 60)} min`;
 }
 
-function header(scan, chatbot, scans) {
+function header(scan, chatbot, scans, extras = {}) {
   const [label, css] = RESULT_LABEL[scan.result] || [scan.result, ""];
   const index = scans.findIndex((s) => s.job_id === scan.job_id);
   const newer = scans[index - 1];
   const older = scans[index + 1];
   const link = (other, text) => el("a", { href: `scan.html?job=${other.job_id}` }, text);
+  const pdfHref = `../report/report.html?target=${encodeURIComponent(scan.target_id)}`
+    + `&job=${encodeURIComponent(scan.job_id)}&all=1`;
   return el("div", { className: "scan-head" },
     el("h1", {}, `${chatbot} · Scan ${scan.version}`),
     el("span", { className: `badge ${css}` }, `${label} · ${scanTally(scan)}`),
+    el("div", { className: "scan-actions" },
+      el("a", {
+        className: "scan-action", href: pdfHref, target: "_blank", rel: "noopener",
+        title: "Open the printable report with every section and case, then Save as PDF",
+      }, "Download report (PDF)"),
+      el("button", {
+        type: "button", className: "scan-action",
+        title: "Save this scan as one HTML file: summary, every metric, every case, reasons and security",
+        onclick: () => downloadFullReport(scan, chatbot, extras.title, extras.security, extras.byKey),
+      }, "Download full report (HTML)")),
     el("nav", { className: "scan-nav", "aria-label": "Other scans" },
       older ? link(older, `← Scan ${older.version}`) : "",
       newer ? link(newer, `Scan ${newer.version} →`) : ""),
   );
+}
+
+// Self-contained HTML of this scan with every metric and every case (question,
+// reply, expected, score, result, judge reason). Offline-friendly archive.
+function downloadFullReport(scan, chatbot, title, security, byKey = new Map()) {
+  const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (ch) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+  const statusLabel = (s) => ({ pass: "Pass", fail: "Fail", error: "Not scored" }[s] || s || "–");
+  const resultLabel = (r) => (RESULT_LABEL[r] || [r || "–"])[0];
+  const min = (r) => (r.threshold == null ? "–"
+    : `${r.direction === "lower" ? "≤" : "≥"} ${formatScore(r.threshold)}`);
+  const opts = scan.run_options || {};
+  const de = opts.deepeval || {};
+  const yes = (v) => (v === undefined ? "default" : v ? "on" : "off");
+  const cost = (scan.results || []).reduce(
+    (sum, r) => sum + (typeof r.judge_cost_usd === "number" ? r.judge_cost_usd : 0), 0);
+
+  const summaryRows = (scan.results || []).map((r) => {
+    const cls = r.status === "pass" ? "ok" : r.status === "fail" ? "bad" : "";
+    return `<tr class="${cls}"><td>${esc(title(r.key))}</td>`
+      + `<td class="num">${formatScore(r.score)}</td><td class="num">${esc(min(r))}</td>`
+      + `<td>${esc(statusLabel(r.status))}</td>`
+      + `<td class="num">${r.cases_run ? casesCell(r) : "–"}</td></tr>`;
+  }).join("");
+
+  const skippedRows = (scan.skipped || []).map((s) =>
+    `<tr><td>${esc(s.title || title(s.key))}</td><td>${esc(s.reason || "")}</td></tr>`).join("");
+
+  // Metric catalog rows (kind, scores_on, improve, …) so failedCaseHtml matches the app.
+  const metricBlocks = (scan.results || []).map((r) => {
+    const metric = byKey.get(r.key) || { key: r.key, title: title(r.key), kind: "single",
+      direction: r.direction, threshold: r.threshold, scores_on: [] };
+    const rows = r.rows || [];
+    const caseBlocks = rows.map((row, i) => {
+      const cls = row.passed === true ? "ok" : row.passed === false ? "bad" : "";
+      const res = row.passed === undefined ? "–" : row.passed ? "Pass" : "Fail";
+      const failed = row.passed === false
+        ? failedCaseHtml(metric, row, r.direction ?? metric.direction, r.threshold ?? metric.threshold)
+        : null;
+      const reply = failed && failed.actual ? failed.actual : esc(row.actual_output || "");
+      const expect = failed && failed.expected ? failed.expected : esc(row.expected_output || "–");
+      let extra = "";
+      if (failed && failed.differences) {
+        extra += `<div class="case-help"><div class="case-help-label">Differences</div>${failed.differences}</div>`;
+      }
+      if (failed && failed.howToPass) {
+        extra += `<div class="case-help"><div class="case-help-label">How to pass</div>${failed.howToPass}</div>`;
+      }
+      return `<tr class="${cls}"><td class="num">${i + 1}</td>`
+        + `<td class="text">${esc(row.input || row.question || "")}</td>`
+        + `<td class="text">${reply}</td>`
+        + `<td class="text">${expect}</td>`
+        + `<td class="num">${formatScore(row.score)}</td><td>${esc(res)}</td>`
+        + `<td class="text">${esc(row.reason || "")}${extra}</td></tr>`;
+    }).join("");
+    const head = `${esc(title(r.key))} · ${esc(statusLabel(r.status))}`
+      + ` · score ${formatScore(r.score)} (needs ${esc(min(r))})`
+      + (r.cases_run ? ` · ${casesCell(r)} cases` : "");
+    return `<section class="metric"><h3>${head}</h3>`
+      + (r.error ? `<p class="err">${esc(r.error)}</p>` : "")
+      + (r.reason ? `<p class="why">${esc(r.reason)}</p>` : "")
+      + (r.note ? `<p class="muted">${esc(r.note)}</p>` : "")
+      + (rows.length
+        ? `<table><thead><tr><th>#</th><th>Question</th><th>Chatbot reply</th>`
+          + `<th>Expected</th><th class="num">Score</th><th>Result</th><th>Judge's reason</th></tr></thead>`
+          + `<tbody>${caseBlocks}</tbody></table>`
+        : `<p class="muted">No cases were scored.</p>`)
+      + `</section>`;
+  }).join("\n");
+
+  let securityHtml = "";
+  if (security && Array.isArray(security.categories)) {
+    const pct = (rate) => (rate == null ? "–" : `${Math.round(rate * 100)}%`);
+    const catRows = security.categories.map((cat) =>
+      `<tr><td>${esc(cat.label)}</td><td class="num">${cat.attacks}</td>`
+      + `<td class="num">${pct(cat.pass_rate)}</td>`
+      + `<td class="num">${cat.tested}/${cat.total}</td></tr>`).join("");
+    const metricLines = security.categories.flatMap((cat) => (cat.metrics || []).map((m) => {
+      const bit = m.tested
+        ? `${formatScore(m.score)} · ${m.passed ? "resisted" : "gave in"}`
+        : "not run in this scan";
+      return `<li>${esc(m.title)}${m.owasp && m.owasp.length ? ` (${esc(m.owasp.join(", "))})` : ""}: ${esc(bit)}</li>`;
+    })).join("");
+    const fwBlocks = (security.frameworks || []).map((fw) => {
+      const items = (fw.items || []).map((item) => {
+        const bit = item.pass_rate == null
+          ? `${item.tested}/${item.total} tested`
+          : `${pct(item.pass_rate)} resisted (${item.resisted}/${item.attacks})`;
+        return `<li><b>${esc(item.id)} ${esc(item.title)}</b> · ${esc(bit)}`
+          + (item.partial ? " · partly testable" : "") + `</li>`;
+      }).join("");
+      return `<p><b>${esc(fw.label)}</b></p><ul>${items}</ul>`;
+    }).join("");
+    securityHtml = `<section><h2>Security · DeepTeam vulnerability report</h2>`
+      + `<table><thead><tr><th>Risk category</th><th class="num">Attacks</th>`
+      + `<th class="num">Resisted</th><th class="num">Metrics tested</th></tr></thead>`
+      + `<tbody>${catRows}</tbody></table>`
+      + `<h3>By metric</h3><ul>${metricLines}</ul>`
+      + `<h3>OWASP lists</h3>${fwBlocks}</section>`;
+  }
+
+  const html = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM Judge · ${esc(chatbot)} · Scan ${scan.version}</title>
+<style>
+  :root { color-scheme: light; --ok:#0c8a72; --bad:#c2237c; --border:#e4e4e7; --muted:#6b7280; --accent:#c0654a; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 36px 44px; font: 14px/1.5 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color:#18181b; background:#fff; }
+  header { border-bottom: 3px solid var(--accent); padding-bottom: 16px; margin-bottom: 24px; }
+  header .brand { display:flex; align-items:center; gap:10px; color:#52525b; font-size:12.5px; letter-spacing:.04em; text-transform:uppercase; }
+  header .logo { display:grid; place-items:center; width:26px; height:26px; border-radius:7px; background:linear-gradient(135deg,#c0654a,#8b3a2a); color:#fff; font-weight:700; font-size:11px; }
+  header h1 { margin:10px 0 4px; font-size:24px; letter-spacing:-.01em; }
+  header p { margin:0; color:var(--muted); font-size:13px; }
+  section { margin: 28px 0; }
+  h2 { margin:0 0 8px; font-size:16px; }
+  h3 { margin:18px 0 8px; font-size:14px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { padding:7px 10px; border-top:1px solid var(--border); text-align:left; vertical-align:top; }
+  table.kv th { width:36%; color:var(--muted); font-weight:500; background:#fafafa; }
+  table.kv td { white-space:pre-wrap; }
+  .num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .text { white-space:pre-wrap; word-break:break-word; max-width:420px; }
+  tr.ok td:first-child { border-left:3px solid var(--ok); }
+  tr.bad td:first-child { border-left:3px solid var(--bad); }
+  .ok .num { color:var(--ok); font-weight:600; } .bad .num { color:var(--bad); font-weight:600; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:12px; margin-bottom:8px; }
+  .stat { border:1px solid var(--border); border-radius:10px; padding:12px 14px; }
+  .stat b { display:block; font-size:22px; } .stat span { color:var(--muted); font-size:12px; }
+  .stat.pass b { color:var(--ok); } .stat.fail b { color:var(--bad); }
+  .why,.err { color:#52525b; font-size:13px; } .err { color:var(--bad); }
+  .muted { color:var(--muted); font-size:12.5px; }
+  .metric { break-inside:avoid; border-top:1px solid var(--border); padding-top:8px; }
+  footer { margin-top:36px; padding-top:12px; border-top:1px solid var(--border); color:var(--muted); font-size:12px; }
+  ${DIFF_REPORT_CSS}
+  @media print { body { padding:18px; } section, .metric { break-inside:avoid; } }
+</style></head><body>
+<header>
+  <div class="brand"><span class="logo">LJ</span> LLM Judge · full scan report</div>
+  <h1>${esc(chatbot)} · Scan ${scan.version}</h1>
+  <p>Generated ${esc(new Date().toLocaleString())} · ${esc(resultLabel(scan.result))} · ${esc(scanTally(scan))}</p>
+</header>
+${diffLegendHtml()}
+<div class="stats">
+  <div class="stat ${scan.result === "passed" ? "pass" : "fail"}"><b>${esc(resultLabel(scan.result))}</b><span>overall result</span></div>
+  <div class="stat"><b>${scan.test_cases ? `${scan.test_cases_passed} / ${scan.test_cases}` : "–"}</b><span>test cases passed</span></div>
+  <div class="stat pass"><b>${scan.passed ?? 0}</b><span>metrics passed</span></div>
+  <div class="stat fail"><b>${scan.failed ?? 0}</b><span>metrics failed</span></div>
+  <div class="stat"><b>${formatScore(scan.average)}</b><span>average score</span></div>
+  <div class="stat"><b>${esc(duration(scan.started_at, scan.finished_at))}</b><span>duration</span></div>
+  <div class="stat"><b>${(scan.judge_tokens || 0).toLocaleString()}</b><span>judge tokens</span></div>
+  <div class="stat"><b>${cost ? `$${cost.toFixed(4)}` : "N/A"}</b><span>evaluation cost</span></div>
+</div>
+<section>
+  <h2>Scan properties</h2>
+  <table class="kv"><tbody>
+    <tr><th>Scan</th><td>${scan.version} (job ${esc(scan.job_id)})</td></tr>
+    <tr><th>Chatbot</th><td>${esc(chatbot)}</td></tr>
+    <tr><th>Started</th><td>${esc(scan.started_at ? formatRunTime(scan.started_at) : "–")}</td></tr>
+    <tr><th>Finished</th><td>${esc(scan.finished_at ? formatRunTime(scan.finished_at) : "–")}</td></tr>
+    <tr><th>Judge</th><td>${esc(scan.judge_model || "–")}</td></tr>
+    <tr><th>Not run</th><td>${(scan.skipped || []).length}</td></tr>
+    <tr><th>Not scored</th><td>${scan.errors ?? 0}</td></tr>
+    <tr><th>Cases per run</th><td>${opts.limit ? esc(String(opts.limit)) : "all"}</td></tr>
+    <tr><th>Parallel metrics</th><td>${opts.metric_concurrency != null ? esc(String(opts.metric_concurrency)) : "default"}</td></tr>
+    <tr><th>Strict mode</th><td>${yes(de.strict_mode)}</td></tr>
+    <tr><th>Include reason</th><td>${yes(de.include_reason)}</td></tr>
+    <tr><th>Consistency check</th><td>${yes(opts.check_consistency)}</td></tr>
+    ${scan.note ? `<tr><th>Note</th><td>${esc(scan.note)}</td></tr>` : ""}
+  </tbody></table>
+</section>
+<section>
+  <h2>Metrics summary</h2>
+  <table><thead><tr><th>Metric</th><th class="num">Score</th><th class="num">Minimum</th><th>Result</th><th class="num">Cases</th></tr></thead>
+  <tbody>${summaryRows}</tbody></table>
+</section>
+${skippedRows ? `<section><h2>Not run</h2><table><thead><tr><th>Metric</th><th>Why</th></tr></thead><tbody>${skippedRows}</tbody></table></section>` : ""}
+<section>
+  <h2>Metric details (every case)</h2>
+  <p class="muted">Question, chatbot reply, expected answer, score, result and the judge's reason for every scored case.
+    Failed single-turn cases mark word differences the same way as the app (missing / changed / added) and list how to pass.</p>
+  ${metricBlocks || "<p class=\"muted\">No metrics in this scan.</p>"}
+</section>
+${securityHtml}
+<footer>Generated by LLM Judge · full details of scan ${scan.version} for ${esc(chatbot)}</footer>
+</body></html>`;
+
+  const name = `${chatbot}-scan-${scan.version}-full-report`.replace(/[^\w.-]+/g, "_");
+  const a = el("a", {
+    href: URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" })),
+    download: `${name}.html`,
+  });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
 function facts(scan) {
@@ -242,7 +449,7 @@ async function loadScan() {
     const byKey = new Map(metrics.map((m) => [m.key, m]));
     document.title = `${chatbot} · Scan ${scan.version}`;
     $("scan").replaceChildren(
-      header(scan, chatbot, scans),
+      header(scan, chatbot, scans, { title, security, byKey }),
       facts(scan),
       // Paths this scan found in the chatbot's replies, or the scan that found them.
       scan.note ? el("p", { className: "note" }, scan.note) : "",
@@ -250,7 +457,9 @@ async function loadScan() {
       summary(scan.results, title),
       ...(scan.skipped && scan.skipped.length ? notRun(scan.skipped, title) : []),
       el("h2", {}, "Details"),
-      el("p", { className: "muted" }, "Failed and unscored metrics are open; click any metric to show or hide its cases."),
+      el("p", { className: "muted" }, "Failed and unscored metrics are open; click any metric to show or hide its cases. "
+        + "Download report (PDF) opens the printable report with every section; "
+        + "Download full report (HTML) saves one offline file with every case."),
       ...scan.results.map((r) => metricSection(r, title, byKey.get(r.key))),
       ...(security ? securitySection(security)
         : [el("p", { className: "muted" }, "The security report for this scan could not be loaded.")]),

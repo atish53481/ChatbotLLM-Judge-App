@@ -40,7 +40,7 @@ HELP_PATHS = ["/faq", "/faqs", "/help", "/support", "/help-center", "/docs",
               "/documentation", "/knowledge-base", "/kb", "/customer-service"]
 MAX_PAGES = 3          # pages kept
 MAX_ATTEMPTS = 12      # fetches tried, so a slow or empty site cannot stall the panel
-PROMPT_TEXT_CHARS = 6000
+PROMPT_TEXT_CHARS = 12000  # richer context from chatbot help responses and interview (used by write_dataset, check_grounded, repair_scenarios)
 
 GOLDENS_WANTED = 8
 SCENARIOS_WANTED = 3

@@ -522,6 +522,31 @@ def test_edit_without_headers_keeps_the_stored_ones(client, app_module):
     assert stored["config"]["headers"] == {"Cookie": "secret=1"}
 
 
+def test_edit_with_masked_headers_keeps_the_stored_secrets(client, app_module):
+    # The side panel shows every saved header as "Name: ***" after Save / Edit;
+    # putting those lines back must not overwrite the real cookie or API key.
+    target = _create_target(client, config={
+        "headers": {"Cookie": "secret=1", "Authorization": "Bearer real-key"},
+    })
+    config = {**BOT_CONFIG, "headers": {"Cookie": "***", "Authorization": "***"}}
+    r = client.put(f"/api/targets/{target['id']}",
+                   json={"name": target["name"], "type": "http", "config": config})
+    assert r.status_code == 200, r.text
+    stored = app_module.storage.get_target(app_module._conn, target["id"])
+    assert stored["config"]["headers"] == {
+        "Cookie": "secret=1", "Authorization": "Bearer real-key",
+    }
+    # A real value replaces that one header; *** on another still keeps it.
+    config = {**BOT_CONFIG, "headers": {"Cookie": "secret=2", "Authorization": "***"}}
+    r = client.put(f"/api/targets/{target['id']}",
+                   json={"name": target["name"], "type": "http", "config": config})
+    assert r.status_code == 200, r.text
+    stored = app_module.storage.get_target(app_module._conn, target["id"])
+    assert stored["config"]["headers"] == {
+        "Cookie": "secret=2", "Authorization": "Bearer real-key",
+    }
+
+
 def test_run_uses_the_requested_threshold(client, app_module):
     target = _create_target(client)
     spec = _fake_spec([])

@@ -158,9 +158,13 @@ function collectCases(metrics, latestByKey, detailsByKey, thresholds) {
   return cases;
 }
 
-// DeepEval-style score cell: the score, then how the judge reached it.
+// DeepEval-style score cell: the score, then how the judge reached it. Failed
+// single-turn cases also get the same word differences the app shows (missing /
+// changed / added marks, the list, and how to pass) when Highlight differences
+// is on — so the PDF test-case table matches the live case cards.
 function scoreDetail({ metric, row, threshold, direction, judgeModel }, options = DEFAULT_OPTIONS) {
   const read = metric.scores_on && metric.scores_on.length ? metric.scores_on.map(fieldLabel).join(", ").toLowerCase() : "";
+  const failed = options.diff ? failedCaseView(metric, row, direction, threshold) : null;
   return el(
     "div",
     {},
@@ -170,7 +174,18 @@ function scoreDetail({ metric, row, threshold, direction, judgeModel }, options 
     ", reason=", row.reason || "No reason given.",
     row.error ? `, error=${row.error}` : "",
     ")",
-    options.improve && !row.passed && caseTip(metric) ? el("p", { className: "tip" }, el("b", {}, "How to improve: "), caseTip(metric)) : null,
+    failed && (failed.actual || failed.expected) ? el("div", { className: "case-help" },
+      failed.actual ? el("p", {}, el("span", { className: "case-help-label" }, "Actual: "), failed.actual) : null,
+      failed.expected ? el("p", {}, el("span", { className: "case-help-label" }, "Expected: "), failed.expected) : null,
+    ) : null,
+    failed && failed.differences
+      ? el("div", { className: "case-help" }, el("p", { className: "case-help-label" }, "Differences"), failed.differences)
+      : null,
+    options.improve && !row.passed
+      ? (failed && failed.howToPass
+        ? el("div", { className: "case-help" }, el("p", { className: "case-help-label" }, "How to pass"), failed.howToPass)
+        : (caseTip(metric) ? el("p", { className: "tip" }, el("b", {}, "How to improve: "), caseTip(metric)) : null))
+      : null,
   );
 }
 
@@ -293,30 +308,30 @@ function caseTip(metric) {
 }
 
 // A conversation's expected output describes the outcome, not a reply to
-// compare word by word, so only single-turn cases get the bold diff.
+// compare word by word, so only single-turn cases get the bold diff. Failed
+// cases use failedCaseView so the PDF marks missing / changed / added the
+// same way as the scan page and dashboard case cards.
 function caseBlock(metric, row, direction, threshold, id, options = DEFAULT_OPTIONS) {
   const actual = row.actual_output || "";
   const expected = row.expected_output || "";
-  const diff = options.diff && metric.kind !== "conversation" && actual && expected ? wordDiff(actual, expected) : null;
+  const failed = options.diff ? failedCaseView(metric, row, direction, threshold) : null;
   const question = row.question || row.input || "";
   const pairs = [[metric.kind === "conversation" ? "Scenario" : "Question", question]];
   // What was actually sent, when it differs (facts attached, or a conversation's user turns).
   if (row.input && row.input !== question) pairs.push(["Sent to the chatbot", row.input]);
   pairs.push(
-    ["Actual result", diff ? el("span", {}, ...diff.actual) : actual || "–"],
-    ["Expected result", diff ? el("span", {}, ...diff.expected) : expected || "– (this case has no expected answer)"],
+    ["Actual result", (failed && failed.actual) || actual || "–"],
+    ["Expected result", (failed && failed.expected) || expected || "– (this case has no expected answer)"],
   );
-  // Differences are listed for failed cases only: a passed case's wording may differ freely.
-  if (diff && diff.changes.length && !row.passed) {
-    const reference = (metric.scores_on || []).includes("expected_output") ? []
-      : [el("p", { className: "muted small" }, `${metric.title} does not compare the reply with the expected answer; the differences are for reference.`)];
-    pairs.push(["Differences", el("div", {}, diffList(diff.changes), ...reference)]);
-  }
+  if (failed && failed.differences) pairs.push(["Differences", failed.differences]);
   if (row.context && row.context.length) pairs.push(["Context", el("ul", {}, ...row.context.map((c) => el("li", {}, c)))]);
   if (row.scores && row.scores.length >= 2) pairs.push(["Judge scorings", scoringsText(row.scores)]);
   pairs.push(["Why", row.reason || "No reason given."]);
+  // Same label as the app's case cards ("How to pass"); improve option still gates it.
   if (options.improve && !row.passed) {
-    pairs.push(["How to improve", howToPass(metric, row, direction, threshold, diff ? diff.changes : [])]);
+    pairs.push(["How to pass", failed && failed.howToPass
+      ? failed.howToPass
+      : howToPass(metric, row, direction, threshold, [])]);
   }
   const outcome = row.passed ? "pass" : "fail";
   return el(
@@ -596,7 +611,10 @@ function renderReport(data, options) {
       options.metrics ? metrics.filter((m) => m.skip_reason) : metrics, latestByKey, Boolean(data.scan));
     if (section) parts.push(section);
   }
-  if (options.cases && ran.length) parts.push(testCaseTable(cases, ran, latestByKey, details, options));
+  if (options.cases && ran.length) {
+    if (options.diff) parts.push(diffLegend());
+    parts.push(testCaseTable(cases, ran, latestByKey, details, options));
+  }
   if (options.improve && ran.length) parts.push(actionPlan(ran, latestByKey, details, thresholds, caseIds));
   if (options.details && ran.length) {
     parts.push(el("h2", { className: "page-break" }, "Metric details"),
@@ -724,9 +742,13 @@ function statusText(data, options) {
   const light = data.largeReport && options && !options.details && !options.diff
     ? " Case cards and highlighted differences are off so the page stays responsive; tick them under Sections if you need them."
     : "";
+  const allOn = new URLSearchParams(location.search).get("all") === "1"
+    && options && options.details
+    ? " Every section is on (opened with full details). "
+    : "";
   if (data.scan) {
     return (anyRun(data)
-      ? `Scan ${data.scan.version}: choose what to include, then click Save as PDF (pick "Save as PDF" as the printer).`
+      ? `Scan ${data.scan.version}:${allOn || " "}choose what to include, then click Save as PDF (pick "Save as PDF" as the printer).`
       : `Scan ${data.scan.version} has no scored metrics: the report has only the summary.`)
       + light;
   }
@@ -748,7 +770,14 @@ async function start() {
   ]);
   document.title = reportTitle(data);
   if (caseCheckCount(data) > LARGE_REPORT_CASES) data.largeReport = true;
-  showReport(data, optionsForSize(data, readOptions(saved)));
+  // ?all=1 (from the scan page's Download report) turns every section on,
+  // including case cards on large scans, so the PDF has the full detail.
+  const wantAll = new URLSearchParams(location.search).get("all") === "1";
+  const base = readOptions(wantAll ? null : saved);
+  const options = wantAll
+    ? { ...base, ...Object.fromEntries(SECTION_OPTIONS.map(([key]) => [key, true])), metrics: null }
+    : optionsForSize(data, base);
+  showReport(data, options);
   return data;
 }
 

@@ -47,7 +47,10 @@ the page; reopening it follows the run again.
 - **Fresh start and history**: each page load starts with empty scores. Every run
   stays stored in `judge.db`; the dashboard's **History** tab lists them all, with
   **Report** (printable PDF of that scan), **Delete** per scan and **Delete all**.
-  History's **Download report (PDF)** opens the newest finished scan.
+  History's **Download report (PDF)** opens the newest finished scan. On a scan's
+  own page (**Open**): **Download report (PDF)** opens the printable report with
+  every section on, and **Download full report (HTML)** saves one offline file
+  with every metric and every case (question, reply, expected, score, reason).
 - **Risk Assessment** (`risk/risk.html?job=`): a scan's red-team results as a security
   report (KPIs, risk score gauge, Overview / Vulnerabilities / Test Cases / Frameworks,
   a case drawer, and **Download report** to print a PDF). Open it with a History row's

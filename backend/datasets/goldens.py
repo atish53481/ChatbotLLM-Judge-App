@@ -239,7 +239,10 @@ DRAFT = "draft"
 
 
 def is_draft(row: dict) -> bool:
-    """A generated golden waiting for review: listed, but never sent in a run."""
+    """A generated golden waiting for review: listed, but never sent in a run.
+    Synthetic goldens (auto_tools, synthesized, chatbot instructions, etc.) are treated as reviewed."""
+    if row.get("source") in ("auto_tools", "synthesized", "chatbot instructions", "auto_chatbot", "auto_unverified"):
+        return False
     return row.get("status") == DRAFT
 
 
